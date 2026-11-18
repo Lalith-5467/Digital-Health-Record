@@ -2,12 +2,13 @@ import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Building2, Users, Stethoscope, HeartPulse, Pill, HeartHandshake,
-  ShieldCheck, ArrowLeft, LogOut, Search, Bed, Activity, Phone,
-  Mail, MapPin, Award, CheckCircle2, ChevronDown, Filter, Calendar
+  ShieldCheck, LogOut, Search, Bed, Activity, Phone,
+  Mail, MapPin, Award, CheckCircle2, ChevronDown, Filter, Calendar,
+  Menu, X, Lock, KeyRound, AlertTriangle
 } from 'lucide-react';
 import { Logo } from '../components/ui/Logo';
 import { ThemeToggle } from '../components/ui/ThemeToggle';
-import { adminApi, pharmacyApi, insuranceApi } from '../services/dhrApis';
+import { adminApi } from '../services/dhrApis';
 import { 
   getStoredHospitals, 
   saveStoredHospitals,
@@ -34,10 +35,31 @@ export const HospitalDashboardPage: React.FC<HospitalDashboardPageProps> = ({
   onLogout,
   onNavigate,
 }) => {
-  const [hospitals, setHospitals] = useState<HospitalAdminRecord[]>([]);
-  const [selectedHospital, setSelectedHospital] = useState<HospitalAdminRecord | null>(null);
+  const [hospitals, setHospitals] = useState<HospitalAdminRecord[]>(() => getStoredHospitals());
+  const [selectedHospital, setSelectedHospital] = useState<HospitalAdminRecord | null>(() => {
+    const list = getStoredHospitals();
+    let found: HospitalAdminRecord | undefined;
+    const urlParams = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null;
+    const qId = urlParams?.get('hospitalId') || initialHospitalId;
+
+    if (qId && list.length > 0) {
+      found = list.find((h) => h.id === qId || h.hospitalId === qId || h.code?.toLowerCase() === qId.toLowerCase());
+    }
+
+    if (!found && typeof localStorage !== 'undefined') {
+      try {
+        const stored = localStorage.getItem('active_hospital_portal');
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          found = list.find((h) => h.id === parsed.id || h.name === parsed.name) || parsed;
+        }
+      } catch {}
+    }
+
+    return found || list[0] || null;
+  });
   const [activeTab, setActiveTab] = useState<'overview' | 'doctors' | 'nurses' | 'patients' | 'pharmacists' | 'caregivers' | 'insurance'>('overview');
-  const [searchFilter, setSearchFilter] = useState('');
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
   // Live real data counts from database
   const [liveDoctors, setLiveDoctors] = useState<any[]>([]);
@@ -47,8 +69,43 @@ export const HospitalDashboardPage: React.FC<HospitalDashboardPageProps> = ({
   const [liveCaregivers, setLiveCaregivers] = useState<any[]>([]);
   const [liveInsurance, setLiveInsurance] = useState<any[]>([]);
 
+  // Function to refresh hospital list from backend and storage
+  const syncHospitalDirectory = () => {
+    adminApi.getHospitals().then((res) => {
+      if (res && res.data && Array.isArray(res.data) && res.data.length > 0) {
+        setHospitals(res.data);
+        saveStoredHospitals(res.data);
+      } else {
+        const local = getStoredHospitals();
+        if (local.length > 0) setHospitals(local);
+      }
+    }).catch(() => {
+      const local = getStoredHospitals();
+      if (local.length > 0) setHospitals(local);
+    });
+  };
+
   useEffect(() => {
-    // Fetch live registered users from backend database
+    syncHospitalDirectory();
+
+    // Listen to real-time additions from AdminHospitalManagementView
+    const handleHospitalUpdate = () => {
+      const local = getStoredHospitals();
+      if (local.length > 0) {
+        setHospitals(local);
+      }
+    };
+
+    window.addEventListener('admin_hospitals_updated', handleHospitalUpdate);
+    window.addEventListener('storage', handleHospitalUpdate);
+    return () => {
+      window.removeEventListener('admin_hospitals_updated', handleHospitalUpdate);
+      window.removeEventListener('storage', handleHospitalUpdate);
+    };
+  }, []);
+
+  useEffect(() => {
+    // Fetch live registered users directly from the backend MySQL database
     adminApi.getUsers({ limit: 100 }).then((res) => {
       if (res && res.data) {
         const all: any[] = Array.isArray(res.data) ? res.data : (res.data as any).users || [];
@@ -60,47 +117,7 @@ export const HospitalDashboardPage: React.FC<HospitalDashboardPageProps> = ({
         setLiveInsurance(all.filter((u) => u.role === 'INSURANCE_PROVIDER' || u.role === 'INSURANCE'));
       }
     }).catch(() => {});
-
-    adminApi.getHospitals().then((res) => {
-      if (res && res.data && Array.isArray(res.data) && res.data.length > 0) {
-        setHospitals(res.data);
-        saveStoredHospitals(res.data);
-      }
-    }).catch(() => {});
   }, []);
-
-  useEffect(() => {
-    const list = getStoredHospitals();
-    setHospitals(list);
-
-    // Try to load initial hospital
-    let found: HospitalAdminRecord | undefined;
-    const urlParams = new URLSearchParams(window.location.search);
-    const qId = urlParams.get('hospitalId') || initialHospitalId;
-
-    if (qId) {
-      found = list.find((h) => h.id === qId || h.hospitalId === qId || h.code.toLowerCase() === qId.toLowerCase());
-    }
-
-    if (!found) {
-      try {
-        const stored = localStorage.getItem('active_hospital_portal');
-        if (stored) {
-          const parsed = JSON.parse(stored);
-          found = list.find((h) => h.id === parsed.id);
-        }
-      } catch {}
-    }
-
-    setSelectedHospital(found || list[0] || null);
-  }, [initialHospitalId]);
-
-  const handleSelectHospital = (hosp: HospitalAdminRecord) => {
-    setSelectedHospital(hosp);
-    try {
-      localStorage.setItem('active_hospital_portal', JSON.stringify(hosp));
-    } catch {}
-  };
 
   if (!selectedHospital) {
     return (
@@ -113,13 +130,44 @@ export const HospitalDashboardPage: React.FC<HospitalDashboardPageProps> = ({
     );
   }
 
-  // Real data calculations - only genuinely registered users from the database are counted
-  const realDoctors = liveDoctors.filter((d) => !selectedHospital?.name || !d.doctor?.hospital || d.doctor?.hospital.toLowerCase().includes(selectedHospital.name.toLowerCase()) || selectedHospital.name.toLowerCase().includes(d.doctor?.hospital.toLowerCase()));
-  const realNurses = liveNurses.filter((n) => !selectedHospital?.name || !n.nurse?.hospital || n.nurse?.hospital.toLowerCase().includes(selectedHospital.name.toLowerCase()) || selectedHospital.name.toLowerCase().includes(n.nurse?.hospital.toLowerCase()));
-  const realPatients = livePatients;
-  const realPharmacists = livePharmacists.filter((ph) => !selectedHospital?.name || !ph.pharmacist?.pharmacyName || ph.pharmacist?.pharmacyName.toLowerCase().includes(selectedHospital.name.toLowerCase()) || selectedHospital.name.toLowerCase().includes(ph.pharmacist?.pharmacyName.toLowerCase()));
-  const realCaregivers = liveCaregivers;
-  const realInsurance = liveInsurance;
+  // Helper to strictly match user's affiliated hospital
+  const matchesSelectedHospital = (userItem: any, hosp: HospitalAdminRecord) => {
+    if (!hosp || !userItem) return false;
+    const targetHospName = hosp.name.toLowerCase().trim();
+    
+    // Check all possible hospital fields on the user / profile objects
+    const affiliations: string[] = [
+      userItem.hospital,
+      userItem.doctor?.hospital,
+      userItem.nurse?.hospital,
+      userItem.pharmacist?.hospital || userItem.pharmacist?.pharmacyName,
+      userItem.caregiver?.hospital,
+      userItem.patient?.hospital,
+      userItem.profile?.hospital,
+    ].filter(Boolean).map(h => String(h).toLowerCase().trim());
+
+    if (affiliations.length === 0) {
+      // If user has no hospital assigned, only assign to default MediCare Central Hospital
+      return targetHospName === 'medicare central hospital';
+    }
+
+    // Must strictly match the hospital name
+    return affiliations.some(aff => 
+      aff === targetHospName ||
+      (targetHospName.length > 5 && aff.startsWith(targetHospName)) ||
+      (aff.length > 5 && targetHospName.startsWith(aff))
+    );
+  };
+
+  // Real data calculations - filtered specifically to the selected hospital facility!
+  const realDoctors = liveDoctors.filter(doc => matchesSelectedHospital(doc, selectedHospital));
+  const realNurses = liveNurses.filter(nurse => matchesSelectedHospital(nurse, selectedHospital));
+  const realPatients = livePatients.filter(pt => matchesSelectedHospital(pt, selectedHospital));
+  const realPharmacists = livePharmacists.filter(ph => matchesSelectedHospital(ph, selectedHospital));
+  const realCaregivers = liveCaregivers.filter(cg => matchesSelectedHospital(cg, selectedHospital));
+  const realInsurance = liveInsurance.filter(ins => matchesSelectedHospital(ins, selectedHospital));
+
+  const currentDepartments = Array.isArray(selectedHospital.departments) ? selectedHospital.departments : ['Emergency & Trauma', 'General Medicine', 'Outpatient OPD', 'Inpatient Ward', 'Cardiology', 'ICU Care'];
 
   return (
     <div className="h-screen overflow-hidden bg-slate-50 dark:bg-[#070c18] text-slate-900 dark:text-white font-sans flex flex-col select-none">
@@ -127,29 +175,22 @@ export const HospitalDashboardPage: React.FC<HospitalDashboardPageProps> = ({
       {/* 1. TOP HOSPITAL EXECUTIVE BAR */}
       <header className="sticky top-0 z-50 bg-white dark:bg-[#0b1120] border-b border-slate-200 dark:border-slate-800 h-16 flex items-center justify-between px-4 sm:px-6 shrink-0 shadow-xs">
         <div className="flex items-center gap-3">
-          {onNavigate && (
-            <button
-              onClick={() => onNavigate('admin')}
-              className="p-2 -ml-2 rounded-xl text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
-              title="Return to Master Admin Platform"
-            >
-              <ArrowLeft className="w-5 h-5" />
-            </button>
-          )}
+          <button
+            onClick={() => setIsSidebarOpen(!isSidebarOpen)}
+            className="p-2 rounded-xl text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer md:hidden"
+            title="Toggle Sidebar"
+          >
+            {isSidebarOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
+          </button>
 
           <div className="flex items-center gap-2.5">
             <div className="w-9 h-9 rounded-xl bg-teal-500/15 text-teal-600 dark:text-teal-400 flex items-center justify-center font-black border border-teal-500/25">
               <Building2 className="w-5 h-5" />
             </div>
             <div>
-              <div className="flex items-center gap-2">
-                <h1 className="text-sm font-black text-slate-900 dark:text-white leading-tight">
-                  {selectedHospital.name}
-                </h1>
-                <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-teal-500/10 text-teal-700 dark:text-teal-300 border border-teal-500/20">
-                  {selectedHospital.code}
-                </span>
-              </div>
+              <h1 className="text-sm font-black text-slate-900 dark:text-white leading-tight">
+                {selectedHospital.name}
+              </h1>
               <p className="text-[10px] text-slate-400 flex items-center gap-1">
                 <MapPin className="w-3 h-3 text-teal-500" />
                 {selectedHospital.city}, {selectedHospital.state}
@@ -158,26 +199,8 @@ export const HospitalDashboardPage: React.FC<HospitalDashboardPageProps> = ({
           </div>
         </div>
 
-        {/* Hospital Switcher Dropdown & Controls */}
+        {/* Executive Action Controls */}
         <div className="flex items-center gap-3">
-          <div className="hidden md:flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-100 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-300">
-            <span className="text-slate-400 text-[10px] uppercase tracking-wider font-bold">Facility:</span>
-            <select
-              value={selectedHospital.id}
-              onChange={(e) => {
-                const found = hospitals.find((h) => h.id === e.target.value);
-                if (found) handleSelectHospital(found);
-              }}
-              className="bg-transparent text-xs font-bold text-slate-900 dark:text-white focus:outline-hidden cursor-pointer"
-            >
-              {hospitals.map((h) => (
-                <option key={h.id} value={h.id} className="dark:bg-slate-900">
-                  {h.name}
-                </option>
-              ))}
-            </select>
-          </div>
-
           <ThemeToggle />
 
           <button
@@ -190,38 +213,67 @@ export const HospitalDashboardPage: React.FC<HospitalDashboardPageProps> = ({
         </div>
       </header>
 
-      {/* 2. SECONDARY HOSPITAL NAVIGATION TABS */}
-      <div className="bg-white dark:bg-[#0b1120] border-b border-slate-200 dark:border-slate-800 px-4 sm:px-6 flex items-center gap-2 overflow-x-auto shrink-0 scrollbar-none py-2">
-        {[
-          { id: 'overview', label: 'Overview & Facility Stats', icon: Activity },
-          { id: 'doctors', label: `Doctors (${realDoctors.length})`, icon: Stethoscope },
-          { id: 'nurses', label: `Nurses (${realNurses.length})`, icon: HeartPulse },
-          { id: 'patients', label: `Patients (${realPatients.length})`, icon: Users },
-          { id: 'pharmacists', label: `Pharmacy (${realPharmacists.length})`, icon: Pill },
-          { id: 'caregivers', label: `Caregivers (${realCaregivers.length})`, icon: HeartHandshake },
-          { id: 'insurance', label: `Insurance Desk (${realInsurance.length})`, icon: ShieldCheck },
-        ].map((tab) => {
-          const Icon = tab.icon;
-          const isActive = activeTab === tab.id;
-          return (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id as any)}
-              className={`flex items-center gap-2 px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all whitespace-nowrap cursor-pointer border ${
-                isActive
-                  ? 'bg-teal-600 text-white border-teal-600 shadow-sm'
-                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white border-transparent hover:bg-slate-100 dark:hover:bg-slate-800'
-              }`}
-            >
-              <Icon className="w-3.5 h-3.5" />
-              <span>{tab.label}</span>
-            </button>
-          );
-        })}
-      </div>
+      {/* 2. BODY WITH SIDEBAR AND MAIN CONTENT */}
+      <div className="flex-1 flex overflow-hidden">
+        {/* EXECUTIVE LEFT SIDEBAR */}
+        <aside className={`w-64 bg-white dark:bg-[#0b1120] border-r border-slate-200 dark:border-slate-800 flex flex-col shrink-0 z-30 transition-all duration-300 md:static fixed inset-y-16 left-0 ${isSidebarOpen ? 'translate-x-0 shadow-2xl md:shadow-none' : '-translate-x-full md:translate-x-0'}`}>
+          <div className="p-4 border-b border-slate-100 dark:border-slate-800/60">
+            <span className="text-[10px] font-black uppercase tracking-wider text-slate-400 block px-2">
+              Facility Departments & Portals
+            </span>
+          </div>
 
-      {/* 3. MAIN BODY SCROLL CONTAINER */}
-      <main className="flex-1 overflow-y-auto bg-slate-50 dark:bg-[#070c18] p-4 sm:p-6 lg:p-8">
+          <nav className="flex-1 overflow-y-auto p-3 space-y-1.5">
+            {[
+              { id: 'overview', label: 'Overview & Facility Stats', icon: Activity, count: null },
+              { id: 'doctors', label: 'Doctors', icon: Stethoscope, count: realDoctors.length },
+              { id: 'nurses', label: 'Nurses', icon: HeartPulse, count: realNurses.length },
+              { id: 'patients', label: 'Patients', icon: Users, count: realPatients.length },
+              { id: 'pharmacists', label: 'Pharmacy Desk', icon: Pill, count: realPharmacists.length },
+              { id: 'caregivers', label: 'Caregivers', icon: HeartHandshake, count: realCaregivers.length },
+              { id: 'insurance', label: 'Insurance Desk', icon: ShieldCheck, count: realInsurance.length },
+            ].map((tab) => {
+              const Icon = tab.icon;
+              const isActive = activeTab === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  onClick={() => {
+                    setActiveTab(tab.id as any);
+                    setIsSidebarOpen(false);
+                  }}
+                  className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                    isActive
+                      ? 'bg-teal-600 text-white shadow-md shadow-teal-900/15'
+                      : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800/70'
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    <Icon className={`w-4 h-4 ${isActive ? 'text-white' : 'text-slate-500 dark:text-slate-400'}`} />
+                    <span>{tab.label}</span>
+                  </div>
+                  {tab.count !== null && (
+                    <span className={`text-[10px] font-mono px-2 py-0.5 rounded-full font-bold ${
+                      isActive ? 'bg-white/20 text-white' : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400'
+                    }`}>
+                      {tab.count}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </nav>
+
+          <div className="p-3 border-t border-slate-100 dark:border-slate-800/60 bg-slate-50/50 dark:bg-slate-900/20">
+            <div className="px-3 py-2 rounded-xl bg-teal-500/10 border border-teal-500/20 text-teal-800 dark:text-teal-200 text-[11px] font-semibold">
+              <span className="block font-bold">ABDM Connected</span>
+              <span className="text-[10px] text-teal-600 dark:text-teal-400">Live Hospital Node</span>
+            </div>
+          </div>
+        </aside>
+
+        {/* 3. MAIN BODY SCROLL CONTAINER */}
+        <main className="flex-1 overflow-y-auto bg-slate-50 dark:bg-[#070c18] p-4 sm:p-6 lg:p-8">
         <div className="max-w-7xl mx-auto space-y-6">
           {activeTab === 'overview' && (
             <div className="space-y-6">
@@ -341,7 +393,7 @@ export const HospitalDashboardPage: React.FC<HospitalDashboardPageProps> = ({
                     <Building2 className="w-4 h-4 text-teal-500" /> Active Medical Departments
                   </h3>
                   <div className="flex flex-wrap gap-2">
-                    {selectedHospital.departments.map((dept) => (
+                    {currentDepartments.map((dept) => (
                       <span
                         key={dept}
                         className="px-3 py-1.5 rounded-xl bg-slate-100 dark:bg-slate-800/80 text-xs font-semibold text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700"
@@ -383,7 +435,7 @@ export const HospitalDashboardPage: React.FC<HospitalDashboardPageProps> = ({
           )}
 
           {activeTab === 'patients' && (
-            <AdminPatientManagementView defaultHospital="All" />
+            <AdminPatientManagementView defaultHospital={selectedHospital.name} />
           )}
 
           {activeTab === 'pharmacists' && (
@@ -391,7 +443,7 @@ export const HospitalDashboardPage: React.FC<HospitalDashboardPageProps> = ({
           )}
 
           {activeTab === 'caregivers' && (
-            <AdminStaffManagementView type="caregiver" defaultHospital="All" />
+            <AdminStaffManagementView type="caregiver" defaultHospital={selectedHospital.name} />
           )}
 
           {activeTab === 'insurance' && (
@@ -400,6 +452,9 @@ export const HospitalDashboardPage: React.FC<HospitalDashboardPageProps> = ({
         </div>
       </main>
     </div>
+  </div>
   );
 };
+
+
 

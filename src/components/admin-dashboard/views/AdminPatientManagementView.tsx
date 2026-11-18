@@ -1022,3 +1022,6 @@ export const AdminPatientManagementView: React.FC<AdminPatientManagementViewProp
     </div>
   );
 };
+
+export default AdminPatientManagementView;
+

@@ -322,6 +322,15 @@ export const adminApi = {
   deleteHospital: (id: string) => apiClient.delete<any>(`/admin/hospitals/${id}`),
 };
 
+export const hospitalAuthApi = {
+  login: (credentials: { email: string; password?: string }) =>
+    apiClient.post<{ token: string; user: any; hospital: any }>('/auth/hospital/login', credentials),
+  register: (facilityData: any) =>
+    apiClient.post<any>('/auth/hospital/register', facilityData),
+  getStatus: (identifier: string) =>
+    apiClient.get<any>(`/auth/hospital/status/${encodeURIComponent(identifier)}`),
+};
+
 export interface BrandingConfig {
   appName: string;
   tagline: string;

@@ -22,8 +22,10 @@ import { AdminOperationsView } from '../components/admin-dashboard/views/AdminOp
 import { AdminSecurityAuditView } from '../components/admin-dashboard/views/AdminSecurityAuditView';
 import { AdminSystemSettingsView } from '../components/admin-dashboard/views/AdminSystemSettingsView';
 import { AdminReportsAnalyticsView } from '../components/admin-dashboard/views/AdminReportsAnalyticsView';
+import { AdminProfileSettingsView } from '../components/admin-dashboard/views/AdminProfileSettingsView';
 import { NotificationPopover } from '../components/dashboard/NotificationPopover';
 import { DashboardAnnouncementBanner } from '../components/common/DashboardAnnouncementBanner';
+import { ErrorBoundary } from '../components/common/ErrorBoundary';
 import { notificationApi } from '../services/dhrApis';
 import { getAuthToken, parseJwtRole } from '../services/apiClient';
 
@@ -88,8 +90,52 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
     return () => window.removeEventListener('notifications_updated', handleUpdate);
   }, []);
 
-  const adminName = user?.name || (user?.email ? user.email.split('@')[0] : (currentRole === 'Super Admin' ? 'Super Administrator' : 'Administrator'));
-  const adminEmail = user?.email || (currentRole === 'Super Admin' ? 'superadmin@dhr-medicare.in' : 'admin@dhr-medicare.in');
+  const [currentAdminUser, setCurrentAdminUser] = useState(() => {
+    try {
+      const stored = localStorage.getItem('app_user');
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (parsed && parsed.name) return parsed;
+      }
+    } catch {}
+    return user;
+  });
+
+  React.useEffect(() => {
+    const handleUserUpdated = () => {
+      try {
+        const stored = localStorage.getItem('app_user');
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          if (parsed && parsed.name) {
+            setCurrentAdminUser((prev: any) => ({
+              ...(prev || {}),
+              ...parsed
+            }));
+          }
+        }
+      } catch {}
+    };
+    window.addEventListener('app_user_updated', handleUserUpdated);
+    return () => window.removeEventListener('app_user_updated', handleUserUpdated);
+  }, []);
+
+  const resolveAdminDisplayName = (u?: any, role?: string) => {
+    if (u?.name && u.name.trim() && u.name.toLowerCase() !== 'superadmin' && u.name.toLowerCase() !== 'admin') {
+      return u.name;
+    }
+    const emailLower = (u?.email || '').toLowerCase();
+    if (emailLower === 'superadmin@dhr-medicare.in' || (role && role.includes('Super'))) {
+      return 'Vikramaditya Rao';
+    }
+    if (emailLower === 'admin.kavita@dhr-medicare.in' || emailLower === 'admin@health.com') {
+      return 'Kavita Sundaram';
+    }
+    return role === 'Super Admin' ? 'Vikramaditya Rao' : 'Administrator';
+  };
+
+  const adminName = resolveAdminDisplayName(currentAdminUser || user, currentRole);
+  const adminEmail = currentAdminUser?.email || user?.email || (currentRole === 'Super Admin' ? 'superadmin@dhr-medicare.in' : 'admin@dhr-medicare.in');
 
   const SUPER_ADMIN_ONLY_VIEWS = [
     'admin-management',
@@ -145,16 +191,18 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
         return <AdminDashboardHomeView onNavigate={handleSelectNav} currentRole={currentRole} />;
       case 'hospitals':
         return (
-          <AdminHospitalManagementView
-            onLaunchHospitalPortal={(hospital) => {
-              if (onNavigate) {
-                try {
-                  localStorage.setItem('active_hospital_portal', JSON.stringify(hospital));
-                } catch { }
-                onNavigate('hospital/dashboard');
-              }
-            }}
-          />
+          <ErrorBoundary>
+            <AdminHospitalManagementView
+              onLaunchHospitalPortal={(hospital) => {
+                if (onNavigate) {
+                  try {
+                    localStorage.setItem('active_hospital_portal', JSON.stringify(hospital));
+                  } catch { }
+                  onNavigate('hospital/dashboard');
+                }
+              }}
+            />
+          </ErrorBoundary>
         );
       case 'users':
         return <AdminUserManagementView />;
@@ -189,6 +237,9 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
         return <AdminSecurityAuditView currentRole={currentRole} />;
       case 'reports-analytics':
         return <AdminReportsAnalyticsView />;
+      case 'profile':
+      case 'profile-settings':
+        return <AdminProfileSettingsView user={user} currentRole={currentRole} />;
       case 'system-config':
       case 'settings':
         return <AdminSystemSettingsView currentRole={currentRole} />;
@@ -221,28 +272,6 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
         </div>
 
         <div className="flex items-center gap-3">
-          {/* DEMO ROLE SWITCHER PILL */}
-          <div className="flex items-center p-1 rounded-xl bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700">
-            <button
-              onClick={() => setCurrentRole('Admin')}
-              className={`px-3.5 py-1.5 rounded-lg text-sm font-bold transition-all cursor-pointer ${currentRole === 'Admin'
-                  ? 'bg-[#00a896] text-white shadow-xs font-black'
-                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-                }`}
-            >
-              Admin
-            </button>
-            <button
-              onClick={() => setCurrentRole('Super Admin')}
-              className={`px-3.5 py-1.5 rounded-lg text-sm font-bold transition-all cursor-pointer ${currentRole === 'Super Admin'
-                  ? 'bg-[#00a896] text-white shadow-xs font-black'
-                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-                }`}
-            >
-              Super Admin
-            </button>
-          </div>
-
           {/* DARK / LIGHT THEME TOGGLE */}
           <ThemeToggle />
 
@@ -290,7 +319,7 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
 
                   <button
                     onClick={() => {
-                      handleSelectNav('settings');
+                      handleSelectNav('profile');
                       setIsProfileDropdownOpen(false);
                     }}
                     className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"

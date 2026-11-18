@@ -173,114 +173,17 @@ export interface AdminSecurityEvent {
   status: 'Investigating' | 'Resolved' | 'Blocked';
 }
 
-export const INITIAL_HOSPITALS: HospitalAdminRecord[] = [
-  {
-    id: 'HOSP-01',
-    hospitalId: 'HOSP-MC-001',
-    name: 'MediCare Central Hospital',
-    code: 'MC-BLR',
-    city: 'Bengaluru',
-    state: 'Karnataka',
-    address: '42 Health City Boulevard, Electronic City Phase 1, Bengaluru 560100',
-    contactPhone: '+91 80 2841 0000',
-    email: 'info@medicare-central.in',
-    adminName: 'Dr. Ramesh Narayan',
-    adminEmail: 'hospital.admin@medicare-central.in',
-    bedCapacity: 450,
-    activeDoctors: 48,
-    activeNurses: 92,
-    activePatients: 310,
-    activePharmacists: 14,
-    activeCaregivers: 22,
-    insurancePartnersCount: 16,
-    status: 'Active',
-    establishedYear: 2012,
-    accreditation: 'NABH & JCI Accredited',
-    departments: ['Cardiology', 'Pulmonology & Chest Medicine', 'Endocrinology', 'Emergency & Trauma ICU', 'Pediatrics', 'Neurology', 'Central Pharmacy']
-  },
-  {
-    id: 'HOSP-02',
-    hospitalId: 'HOSP-APO-002',
-    name: 'Apollo Central Hub',
-    code: 'APO-CHN',
-    city: 'Chennai',
-    state: 'Tamil Nadu',
-    address: '21 Greams Lane, Thousand Lights, Chennai 600006',
-    contactPhone: '+91 44 2829 0200',
-    email: 'contact@apollocentral.in',
-    adminName: 'Kavita Sundaram',
-    adminEmail: 'admin.kavita@apollocentral.in',
-    bedCapacity: 600,
-    activeDoctors: 64,
-    activeNurses: 130,
-    activePatients: 480,
-    activePharmacists: 18,
-    activeCaregivers: 30,
-    insurancePartnersCount: 22,
-    status: 'Active',
-    establishedYear: 2008,
-    accreditation: 'NABH Gold Standard',
-    departments: ['Oncology', 'Organ Transplant', 'Cardiology', 'Pulmonology', 'Critical Care', 'Orthopedics', 'Outpatient Pharmacy']
-  },
-  {
-    id: 'HOSP-03',
-    hospitalId: 'HOSP-FOR-003',
-    name: 'Fortis Memorial Healthcare',
-    code: 'FOR-DEL',
-    city: 'New Delhi',
-    state: 'Delhi NCR',
-    address: 'Sector 44, Institutional Area, Opp HUDA City Centre, Gurugram 122002',
-    contactPhone: '+91 124 496 2200',
-    email: 'care@fortismemorial.in',
-    adminName: 'Sanjay Deshmukh',
-    adminEmail: 'admin@fortismemorial.in',
-    bedCapacity: 380,
-    activeDoctors: 36,
-    activeNurses: 78,
-    activePatients: 240,
-    activePharmacists: 10,
-    activeCaregivers: 15,
-    insurancePartnersCount: 18,
-    status: 'Active',
-    establishedYear: 2015,
-    accreditation: 'NABH Accredited & ISO 9001:2015',
-    departments: ['Neurosurgery', 'Cardiology', 'Pediatrics & Neonatology', 'Emergency & Trauma', 'Robotic Surgery']
-  },
-  {
-    id: 'HOSP-04',
-    hospitalId: 'HOSP-MAN-004',
-    name: 'Manipal Multi-Specialty Hospital',
-    code: 'MAN-HYD',
-    city: 'Hyderabad',
-    state: 'Telangana',
-    address: 'Road No. 2, Banjara Hills, Hyderabad 500034',
-    contactPhone: '+91 40 2338 8888',
-    email: 'info@manipalhyderabad.in',
-    adminName: 'Dr. Priya Venu',
-    adminEmail: 'admin@manipalhyderabad.in',
-    bedCapacity: 500,
-    activeDoctors: 52,
-    activeNurses: 110,
-    activePatients: 390,
-    activePharmacists: 15,
-    activeCaregivers: 20,
-    insurancePartnersCount: 20,
-    status: 'Active',
-    establishedYear: 2011,
-    accreditation: 'NABH & NABL Accredited',
-    departments: ['Gastroenterology', 'Nephrology & Dialysis', 'Cardiology', 'General OPD', 'Trauma Care']
-  }
-];
+export const INITIAL_HOSPITALS: HospitalAdminRecord[] = [];
 
 export const getStoredHospitals = (): HospitalAdminRecord[] => {
   try {
     const raw = localStorage.getItem('admin_hospitals_store');
     if (raw) {
       const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      if (Array.isArray(parsed)) return parsed;
     }
   } catch {}
-  return INITIAL_HOSPITALS;
+  return [];
 };
 
 export const saveStoredHospitals = (hospitals: HospitalAdminRecord[]): void => {

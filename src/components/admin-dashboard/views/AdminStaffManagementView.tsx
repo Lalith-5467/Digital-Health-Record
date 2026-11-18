@@ -984,3 +984,6 @@ export const AdminStaffManagementView: React.FC<AdminStaffManagementViewProps> =
     </div>
   );
 };
+
+export default AdminStaffManagementView;
+
