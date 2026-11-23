@@ -7,10 +7,7 @@ import {
   Phone, Mail, MapPin, Shield, Check
 } from 'lucide-react';
 import { adminApi } from '../../../services/dhrApis';
-import { 
-  getStoredHospitals, 
-  type HospitalAdminRecord 
-} from '../../../utils/adminMockStorage';
+import type { HospitalAdminRecord } from '../../../utils/adminMockStorage';
 import { AdminToast } from '../common/AdminToast';
 import type { AdminToastType } from '../common/AdminToast';
 import { AdminDeleteConfirmModal } from '../modals/AdminDeleteConfirmModal';
@@ -50,10 +47,21 @@ export const AdminPatientManagementView: React.FC<AdminPatientManagementViewProp
   }, [defaultHospital]);
 
   useEffect(() => {
-    setAvailableHospitals(getStoredHospitals());
-    const handleHospUpdate = () => setAvailableHospitals(getStoredHospitals());
-    window.addEventListener('admin_hospitals_updated', handleHospUpdate);
-    return () => window.removeEventListener('admin_hospitals_updated', handleHospUpdate);
+    const loadHospitals = () => {
+      adminApi
+        .getHospitals()
+        .then((res) => {
+          if (res?.data && Array.isArray(res.data)) {
+            setAvailableHospitals(res.data);
+          } else {
+            setAvailableHospitals([]);
+          }
+        })
+        .catch(() => setAvailableHospitals([]));
+    };
+    loadHospitals();
+    window.addEventListener('admin_hospitals_updated', loadHospitals);
+    return () => window.removeEventListener('admin_hospitals_updated', loadHospitals);
   }, []);
 
   // Modals
@@ -96,23 +104,6 @@ export const AdminPatientManagementView: React.FC<AdminPatientManagementViewProp
     setToastType(type);
   };
 
-  // Local storage helper for mock patient overrides
-  const getMockOverrides = (): Record<string, Partial<PatientRecord>> => {
-    try {
-      return JSON.parse(localStorage.getItem('admin_mock_patients_overrides') || '{}');
-    } catch {
-      return {};
-    }
-  };
-
-  const setMockOverride = (id: string, updates: Partial<PatientRecord>) => {
-    try {
-      const current = getMockOverrides();
-      current[id] = { ...(current[id] || {}), ...updates };
-      localStorage.setItem('admin_mock_patients_overrides', JSON.stringify(current));
-    } catch {}
-  };
-
   const fetchPatients = async (isManual = false) => {
     setLoading(true);
     try {
@@ -122,29 +113,26 @@ export const AdminPatientManagementView: React.FC<AdminPatientManagementViewProp
         raw = Array.isArray(res.data) ? res.data : (res.data as any).users || [];
       }
 
-      const overrides = getMockOverrides();
-
       if (raw && raw.length > 0) {
         const mapped: PatientRecord[] = raw.map((u: any) => {
           const prof = u.patient || u.profile || {};
           const isPatientActive = u.isActive === true || u.status === 'ACTIVE' || u.status === 'Active';
           const baseStatus: 'Active' | 'Disabled' = isPatientActive ? 'Active' : 'Disabled';
-          const overrideStatus = overrides[u.id]?.status;
 
           return {
             id: u.id,
             patientId: u.id.slice(-6).toUpperCase(),
-            name: overrides[u.id]?.name || prof.fullName || u.email?.split('@')[0] || 'Patient',
-            email: overrides[u.id]?.email || u.email || '',
+            name: prof.fullName || u.email?.split('@')[0] || 'Patient',
+            email: u.email || '',
             age: prof.dateOfBirth ? Math.max(1, new Date().getFullYear() - new Date(prof.dateOfBirth).getFullYear()) : null,
-            gender: overrides[u.id]?.gender || prof.gender || 'Unspecified',
-            phone: overrides[u.id]?.phone || u.phoneNumber || prof.emergencyContactPhone || 'Not registered',
-            bloodGroup: overrides[u.id]?.bloodGroup || prof.bloodGroup || 'Unspecified',
-            hospital: overrides[u.id]?.hospital || prof.hospital || 'MediCare Central Hub',
-            status: overrideStatus || baseStatus,
+            gender: prof.gender || 'Unspecified',
+            phone: u.phoneNumber || prof.emergencyContactPhone || 'Not registered',
+            bloodGroup: prof.bloodGroup || 'Unspecified',
+            hospital: prof.preferredHospital || prof.hospital || '',
+            status: baseStatus,
             createdAt: u.createdAt,
-            abhaId: overrides[u.id]?.abhaId || u.abhaId || prof.abhaId || 'Not linked',
-            address: overrides[u.id]?.address || prof.address || 'Not provided',
+            abhaId: u.abhaId || prof.abhaId || 'Not linked',
+            address: prof.address || 'Not provided',
           };
         });
         setPatients(mapped);
@@ -161,9 +149,7 @@ export const AdminPatientManagementView: React.FC<AdminPatientManagementViewProp
     } catch (err: any) {
       console.error('Failed to load patient management data:', err?.message);
       setPatients([]);
-      if (isManual) {
-        showToast('Failed to load patient database records', 'info');
-      }
+      showToast(err?.message || 'Failed to load patient database records', 'error');
     } finally {
       setLoading(false);
     }
@@ -188,7 +174,7 @@ export const AdminPatientManagementView: React.FC<AdminPatientManagementViewProp
     setSelectedPatient(null);
   };
 
-  // 2. Save Patient Changes
+  // 2. Save Patient Changes (All Fields Persisted in MySQL)
   const handleUpdatePatient = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editName.trim()) {
@@ -197,51 +183,23 @@ export const AdminPatientManagementView: React.FC<AdminPatientManagementViewProp
     }
     setIsSubmitting(true);
 
-    const updatedData: Partial<PatientRecord> = {
-      name: editName.trim(),
-      email: editEmail.trim().toLowerCase(),
-      phone: editPhone.trim() || 'Not registered',
-      gender: editGender,
-      bloodGroup: editBloodGroup,
-      abhaId: editAbhaId.trim() || 'Not linked',
-      address: editAddress.trim() || 'Not provided',
-      status: editStatus,
-    };
-
-    // Update local state optimistically
-    setPatients(prev => prev.map(p => {
-      if (p.id === editId) {
-        return {
-          ...p,
-          ...updatedData,
-        };
-      }
-      return p;
-    }));
-    setMockOverride(editId, updatedData);
-
     try {
-      if (!editId.startsWith('PAT-')) {
-        await adminApi.updateUser(editId, {
-          fullName: editName.trim(),
-          email: editEmail.trim().toLowerCase() || undefined,
-          phoneNumber: editPhone.trim() || undefined,
-          abhaId: editAbhaId.trim() || undefined,
-          status: editStatus === 'Active',
-        });
-        showToast(`Patient record for "${editName}" updated successfully.`, 'success');
-      } else {
-        showToast(`Patient record for "${editName}" updated successfully.`, 'success');
-      }
-
+      await adminApi.updateUser(editId, {
+        fullName: editName.trim(),
+        email: editEmail.trim().toLowerCase() || undefined,
+        phoneNumber: editPhone.trim(),
+        abhaId: editAbhaId.trim(),
+        gender: editGender === 'Unspecified' ? '' : editGender,
+        bloodGroup: editBloodGroup === 'Unspecified' ? '' : editBloodGroup,
+        address: editAddress.trim(),
+        status: editStatus === 'Active',
+      });
+      showToast(`Patient record for "${editName}" updated in MySQL.`, 'success');
       setIsEditModalOpen(false);
       window.dispatchEvent(new CustomEvent('admin_stats_updated'));
-      fetchPatients(false);
+      await fetchPatients(false);
     } catch (err: any) {
-      console.warn('Patient update encountered issue, keeping local changes:', err?.message);
-      showToast(`Patient record for "${editName}" updated successfully.`, 'success');
-      setIsEditModalOpen(false);
-      window.dispatchEvent(new CustomEvent('admin_stats_updated'));
+      showToast(err?.message || `Failed to update patient record for "${editName}".`, 'error');
     } finally {
       setIsSubmitting(false);
     }
@@ -252,24 +210,13 @@ export const AdminPatientManagementView: React.FC<AdminPatientManagementViewProp
     const nextStatus = p.status === 'Active' ? 'INACTIVE' : 'ACTIVE';
     const nextStatusLabel: 'Active' | 'Disabled' = nextStatus === 'ACTIVE' ? 'Active' : 'Disabled';
 
-    // Optimistic UI update
-    setPatients(prev => prev.map(item => item.id === p.id ? { ...item, status: nextStatusLabel } : item));
-    setMockOverride(p.id, { status: nextStatusLabel });
-
-    if (p.id.startsWith('PAT-')) {
-      showToast(`Patient ${p.name} status updated to ${nextStatusLabel}.`, 'success');
-      window.dispatchEvent(new CustomEvent('admin_stats_updated'));
-      return;
-    }
-
     try {
       await adminApi.updateUserStatus(p.id, nextStatus);
+      setPatients(prev => prev.map(item => item.id === p.id ? { ...item, status: nextStatusLabel } : item));
       showToast(`Patient "${p.name}" status updated to ${nextStatusLabel}.`, 'success');
       window.dispatchEvent(new CustomEvent('admin_stats_updated'));
     } catch (err: any) {
-      console.warn('Backend updateUserStatus failed, keeping local update:', err?.message);
-      showToast(`Patient ${p.name} status updated to ${nextStatusLabel}.`, 'info');
-      window.dispatchEvent(new CustomEvent('admin_stats_updated'));
+      showToast(err?.message || `Failed to update status for "${p.name}".`, 'error');
     }
   };
 
@@ -278,14 +225,12 @@ export const AdminPatientManagementView: React.FC<AdminPatientManagementViewProp
     if (!patientToDelete) return;
     setIsDeletingPatient(true);
     try {
-      if (!patientToDelete.id.startsWith('PAT-')) {
-        await adminApi.deleteUser(patientToDelete.id);
-      }
+      await adminApi.deleteUser(patientToDelete.id);
       setPatients(prev => prev.filter(item => item.id !== patientToDelete.id));
       showToast(`Patient "${patientToDelete.name}" was successfully deleted.`, 'delete');
       window.dispatchEvent(new CustomEvent('admin_stats_updated'));
     } catch (err: any) {
-      showToast(err.message || 'Failed to delete patient record.', 'error');
+      showToast(err?.message || 'Failed to delete patient record.', 'error');
     } finally {
       setIsDeletingPatient(false);
       setPatientToDelete(null);
@@ -334,6 +279,16 @@ export const AdminPatientManagementView: React.FC<AdminPatientManagementViewProp
     }
   };
 
+  const isHospitalMatch = (itemHosp?: string, filterHosp?: string) => {
+    if (!filterHosp || filterHosp === 'All') return true;
+    if (!itemHosp) return false;
+    const a = itemHosp.toLowerCase().trim();
+    const b = filterHosp.toLowerCase().trim();
+    return a === b || (b.length > 5 && a.startsWith(b)) || (a.length > 5 && b.startsWith(a));
+  };
+
+  const hospitalPatients = patients.filter(p => isHospitalMatch(p.hospital, hospitalFilter));
+
   const filtered = patients.filter(p => {
     const matchesSearch = 
       p.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -345,8 +300,7 @@ export const AdminPatientManagementView: React.FC<AdminPatientManagementViewProp
     const matchesStatus = 
       statusFilter === 'All' ? true : p.status === statusFilter;
 
-    const matchesHospital =
-      hospitalFilter === 'All' ? true : p.hospital === hospitalFilter;
+    const matchesHospital = isHospitalMatch(p.hospital, hospitalFilter);
 
     return matchesSearch && matchesStatus && matchesHospital;
   });
@@ -374,7 +328,9 @@ export const AdminPatientManagementView: React.FC<AdminPatientManagementViewProp
 
         <div className="flex items-center gap-3 relative z-10 shrink-0 flex-wrap">
           <span className="px-4 py-2.5 rounded-xl bg-black/20 text-white text-xs font-mono font-bold border border-white/20 backdrop-blur-md shadow-xs">
-            {patients.length} Registered Patients
+            {filtered.length !== hospitalPatients.length
+              ? `${filtered.length} of ${hospitalPatients.length} Patients`
+              : `${hospitalPatients.length} Registered Patients`}
           </span>
           <button
             onClick={() => fetchPatients(true)}

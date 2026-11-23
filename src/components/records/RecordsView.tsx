@@ -2,7 +2,6 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { CheckCircle2, FileQuestion, Upload } from 'lucide-react';
 import type { MedicalRecordItem } from './recordsData';
-import { INITIAL_RECORDS } from './recordsData';
 import { RecordsHeader } from './RecordsHeader';
 import { RecordSummaryCards } from './RecordSummaryCards';
 import { RecordCategoryTabs } from './RecordCategoryTabs';
@@ -19,7 +18,8 @@ import { ShareRecordModal } from './ShareRecordModal';
 import { DeleteRecordModal } from './DeleteRecordModal';
 import { RecordsSkeleton } from './RecordsSkeleton';
 import { recordApi } from '../../services/dhrApis';
-import { safeLocalStorageSet } from '../../utils/safeStorage';
+import { getAuthToken } from '../../services/apiClient';
+import { healthShareApi } from '../../services/healthShareApi';
 import { useLanguage } from '../../context/LanguageContext';
 
 interface UserProfile {
@@ -45,7 +45,7 @@ export const RecordsView: React.FC<RecordsViewProps> = ({
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   // RECORDS STATE (Live from MySQL)
-  const [records, setRecords] = useState<MedicalRecordItem[]>(INITIAL_RECORDS);
+  const [records, setRecords] = useState<MedicalRecordItem[]>([]);
 
   // CATEGORY, SEARCH & VIEW STATES
   const [selectedCategory, setSelectedCategory] = useState('All');
@@ -76,26 +76,27 @@ export const RecordsView: React.FC<RecordsViewProps> = ({
   const fetchLiveRecords = async () => {
     try {
       const res = await recordApi.getMedicalRecords();
-      if (res && res.data && res.data.length > 0) {
+      if (res && Array.isArray(res.data)) {
         const mapped: MedicalRecordItem[] = res.data.map((r: any) => ({
           id: r.id,
           title: r.title,
           type: (r.type === 'LAB_REPORT' ? 'Lab Report' : r.type === 'CONSULTATION' ? 'Consultation' : r.type === 'PRESCRIPTION' ? 'Prescription' : r.type === 'IMAGING' ? 'Imaging' : r.type === 'DISCHARGE' ? 'Discharge' : r.type === 'VACCINATION' ? 'Vaccination' : 'Other') as MedicalRecordItem['type'],
-          hospital: r.hospital || 'Apollo Diagnostics Centre',
-          doctor: r.doctor?.fullName || 'Dr. Rajesh Varma',
-          date: r.recordDate ? new Date(r.recordDate).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : '20 Aug 2026',
+          hospital: r.hospital || 'Medical Center',
+          doctor: r.doctor?.fullName || 'Attending Physician',
+          date: r.recordDate ? new Date(r.recordDate).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : new Date(r.createdAt).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }),
           timestamp: new Date(r.recordDate || r.createdAt).getTime(),
           status: (['Normal', 'Attention', 'Reviewed', 'Pending'].includes(r.status) ? r.status : 'Normal') as MedicalRecordItem['status'],
-          fileSize: r.fileSize || '1.8 MB',
+          fileSize: r.fileSize || '—',
           fileName: r.fileName || `${r.title.replace(/\s+/g, '_')}.pdf`,
+          fileUrl: r.fileUrl || undefined,
           isImportant: r.isImportant ?? false,
           notes: r.notes || '',
         }));
         setRecords(mapped);
-        safeLocalStorageSet('user_medical_records', JSON.stringify(mapped));
       }
     } catch (err) {
-      console.log('Using cached records:', err);
+      console.error('Failed to load medical records from database:', err);
+      setRecords([]);
     } finally {
       setLoading(false);
     }
@@ -113,12 +114,6 @@ export const RecordsView: React.FC<RecordsViewProps> = ({
     };
   }, []);
 
-  // Persist records to localStorage when changed
-  const saveRecordsToStorage = (newRecords: MedicalRecordItem[]) => {
-    setRecords(newRecords);
-    safeLocalStorageSet('user_medical_records', JSON.stringify(newRecords));
-  };
-
   const showToast = (msg: string) => {
     setToastMessage(msg);
     setTimeout(() => setToastMessage(null), 3000);
@@ -133,11 +128,10 @@ export const RecordsView: React.FC<RecordsViewProps> = ({
     try {
       await recordApi.updateMedicalRecord(id, { isImportant: nextState });
       await fetchLiveRecords();
-    } catch {
-      const updated = records.map((r) => (r.id === id ? { ...r, isImportant: nextState } : r));
-      saveRecordsToStorage(updated);
+      showToast(nextState ? '★ Added to Important Records' : 'Removed from Important Records');
+    } catch (err: any) {
+      showToast(err?.message || 'Failed to update record status');
     }
-    showToast(nextState ? '★ Added to Important Records' : 'Removed from Important Records');
   };
 
   const handleViewRecord = (rec: MedicalRecordItem) => {
@@ -150,7 +144,48 @@ export const RecordsView: React.FC<RecordsViewProps> = ({
   };
 
   const handleDownload = (rec: MedicalRecordItem) => {
-    showToast(`✓ Document download started: ${rec.fileName}`);
+    const rawUrl = (rec as any).fileUrl as string | undefined;
+    if (rawUrl && rawUrl.trim()) {
+      let targetUrl = rawUrl.trim();
+      const token = getAuthToken();
+      if (targetUrl.startsWith('/uploads/') && token) {
+        const sep = targetUrl.includes('?') ? '&' : '?';
+        targetUrl = `${targetUrl}${sep}token=${encodeURIComponent(token)}`;
+      }
+      const link = document.createElement('a');
+      link.href = targetUrl;
+      link.download = rec.fileName || `${rec.title.replace(/\s+/g, '_')}.pdf`;
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      showToast(`✓ Document download started: ${rec.fileName}`);
+      return;
+    }
+
+    // Generate authentic record summary file from DB fields if no binary attachment exists
+    const content = [
+      `Medical Record Summary`,
+      `======================`,
+      `Title: ${rec.title}`,
+      `Type: ${rec.type}`,
+      `Date: ${rec.date}`,
+      `Hospital: ${rec.hospital}`,
+      `Attending Physician: ${rec.doctor}`,
+      `Status: ${rec.status}`,
+      `Notes: ${rec.notes || 'None'}`,
+    ].join('\n');
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${rec.title.replace(/[^a-z0-9_-]/gi, '_')}.txt`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    showToast(`✓ Downloaded record summary: ${rec.title}`);
   };
 
   const handleShare = (rec: MedicalRecordItem) => {
@@ -161,12 +196,11 @@ export const RecordsView: React.FC<RecordsViewProps> = ({
     try {
       await recordApi.deleteMedicalRecord(id);
       await fetchLiveRecords();
-    } catch {
-      const updated = records.filter((r) => r.id !== id);
-      saveRecordsToStorage(updated);
+      setSelectedIds((prev) => prev.filter((item) => item !== id));
+      showToast('✓ Medical record deleted');
+    } catch (err: any) {
+      showToast(err?.message || 'Failed to delete medical record');
     }
-    setSelectedIds((prev) => prev.filter((item) => item !== id));
-    showToast('✓ Medical record deleted');
   };
 
   const handleRename = async (rec: MedicalRecordItem) => {
@@ -175,11 +209,10 @@ export const RecordsView: React.FC<RecordsViewProps> = ({
       try {
         await recordApi.updateMedicalRecord(rec.id, { title: newName.trim() });
         await fetchLiveRecords();
-      } catch {
-        const updated = records.map((r) => (r.id === rec.id ? { ...r, title: newName.trim() } : r));
-        saveRecordsToStorage(updated);
+        showToast('✓ Medical record title updated');
+      } catch (err: any) {
+        showToast(err?.message || 'Failed to rename medical record');
       }
-      showToast('✓ Medical record title updated');
     }
   };
 
@@ -190,17 +223,17 @@ export const RecordsView: React.FC<RecordsViewProps> = ({
         type: newRec.type?.toUpperCase().replace(/ /g, '_') || 'OTHER',
         hospital: newRec.hospital,
         status: newRec.status || 'Normal',
+        fileUrl: (newRec as any).fileUrl,
         fileName: newRec.fileName,
         fileSize: newRec.fileSize,
         isImportant: newRec.isImportant ?? false,
         notes: newRec.notes,
       });
       await fetchLiveRecords();
-    } catch {
-      const updated = [newRec, ...records];
-      saveRecordsToStorage(updated);
+      showToast('✓ Record saved to database successfully');
+    } catch (err: any) {
+      showToast(err?.message || 'Failed to save medical record');
     }
-    showToast('✓ Record uploaded successfully');
   };
 
   // BULK ACTIONS
@@ -219,21 +252,33 @@ export const RecordsView: React.FC<RecordsViewProps> = ({
   };
 
   const handleBulkDownload = () => {
-    showToast(`✓ Downloading ${selectedIds.length} records...`);
+    const targets = records.filter((r) => selectedIds.includes(r.id));
+    targets.forEach((rec) => handleDownload(rec));
     handleClearSelection();
   };
 
-  const handleBulkShare = () => {
-    showToast(`✓ Shared ${selectedIds.length} records via ABDM consent`);
-    handleClearSelection();
-  };
-
-  const handleBulkDelete = () => {
-    if (confirm(`Are you sure you want to delete ${selectedIds.length} records?`)) {
-      const updated = records.filter((r) => !selectedIds.includes(r.id));
-      saveRecordsToStorage(updated);
-      showToast(`✓ Deleted ${selectedIds.length} records`);
+  const handleBulkShare = async () => {
+    try {
+      const qr = await healthShareApi.generateQRToken(30);
+      const shareLink = `${window.location.origin}/share?token=${encodeURIComponent(qr.token)}`;
+      await navigator.clipboard?.writeText(shareLink).catch(() => {});
+      showToast(`✓ Generated 30-min ABDM consent share token for ${selectedIds.length} record(s) & copied link`);
       handleClearSelection();
+    } catch (err: any) {
+      showToast(err?.message || 'Failed to generate consent share token');
+    }
+  };
+
+  const handleBulkDelete = async () => {
+    if (confirm(`Are you sure you want to delete ${selectedIds.length} records?`)) {
+      try {
+        await recordApi.bulkDeleteMedicalRecords(selectedIds);
+        await fetchLiveRecords();
+        showToast(`✓ Deleted ${selectedIds.length} records from database`);
+        handleClearSelection();
+      } catch (err: any) {
+        showToast(err?.message || 'Failed to delete selected records');
+      }
     }
   };
 
@@ -440,6 +485,7 @@ export const RecordsView: React.FC<RecordsViewProps> = ({
         filters={filters}
         onApplyFilters={setFilters}
         onResetFilters={() => setFilters({ type: 'All', dateRange: 'All', status: 'All', doctor: 'All', hospital: 'All' })}
+        availableDoctors={Array.from(new Set(records.map((r) => r.doctor).filter(Boolean)))}
       />
 
       {/* UPLOAD MODAL */}
@@ -455,7 +501,7 @@ export const RecordsView: React.FC<RecordsViewProps> = ({
         isOpen={!!previewRecord}
         onClose={() => setPreviewRecord(null)}
         record={previewRecord}
-        userName={user?.name || 'Samson L.'}
+        userName={user?.name || 'Patient'}
         onDownload={handleDownload}
         onShare={handleShare}
       />

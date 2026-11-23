@@ -1,22 +1,18 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   X,
   FileText,
   User,
   Building2,
-  Calendar,
   Pill,
   CheckCircle2,
-  AlertTriangle,
   Clock,
   ShieldCheck,
   Check,
   Ban,
-  Wallet,
-  CreditCard
+  Wallet
 } from 'lucide-react';
-import type { ExtendedPharmacyOrder } from '../../utils/healthWorkflowStorage';
-import { getPrescriptions } from '../../utils/healthWorkflowStorage';
+import { prescriptionApi, type PrescriptionEntity } from '../../services/dhrApis';
 
 interface PharmacistPrescriptionModalProps {
   isOpen: boolean;
@@ -35,23 +31,84 @@ export const PharmacistPrescriptionModal: React.FC<PharmacistPrescriptionModalPr
   onOpenDecline,
   onConfirmCashPayment,
 }) => {
-  if (!isOpen || !order) return null;
+  const [matchedPrescription, setMatchedPrescription] = useState<PrescriptionEntity | null>(null);
 
-  // Retrieve matching prescription if available for rich notes and clinical metadata
-  const prescriptions = getPrescriptions();
-  const matchedPrescription = prescriptions.find(
-    (p) => p.id === order.sourcePrescriptionId || p.id === order.id.replace('RX-ORD-', 'RX-DOC-')
-  );
+  useEffect(() => {
+    if (!isOpen || !order) {
+      setMatchedPrescription(null);
+      return;
+    }
+
+    let isMounted = true;
+    const rxId = order.prescriptionId || order.sourcePrescriptionId || order.prescription?.id;
+
+    const loadPrescription = async () => {
+      try {
+        if (rxId) {
+          const res = await prescriptionApi.getPrescriptionById(rxId);
+          if (isMounted && res?.data) {
+            setMatchedPrescription(res.data);
+            return;
+          }
+        }
+        if (order.patientId) {
+          const listRes = await prescriptionApi.getPrescriptions(order.patientId);
+          if (isMounted && Array.isArray(listRes?.data)) {
+            const found =
+              listRes.data.find((p) => p.id === rxId) ||
+              listRes.data[0] ||
+              null;
+            setMatchedPrescription(found);
+          }
+        }
+      } catch (err) {
+        console.warn('Failed to fetch prescription details from MySQL:', err);
+        if (isMounted) setMatchedPrescription(null);
+      }
+    };
+
+    loadPrescription();
+    return () => {
+      isMounted = false;
+    };
+  }, [isOpen, order]);
+
+  if (!isOpen || !order) return null;
 
   const patientName =
     (order as any).patient?.fullName ||
     order.patientName ||
     'Patient information unavailable';
-  const doctorName = order.doctorName || order.prescription?.doctor?.fullName || matchedPrescription?.doctorName || 'Attending Physician';
-  const clinicName = order.clinicName || matchedPrescription?.clinicName || 'Medical Centre';
-  const rxDate = order.date || (matchedPrescription ? matchedPrescription.prescriptionDate : 'Today');
+  const doctorName =
+    order.doctorName ||
+    order.prescription?.doctor?.fullName ||
+    matchedPrescription?.doctor?.fullName ||
+    'Attending Physician';
+  const clinicName =
+    order.clinicName ||
+    matchedPrescription?.doctor?.hospital ||
+    'Medical Centre';
+  const rxDate =
+    order.date ||
+    (matchedPrescription?.issuedAt
+      ? new Date(matchedPrescription.issuedAt).toLocaleDateString('en-GB', {
+          day: '2-digit',
+          month: 'short',
+          year: 'numeric',
+        })
+      : order.orderedAt
+      ? new Date(order.orderedAt).toLocaleDateString('en-GB', {
+          day: '2-digit',
+          month: 'short',
+          year: 'numeric',
+        })
+      : '—');
 
-  const isPending = (order.status as string) === 'Pending Pharmacist Verification' || (order.status as string) === 'PENDING';
+  const isPending =
+    (order.status as string) === 'Pending Pharmacist Verification' ||
+    (order.status as string) === 'PENDING';
+
+  const orderItems = Array.isArray(order.items) ? order.items : [];
 
   return (
     <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-200 font-sans">
@@ -68,11 +125,11 @@ export const PharmacistPrescriptionModal: React.FC<PharmacistPrescriptionModalPr
                   Prescription Verification
                 </h3>
                 <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-extrabold font-mono border ${
-                  order.status === 'Pending Pharmacist Verification'
+                  order.status === 'Pending Pharmacist Verification' || order.status === 'PENDING'
                     ? 'bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/30'
-                    : order.status === 'Processing'
+                    : order.status === 'Processing' || order.status === 'PREPARING'
                     ? 'bg-blue-500/15 text-blue-700 dark:text-cyan-300 border-blue-500/30'
-                    : order.status === 'Declined by Pharmacist'
+                    : order.status === 'Declined by Pharmacist' || order.status === 'DECLINED'
                     ? 'bg-rose-500/15 text-rose-700 dark:text-rose-300 border-rose-500/30'
                     : 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/30'
                 }`}>
@@ -80,7 +137,7 @@ export const PharmacistPrescriptionModal: React.FC<PharmacistPrescriptionModalPr
                 </span>
               </div>
               <p className="text-xs text-slate-500 dark:text-slate-400 font-mono">
-                Order #{order.id} {order.sourcePrescriptionId && `• Rx ID: ${order.sourcePrescriptionId}`}
+                Order #{order.id} {(order.prescriptionId || order.sourcePrescriptionId) && `• Rx ID: ${order.prescriptionId || order.sourcePrescriptionId}`}
               </p>
             </div>
           </div>
@@ -132,10 +189,10 @@ export const PharmacistPrescriptionModal: React.FC<PharmacistPrescriptionModalPr
             <div className="flex items-center justify-between">
               <h4 className="text-xs font-extrabold text-slate-900 dark:text-white uppercase tracking-wider font-mono flex items-center gap-1.5">
                 <Pill className="w-4 h-4 text-[#00a896]" />
-                <span>Prescribed Medications ({order.items.length})</span>
+                <span>Prescribed Medications ({orderItems.length})</span>
               </h4>
               <span className="text-[11px] font-mono font-bold text-slate-500 dark:text-slate-400">
-                Total Units: {order.items.reduce((acc: number, i: any) => acc + (Number(i.quantity) || 0), 0)}
+                Total Units: {orderItems.reduce((acc: number, i: any) => acc + (Number(i.quantity) || 0), 0)}
               </span>
             </div>
 
@@ -152,28 +209,32 @@ export const PharmacistPrescriptionModal: React.FC<PharmacistPrescriptionModalPr
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
-                  {order.items.map((item: any, idx: number) => {
-                    const matchedMed = matchedPrescription?.medicines.find(
-                      (m) => m.name.toLowerCase().includes(item.name.toLowerCase()) || item.name.toLowerCase().includes(m.name.toLowerCase())
+                  {orderItems.map((item: any, idx: number) => {
+                    const itemName = String(item.medicineName || item.name || '');
+                    const matchedMed = matchedPrescription?.items?.find(
+                      (m) =>
+                        m.medicineName.toLowerCase().includes(itemName.toLowerCase()) ||
+                        itemName.toLowerCase().includes(m.medicineName.toLowerCase())
                     );
                     const qty = Number(item.quantity) || 1;
-                    const price = Number(item.unitPrice) || 12.0;
-                    const subtotal = Number(item.subtotal) || (qty * price);
+                    const price = Number(item.unitPrice) || 0;
+                    const subtotal = Number(item.subtotal) || qty * price;
+                    const durationText = matchedMed?.durationDays ? `${matchedMed.durationDays} days` : item.duration || 'As prescribed';
 
                     return (
                       <tr key={idx} className="hover:bg-slate-50/60 dark:hover:bg-slate-800/40 transition-colors">
                         <td className="p-3 font-mono font-bold text-slate-500 dark:text-slate-400">{idx + 1}</td>
                         <td className="p-3">
-                          <div className="font-extrabold text-slate-900 dark:text-white">{item.medicineName || item.name}</div>
+                          <div className="font-extrabold text-slate-900 dark:text-white">{itemName}</div>
                           <div className="text-[11px] font-mono text-teal-600 dark:text-cyan-400 font-bold">
-                            {item.dosage}
+                            {item.dosage || matchedMed?.dosage || '—'}
                           </div>
                         </td>
                         <td className="p-3 font-mono font-extrabold text-slate-900 dark:text-white">
                           {qty} units
                         </td>
                         <td className="p-3 text-slate-600 dark:text-slate-300 text-[11px]">
-                          <div>{matchedMed?.frequency || item.frequency || 'Twice daily'} ({matchedMed?.duration || '5 days'})</div>
+                          <div>{matchedMed?.frequency || item.frequency || 'As directed'} ({durationText})</div>
                           <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400">
                             {matchedMed?.foodInstruction || item.foodInstruction || 'After Food'} • {matchedMed?.instructions || item.instructions || 'Take as directed'}
                           </span>
@@ -219,26 +280,28 @@ export const PharmacistPrescriptionModal: React.FC<PharmacistPrescriptionModalPr
             </div>
           </div>
 
-          {/* DOCTOR NOTES & FOLLOW-UP ADVISORY */}
-          {matchedPrescription && (
+          {/* DOCTOR NOTES */}
+          {(matchedPrescription?.notes || matchedPrescription?.diagnosis || order.prescription?.diagnosis) && (
             <div className="p-4 rounded-2xl bg-teal-500/10 border border-teal-500/20 space-y-1.5 text-xs">
               <div className="font-extrabold text-teal-800 dark:text-teal-300 flex items-center gap-1.5">
                 <ShieldCheck className="w-4 h-4 text-[#00a896]" />
                 <span>Physician Consultation Notes</span>
               </div>
-              <p className="text-slate-700 dark:text-slate-300 italic">
-                "{matchedPrescription.notes || 'Advised standard course with clinical hydration.'}"
-              </p>
-              {matchedPrescription.followUp?.hasFollowUp && (
-                <div className="text-[11px] font-mono font-bold text-amber-700 dark:text-amber-300 pt-1">
-                  📅 Doctor Follow-up Scheduled: {matchedPrescription.followUp.date} (Independent Consultation Directive)
-                </div>
+              {(matchedPrescription?.diagnosis || order.prescription?.diagnosis) && (
+                <p className="text-slate-800 dark:text-slate-200 font-semibold">
+                  Diagnosis: {matchedPrescription?.diagnosis || order.prescription?.diagnosis}
+                </p>
+              )}
+              {matchedPrescription?.notes && (
+                <p className="text-slate-700 dark:text-slate-300 italic">
+                  "{matchedPrescription.notes}"
+                </p>
               )}
             </div>
           )}
 
           {/* IF DECLINED, DISPLAY STORED DECLINE REASON & NOTES */}
-          {order.status === 'Declined by Pharmacist' && (
+          {(order.status === 'Declined by Pharmacist' || order.status === 'DECLINED') && (
             <div className="p-4 rounded-2xl bg-rose-500/10 border border-rose-500/30 space-y-1.5 text-xs">
               <div className="font-extrabold text-rose-700 dark:text-rose-300 flex items-center gap-1.5">
                 <Ban className="w-4 h-4 text-rose-500" />
@@ -267,7 +330,6 @@ export const PharmacistPrescriptionModal: React.FC<PharmacistPrescriptionModalPr
           </button>
 
           <div className="flex items-center gap-2.5 w-full sm:w-auto flex-wrap justify-end">
-            {/* CASH PAYMENT CONFIRMATION BY PHARMACIST */}
             {order.paymentStatus !== 'PAID' && order.status !== 'Declined by Pharmacist' && order.status !== 'DECLINED' && onConfirmCashPayment && (
               <button
                 type="button"

@@ -773,12 +773,12 @@ export const getAvailableDoctors = async (_req: Request, res: Response): Promise
         id: d.id,
         name: d.fullName,
         speciality: d.speciality || 'General Medicine',
-        rating: 4.9,
-        experienceYears: d.experienceYears || 5,
-        languages: ['English', 'Tamil', 'Hindi'],
-        hospital: d.hospital || 'Medicare Multi-Specialty Hospital',
-        avatarUrl: d.photoUrl || 'https://images.unsplash.com/photo-1622902046580-2b47f47f5471?auto=format&fit=crop&w=600&q=80',
-        bio: d.about || `${d.speciality} specialist available for video consultation.`,
+        rating: null,
+        experienceYears: d.experienceYears || 0,
+        languages: [],
+        hospital: d.hospital || 'Clinic',
+        avatarUrl: d.photoUrl || null,
+        bio: d.about || '',
         consultationFee: d.consultationFee,
       })),
     });
@@ -879,6 +879,132 @@ export const getLiveKitToken = async (req: Request, res: Response): Promise<void
       success: false,
       message: error.message || 'Failed to generate LiveKit token',
     });
+  }
+};
+
+async function assertVideoConsultationParticipant(consultationId: string, userId: string, role: string) {
+  const consultation = await prisma.videoConsultation.findUnique({
+    where: { id: consultationId },
+    include: {
+      patient: { select: { id: true, userId: true } },
+      doctor: { select: { id: true, userId: true } },
+    },
+  });
+  if (!consultation) {
+    return { status: 404 as const, message: 'Video consultation not found', consultation: null };
+  }
+  if (
+    role === 'ADMIN' ||
+    role === 'SUPER_ADMIN' ||
+    consultation.patient.userId === userId ||
+    consultation.doctor.userId === userId
+  ) {
+    return { status: 200 as const, message: '', consultation };
+  }
+  return { status: 403 as const, message: 'Forbidden: You are not a participant of this video consultation', consultation: null };
+}
+
+export const getConsultationMessages = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const id = String(req.params.id);
+    const check = await assertVideoConsultationParticipant(id, req.user!.id, String(req.user!.role));
+    if (!check.consultation) {
+      res.status(check.status).json({ success: false, message: check.message });
+      return;
+    }
+    const messages = await prisma.consultationMessage.findMany({
+      where: { videoConsultationId: id },
+      orderBy: { createdAt: 'asc' },
+    });
+    res.status(200).json({ success: true, data: messages });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message || 'Failed to load messages' });
+  }
+};
+
+export const postConsultationMessage = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const id = String(req.params.id);
+    const userId = req.user!.id;
+    const check = await assertVideoConsultationParticipant(id, userId, String(req.user!.role));
+    if (!check.consultation) {
+      res.status(check.status).json({ success: false, message: check.message });
+      return;
+    }
+    const { text, senderName } = req.body;
+    if (!text || !String(text).trim()) {
+      res.status(400).json({ success: false, message: 'Message text is required' });
+      return;
+    }
+    const created = await prisma.consultationMessage.create({
+      data: {
+        videoConsultationId: id,
+        senderUserId: userId,
+        senderRole: String(req.user!.role),
+        senderName: senderName || req.user!.email,
+        text: String(text).trim(),
+      },
+    });
+    res.status(201).json({ success: true, data: created });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message || 'Failed to save message' });
+  }
+};
+
+export const getConsultationSharedDocs = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const id = String(req.params.id);
+    const check = await assertVideoConsultationParticipant(id, req.user!.id, String(req.user!.role));
+    if (!check.consultation) {
+      res.status(check.status).json({ success: false, message: check.message });
+      return;
+    }
+    const docs = await prisma.consultationSharedDoc.findMany({
+      where: { videoConsultationId: id },
+      include: { medicalRecord: true },
+      orderBy: { sharedAt: 'desc' },
+    });
+    res.status(200).json({ success: true, data: docs });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message || 'Failed to load shared documents' });
+  }
+};
+
+export const shareConsultationDocument = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const id = String(req.params.id);
+    const check = await assertVideoConsultationParticipant(id, req.user!.id, String(req.user!.role));
+    if (!check.consultation) {
+      res.status(check.status).json({ success: false, message: check.message });
+      return;
+    }
+    const { medicalRecordId } = req.body;
+    if (!medicalRecordId) {
+      res.status(400).json({ success: false, message: 'medicalRecordId is required' });
+      return;
+    }
+    // Prevent cross-patient medical record exfiltration: record MUST belong to this consultation's patient
+    const record = await prisma.medicalRecord.findUnique({
+      where: { id: String(medicalRecordId) },
+      select: { id: true, patientId: true },
+    });
+    if (!record || record.patientId !== check.consultation.patientId) {
+      res.status(403).json({ success: false, message: 'Forbidden: Medical record does not belong to this consultation patient' });
+      return;
+    }
+    const shared = await prisma.consultationSharedDoc.upsert({
+      where: { videoConsultationId_medicalRecordId: { videoConsultationId: id, medicalRecordId } },
+      create: {
+        videoConsultationId: id,
+        medicalRecordId,
+        sharedByUserId: req.user!.id,
+      },
+      update: { sharedAt: new Date() },
+      include: { medicalRecord: true },
+    });
+    res.status(201).json({ success: true, data: shared });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message || 'Failed to share document' });
   }
 };
 

@@ -122,3 +122,26 @@ export const deleteRecordController = async (
     next(error);
   }
 };
+
+export const bulkDeleteRecordsController = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const ids: string[] = Array.isArray(req.body?.ids) ? req.body.ids.map(String) : [];
+    if (ids.length === 0) {
+      res.status(400).json({ success: false, message: 'At least one record ID is required' });
+      return;
+    }
+    for (const id of ids) {
+      await MedicalRecordService.deleteMedicalRecord(id, req.user!, req.ip);
+    }
+    res.status(200).json({
+      success: true,
+      message: `${ids.length} medical record(s) deleted successfully`,
+    });
+  } catch (error) {
+    next(error);
+  }
+};

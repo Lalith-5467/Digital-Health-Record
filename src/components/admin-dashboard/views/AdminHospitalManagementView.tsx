@@ -7,11 +7,7 @@ import {
   Pill, HeartHandshake, Shield, Check, CheckCircle2, X, RefreshCw, AlertCircle, Award
 } from 'lucide-react';
 import { adminApi } from '../../../services/dhrApis';
-import { 
-  getStoredHospitals, 
-  saveStoredHospitals, 
-  type HospitalAdminRecord 
-} from '../../../utils/adminMockStorage';
+import type { HospitalAdminRecord } from '../../../utils/adminMockStorage';
 import { AdminToast } from '../common/AdminToast';
 import type { AdminToastType } from '../common/AdminToast';
 import { AdminDeleteConfirmModal } from '../modals/AdminDeleteConfirmModal';
@@ -23,8 +19,8 @@ interface AdminHospitalManagementViewProps {
 export const AdminHospitalManagementView: React.FC<AdminHospitalManagementViewProps> = ({
   onLaunchHospitalPortal,
 }) => {
-  const [hospitals, setHospitals] = useState<HospitalAdminRecord[]>(() => getStoredHospitals());
-  const [loading, setLoading] = useState(false);
+  const [hospitals, setHospitals] = useState<HospitalAdminRecord[]>([]);
+  const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<'All' | 'Active' | 'Under Review' | 'Suspended'>('All');
 
@@ -91,13 +87,13 @@ export const AdminHospitalManagementView: React.FC<AdminHospitalManagementViewPr
       const res = await adminApi.getHospitals();
       if (res && res.data && Array.isArray(res.data)) {
         setHospitals(res.data);
-        saveStoredHospitals(res.data);
+      } else {
+        setHospitals([]);
       }
       if (isManual) showToast('Hospital directory synchronized from database', 'info');
-    } catch {
-      const local = getStoredHospitals();
-      if (local.length > 0) setHospitals(local);
-      if (isManual) showToast('Synchronized with local hospital cache', 'info');
+    } catch (err: any) {
+      setHospitals([]);
+      showToast(err?.message || 'Failed to load hospital directory from database', 'error');
     } finally {
       setLoading(false);
     }
@@ -169,15 +165,15 @@ export const AdminHospitalManagementView: React.FC<AdminHospitalManagementViewPr
 
     try {
       await adminApi.updateHospital(editId, updates);
-    } catch {}
-
-    const updatedList = hospitals.map((h) => (h.id === editId ? { ...h, ...updates } : h));
-    setHospitals(updatedList);
-    saveStoredHospitals(updatedList);
-
-    showToast(`Updated "${editName}" successfully`, 'success');
-    setIsEditModalOpen(false);
-    setIsSubmitting(false);
+      await fetchHospitals();
+      window.dispatchEvent(new Event('admin_hospitals_updated'));
+      showToast(`Updated "${editName}" successfully in database`, 'success');
+      setIsEditModalOpen(false);
+    } catch (err: any) {
+      showToast(err?.message || `Failed to update "${editName}"`, 'error');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   // Submit Add Form
@@ -203,46 +199,30 @@ export const AdminHospitalManagementView: React.FC<AdminHospitalManagementViewPr
       status: 'Active',
       establishedYear: new Date().getFullYear(),
       accreditation: addAccreditation.trim(),
-      activeDoctors: 0,
-      activeNurses: 0,
-      activePatients: 0,
-      activePharmacists: 0,
-      activeCaregivers: 0,
-      insurancePartnersCount: 0,
       departments: ['General OPD', 'Emergency Care', 'In-Patient Ward', 'Diagnostic Lab'],
     };
 
-    let createdRecord: HospitalAdminRecord | null = null;
     try {
-      const res = await adminApi.createHospital(newHospitalData);
-      if (res && res.data) createdRecord = res.data;
-    } catch {}
+      await adminApi.createHospital(newHospitalData);
+      await fetchHospitals();
+      window.dispatchEvent(new Event('admin_hospitals_updated'));
+      showToast(`Hospital "${addName}" onboarded to MySQL database`, 'success');
+      setIsAddModalOpen(false);
 
-    if (!createdRecord) {
-      const nextId = `HOSP-${String(hospitals.length + 1).padStart(2, '0')}`;
-      createdRecord = {
-        id: nextId,
-        hospitalId: `HOSP-REG-${Math.floor(1000 + Math.random() * 9000)}`,
-        ...(newHospitalData as any),
-      };
+      // Reset Form
+      setAddName('');
+      setAddCode('');
+      setAddAddress('');
+      setAddPhone('');
+      setAddEmail('');
+      setAddAdminName('');
+      setAddAdminEmail('');
+      setAddBedCapacity('');
+    } catch (err: any) {
+      showToast(err?.message || `Failed to register "${addName}"`, 'error');
+    } finally {
+      setIsSubmitting(false);
     }
-
-    const updatedList = [createdRecord!, ...hospitals];
-    setHospitals(updatedList);
-    saveStoredHospitals(updatedList);
-
-    showToast(`Hospital "${addName}" onboarded to network`, 'success');
-    setIsAddModalOpen(false);
-    setIsSubmitting(false);
-
-    // Reset Form
-    setAddName('');
-    setAddCode('');
-    setAddAddress('');
-    setAddPhone('');
-    setAddEmail('');
-    setAddAdminName('');
-    setAddAdminEmail('');
   };
 
   // Delete Action
@@ -250,25 +230,21 @@ export const AdminHospitalManagementView: React.FC<AdminHospitalManagementViewPr
     if (!hospitalToDelete) return;
     try {
       await adminApi.deleteHospital(hospitalToDelete.id);
-    } catch {}
-
-    const updatedList = hospitals.filter((h) => h.id !== hospitalToDelete.id);
-    setHospitals(updatedList);
-    saveStoredHospitals(updatedList);
-
-    showToast(`Removed "${hospitalToDelete.name}" from active directory`, 'info');
-    setHospitalToDelete(null);
+      await fetchHospitals();
+      window.dispatchEvent(new Event('admin_hospitals_updated'));
+      showToast(`Removed "${hospitalToDelete.name}" from active directory`, 'info');
+      setHospitalToDelete(null);
+    } catch (err: any) {
+      showToast(err?.message || `Failed to delete "${hospitalToDelete.name}"`, 'error');
+    }
   };
 
   // Launch Portal helper
   const handleLaunch = (h: HospitalAdminRecord) => {
-    try {
-      localStorage.setItem('active_hospital_portal', JSON.stringify(h));
-    } catch {}
     if (onLaunchHospitalPortal) {
       onLaunchHospitalPortal(h);
     } else {
-      window.location.href = `/hospital/dashboard?hospitalId=${h.id}`;
+      window.location.href = `/hospital/dashboard?hospitalId=${encodeURIComponent(h.id)}`;
     }
   };
 
@@ -337,7 +313,7 @@ export const AdminHospitalManagementView: React.FC<AdminHospitalManagementViewPr
             <Stethoscope className="w-4 h-4 text-cyan-500" />
           </div>
           <p className="text-2xl font-black text-slate-900 dark:text-white">
-            {hospitals.reduce((acc, h) => acc + (h.activeDoctors || 0), 0)}
+            {allRegisteredUsers.filter((u) => u?.role === 'DOCTOR').length}
           </p>
           <span className="text-[10px] text-cyan-600 dark:text-cyan-400 font-semibold mt-1 inline-block">
             Active verified practitioners
@@ -350,7 +326,7 @@ export const AdminHospitalManagementView: React.FC<AdminHospitalManagementViewPr
             <HeartPulse className="w-4 h-4 text-rose-500" />
           </div>
           <p className="text-2xl font-black text-slate-900 dark:text-white">
-            {hospitals.reduce((acc, h) => acc + (h.activeNurses || 0), 0)}
+            {allRegisteredUsers.filter((u) => u?.role === 'NURSE').length}
           </p>
           <span className="text-[10px] text-rose-600 dark:text-rose-400 font-semibold mt-1 inline-block">
             Across in-patient units
@@ -359,11 +335,11 @@ export const AdminHospitalManagementView: React.FC<AdminHospitalManagementViewPr
 
         <div className="p-4 rounded-2xl bg-white dark:bg-[#0b1120] border border-slate-200 dark:border-slate-800">
           <div className="flex items-center justify-between text-slate-400 mb-2">
-            <span className="text-xs font-bold">Admitted Patients</span>
+            <span className="text-xs font-bold">Registered Patients</span>
             <Users className="w-4 h-4 text-emerald-500" />
           </div>
           <p className="text-2xl font-black text-slate-900 dark:text-white">
-            {hospitals.reduce((acc, h) => acc + (h.activePatients || 0), 0).toLocaleString()}
+            {allRegisteredUsers.filter((u) => u?.role === 'PATIENT').length.toLocaleString()}
           </p>
           <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-semibold mt-1 inline-block">
             Active under care in portal
@@ -461,21 +437,12 @@ export const AdminHospitalManagementView: React.FC<AdminHospitalManagementViewPr
                                 name: h.name,
                                 adminEmail: h.adminEmail,
                               });
-                            } catch {}
-
-                            setHospitals(prev => prev.map(item => {
-                              if (item.id === h.id || item.adminEmail === h.adminEmail || item.name === h.name) {
-                                return { ...item, status: 'Active' as const };
-                              }
-                              return item;
-                            }));
-
-                            // Sync local store as mirror cache
-                            const current = getStoredHospitals();
-                            const updated = current.map(item => (item.id === h.id || item.name === h.name ? { ...item, status: 'Active' as const } : item));
-                            saveStoredHospitals(updated);
-
-                            showToast(`Facility "${h.name}" approved & activated in MySQL!`, 'success');
+                              await fetchHospitals();
+                              window.dispatchEvent(new Event('admin_hospitals_updated'));
+                              showToast(`Facility "${h.name}" approved & activated in MySQL!`, 'success');
+                            } catch (err: any) {
+                              showToast(err?.message || `Failed to approve "${h.name}"`, 'error');
+                            }
                           }}
                           className="px-2.5 py-1 rounded-full bg-emerald-500 hover:bg-emerald-600 text-white font-black text-[10px] shadow-xs cursor-pointer flex items-center gap-1 transition-all active:scale-95"
                           title="Approve Hospital Registration"
@@ -491,21 +458,12 @@ export const AdminHospitalManagementView: React.FC<AdminHospitalManagementViewPr
                                 name: h.name,
                                 adminEmail: h.adminEmail,
                               });
-                            } catch {}
-
-                            setHospitals(prev => prev.map(item => {
-                              if (item.id === h.id || item.adminEmail === h.adminEmail || item.name === h.name) {
-                                return { ...item, status: 'Suspended' as const };
-                              }
-                              return item;
-                            }));
-
-                            // Sync local store as mirror cache
-                            const current = getStoredHospitals();
-                            const updated = current.map(item => (item.id === h.id || item.name === h.name ? { ...item, status: 'Suspended' as const } : item));
-                            saveStoredHospitals(updated);
-
-                            showToast(`Facility "${h.name}" rejected / suspended in MySQL.`, 'error');
+                              await fetchHospitals();
+                              window.dispatchEvent(new Event('admin_hospitals_updated'));
+                              showToast(`Facility "${h.name}" rejected / suspended in MySQL.`, 'error');
+                            } catch (err: any) {
+                              showToast(err?.message || `Failed to suspend "${h.name}"`, 'error');
+                            }
                           }}
                           className="px-2.5 py-1 rounded-full bg-rose-500 hover:bg-rose-600 text-white font-black text-[10px] shadow-xs cursor-pointer flex items-center gap-1 transition-all active:scale-95"
                           title="Reject Hospital Registration"

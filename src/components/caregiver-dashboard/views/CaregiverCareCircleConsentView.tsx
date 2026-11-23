@@ -54,18 +54,15 @@ export const CaregiverCareCircleConsentView: React.FC = () => {
 
   const [isAddMemberOpen, setIsAddMemberOpen] = useState(false);
   const [selectedMember, setSelectedMember] = useState<any | null>(null);
+  const [editAccessLevel, setEditAccessLevel] = useState<string>('Limited Access');
 
-  // Consent Management Demo Controls (Allowed / Restricted) per ward
+  // Persisted Consent Controls (hydrated from MySQL PatientCaregiverLink.consentScopesJson)
   const [consentScopes, setConsentScopes] = useState<Record<string, {
     healthRecords: boolean;
     vitals: boolean;
     appointments: boolean;
     careCoordination: boolean;
-  }>>({
-    'ward-1': { healthRecords: true, vitals: true, appointments: true, careCoordination: true },
-    'ward-2': { healthRecords: true, vitals: true, appointments: true, careCoordination: true },
-    'ward-3': { healthRecords: true, vitals: true, appointments: true, careCoordination: true },
-  });
+  }>>({});
 
   // New member form state
   const [newMember, setNewMember] = useState({ name: '', role: '', email: '', accessLevel: 'Limited Access' });
@@ -103,11 +100,24 @@ export const CaregiverCareCircleConsentView: React.FC = () => {
     try {
       const res = await caregiverApi.getCareCircle(wardId);
       if (res && res.data) {
-        setMembers(res.data.members || []);
+        const fetchedMembers = res.data.members || [];
+        setMembers(fetchedMembers);
         setHistory(res.data.history || []);
         setAccessLogs(res.data.accessLogs || []);
         setConsentStatus(res.data.consentStatus || 'Active');
         setPatientInfo(res.data.patient || null);
+
+        // Hydrate persisted consent scopes from the linked caregiver record
+        const primaryPerms = fetchedMembers[0]?.permissions || {};
+        setConsentScopes((prev) => ({
+          ...prev,
+          [wardId]: {
+            healthRecords: primaryPerms.healthRecords ?? primaryPerms.updates ?? true,
+            vitals: primaryPerms.vitals ?? primaryPerms.observations ?? true,
+            appointments: primaryPerms.appointments ?? true,
+            careCoordination: primaryPerms.careCoordination ?? primaryPerms.meds ?? true,
+          },
+        }));
       }
     } catch (err: any) {
       const status = err?.response?.status;
@@ -172,11 +182,36 @@ export const CaregiverCareCircleConsentView: React.FC = () => {
     }
   };
 
+  // Save edited access level to MySQL
+  const handleSaveMemberAccess = async () => {
+    if (!selectedMember || !activeWardId) return;
+    try {
+      await caregiverApi.addCareCircleMember({
+        patientId: activeWardId,
+        name: selectedMember.name,
+        relationship: selectedMember.role || 'Family Caregiver',
+        email: selectedMember.email || undefined,
+        accessLevel: editAccessLevel,
+      });
+      await caregiverApi.toggleConsentStatus(
+        activeWardId,
+        consentStatus,
+        consentScopes[activeWardId],
+        selectedMember.id
+      );
+      showToast('Access permissions saved to MySQL database.');
+      setSelectedMember(null);
+      await fetchCareCircle(activeWardId);
+    } catch (err: any) {
+      showToast(err?.message || 'Unable to update member access level.');
+    }
+  };
+
   // Toggle Patient Consent Status
   const handleToggleConsent = async () => {
     const nextStatus = consentStatus === 'Active' ? 'Revoked' : 'Active';
     try {
-      await caregiverApi.toggleConsentStatus(activeWardId, nextStatus);
+      await caregiverApi.toggleConsentStatus(activeWardId, nextStatus, consentScopes[activeWardId]);
       setConsentStatus(nextStatus);
       showToast(`Patient consent status updated to ${nextStatus}!`);
       await fetchCareCircle(activeWardId);
@@ -185,18 +220,35 @@ export const CaregiverCareCircleConsentView: React.FC = () => {
     }
   };
 
-  // Toggle individual scope (Demo functionality)
-  const toggleConsentScope = (scopeKey: 'healthRecords' | 'vitals' | 'appointments' | 'careCoordination') => {
-    const currentForWard = consentScopes[activeWardId] || { healthRecords: true, vitals: true, appointments: true, careCoordination: true };
+  // Toggle individual scope and persist to MySQL via caregiverApi.toggleConsentStatus
+  const toggleConsentScope = async (scopeKey: 'healthRecords' | 'vitals' | 'appointments' | 'careCoordination') => {
+    if (!activeWardId) return;
+    const currentForWard = consentScopes[activeWardId] || {
+      healthRecords: true,
+      vitals: true,
+      appointments: true,
+      careCoordination: true,
+    };
     const nextState = !currentForWard[scopeKey];
-    setConsentScopes({
-      ...consentScopes,
-      [activeWardId]: {
-        ...currentForWard,
-        [scopeKey]: nextState
-      }
-    });
-    showToast(`Consent setting for ${scopeKey} updated to ${nextState ? 'Allowed' : 'Restricted'} (Demo Session State)`);
+    const updatedScopes = {
+      ...currentForWard,
+      [scopeKey]: nextState,
+    };
+    setConsentScopes((prev) => ({
+      ...prev,
+      [activeWardId]: updatedScopes,
+    }));
+    try {
+      await caregiverApi.toggleConsentStatus(activeWardId, consentStatus, updatedScopes);
+      showToast(`Consent setting for ${scopeKey} persisted as ${nextState ? 'Allowed' : 'Restricted'}.`);
+      await fetchCareCircle(activeWardId);
+    } catch (err: any) {
+      setConsentScopes((prev) => ({
+        ...prev,
+        [activeWardId]: currentForWard,
+      }));
+      showToast(err?.message || 'Failed to persist consent scope change.');
+    }
   };
 
   const wardsList = dbWards.length > 0 ? dbWards.map((w, idx) => ({
@@ -211,46 +263,39 @@ export const CaregiverCareCircleConsentView: React.FC = () => {
 
   const currentScopes = consentScopes[activeWardId] || { healthRecords: true, vitals: true, appointments: true, careCoordination: true };
 
-  // Fictional audit events tailored per dependent
-  const mockAuditLogs = [
-    {
-      date: 'Today, 10:15 AM',
-      user: 'Anita Sharma (Primary Caregiver)',
-      action: `Viewed ${currentPatientName}'s ABHA Health Records`,
-      permission: 'Proxy Health Locker Sync',
-      status: 'Success'
-    },
-    {
-      date: 'Today, 09:30 AM',
-      user: 'Anita Sharma (Primary Caregiver)',
-      action: `Checked latest biometrics & vitals telemetry for ${currentPatientName}`,
-      permission: 'Vitals Stream',
-      status: 'Success'
-    },
-    {
-      date: 'Yesterday, 04:15 PM',
-      user: 'Anita Sharma (Primary Caregiver)',
-      action: `Viewed appointment details with primary physician`,
-      permission: 'Consultation Record',
-      status: 'Success'
-    },
-    {
-      date: 'Sept 18, 02:00 PM',
-      user: 'Anita Sharma (Primary Caregiver)',
-      action: `Updated daily care task schedule for ${currentPatientName}`,
-      permission: 'Care Coordination',
-      status: 'Success'
-    },
-    {
-      date: 'Sept 15, 11:30 AM',
-      user: 'Anita Sharma (Primary Caregiver)',
-      action: `Viewed home-care booking tracking`,
-      permission: 'Nurse Dispatch',
-      status: 'Success'
-    }
-  ];
+  // Real audit logs strictly from MySQL (accessLogs or audit history)
+  const displayedAccessLogs =
+    accessLogs.length > 0
+      ? accessLogs
+      : history.map((h: any) => ({
+          date: h.date,
+          user: h.user || 'Authorized User',
+          action: h.action,
+          permission: 'Consent / Care Circle',
+          status: 'Success',
+        }));
 
-  const displayedAccessLogs = accessLogs.length > 0 ? accessLogs : mockAuditLogs;
+  // Real authorized sharing entities derived from DB members & ward clinical profile
+  const authorizedEntities = React.useMemo(() => {
+    const list: Array<{ role: string; name: string; status: string; active: boolean }> = [];
+    if (workflowActiveWard?.primaryDoctor?.name && workflowActiveWard.primaryDoctor.name !== '—') {
+      list.push({
+        role: 'Primary Doctor',
+        name: `${workflowActiveWard.primaryDoctor.name}${workflowActiveWard.primaryDoctor.hospital && workflowActiveWard.primaryDoctor.hospital !== '—' ? ` (${workflowActiveWard.primaryDoctor.hospital})` : ''}`,
+        status: 'Authorized (Clinical Consultation Access)',
+        active: consentStatus === 'Active',
+      });
+    }
+    members.forEach((m) => {
+      list.push({
+        role: m.role || 'Care Circle Member',
+        name: m.name,
+        status: `${m.status === 'Active' ? 'Authorized' : 'Revoked'} (${m.accessLevel})`,
+        active: m.status === 'Active',
+      });
+    });
+    return list;
+  }, [members, workflowActiveWard, consentStatus]);
 
   return (
     <div className="space-y-6 pb-12 select-none">
@@ -356,12 +401,23 @@ export const CaregiverCareCircleConsentView: React.FC = () => {
                 </p>
               </div>
 
-              <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-900/50 border border-slate-100 dark:border-slate-800 text-xs font-bold text-slate-700 dark:text-slate-300 shrink-0">
-                <p className="text-[10px] text-slate-400 uppercase font-bold mb-1">{t('caregiver.consent.status_title', 'Consent Status')}</p>
+              <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-900/50 border border-slate-100 dark:border-slate-800 text-xs font-bold text-slate-700 dark:text-slate-300 shrink-0 flex flex-col gap-2">
+                <p className="text-[10px] text-slate-400 uppercase font-bold">{t('caregiver.consent.status_title', 'Consent Status')}</p>
                 <div className={`flex items-center gap-1.5 text-xs font-black ${consentStatus === 'Active' ? 'text-emerald-600 dark:text-teal-400' : 'text-rose-600 dark:text-rose-400'}`}>
                   {consentStatus === 'Active' ? <CheckCircle2 className="w-4 h-4" /> : <X className="w-4 h-4" />}
                   <span>{consentStatus === 'Active' ? t('caregiver.consent.active_consent', 'Active Consent Granted') : t('caregiver.consent.revoked_consent', 'Consent Revoked')}</span>
                 </div>
+                <button
+                  type="button"
+                  onClick={handleToggleConsent}
+                  className={`px-3 py-1.5 rounded-xl text-[11px] font-black transition-all cursor-pointer ${
+                    consentStatus === 'Active'
+                      ? 'bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-500/20 hover:bg-rose-500/20'
+                      : 'bg-emerald-500 text-slate-950 hover:bg-emerald-400'
+                  }`}
+                >
+                  {consentStatus === 'Active' ? 'Revoke Consent' : 'Restore Consent'}
+                </button>
               </div>
             </div>
           </div>
@@ -450,9 +506,9 @@ export const CaregiverCareCircleConsentView: React.FC = () => {
               })}
             </div>
 
-            <div className="mt-6 p-4 rounded-2xl bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-900/40 flex items-start gap-3 text-xs text-amber-800 dark:text-amber-300 font-medium">
-              <Info className="w-4 h-4 shrink-0 mt-0.5 text-amber-600" />
-              <p>{t('caregiver.sec.demo_disclaimer', 'Demo Functionality: Toggling consent controls updates active session proxy settings for demonstration without altering server auth policies.')}</p>
+            <div className="mt-6 p-4 rounded-2xl bg-emerald-50 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-900/40 flex items-start gap-3 text-xs text-emerald-800 dark:text-emerald-300 font-medium">
+              <Info className="w-4 h-4 shrink-0 mt-0.5 text-emerald-600" />
+              <p>Consent scope changes are persisted immediately to the MySQL consent registry and recorded in the audit log.</p>
             </div>
           </div>
         </div>
@@ -506,7 +562,10 @@ export const CaregiverCareCircleConsentView: React.FC = () => {
                     </div>
 
                     <button 
-                      onClick={() => setSelectedMember(member)}
+                      onClick={() => {
+                        setSelectedMember(member);
+                        setEditAccessLevel(member.accessLevel || 'Limited Access');
+                      }}
                       className="px-3.5 py-1.5 rounded-xl text-xs font-black bg-white dark:bg-[#0b1120] border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors shadow-sm self-start sm:self-auto"
                     >
                       {t('caregiver.common.edit', 'Edit Access')}
@@ -517,7 +576,7 @@ export const CaregiverCareCircleConsentView: React.FC = () => {
             </div>
           </div>
 
-          {/* AUTHORIZED DATA SHARING MATRIX */}
+          {/* AUTHORIZED DATA SHARING MATRIX (DERIVED FROM REAL DB CARE CIRCLE & WARD PROFILE) */}
           <div className="bg-white dark:bg-[#0b1120] rounded-3xl p-6 border border-slate-200 dark:border-slate-800 shadow-sm">
             <h3 className="text-sm font-black text-slate-900 dark:text-white mb-1 flex items-center gap-2">
               <Building2 className="w-4 h-4 text-teal-600 dark:text-cyan-400" />
@@ -527,25 +586,30 @@ export const CaregiverCareCircleConsentView: React.FC = () => {
               {t('caregiver.sec.sharing_desc', 'Entities currently authorized to view or manage care records for')} {currentPatientName}.
             </p>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {[
-                { role: 'Primary Doctor', name: 'Dr. Rajesh Varma (Apollo Cardiology)', status: 'Authorized (Full Medical Access)' },
-                { role: 'Home Care Nurse', name: 'Sister Sarah (Verified Nurse)', status: 'Authorized (Daily Care Log & Vitals)' },
-                { role: 'Family Caregiver', name: 'Anita Sharma (Primary Guardian)', status: 'Authorized (Full Legal Proxy)' },
-                { role: 'Healthcare Provider', name: 'Apollo Central Health City', status: 'Authorized (E-Prescription & Lab Sync)' },
-              ].map((entity, idx) => (
-                <div key={idx} className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-900/50 border border-slate-100 dark:border-slate-800 flex items-center justify-between gap-3">
-                  <div>
-                    <span className="text-[10px] font-black uppercase text-teal-600 dark:text-cyan-400">{entity.role}</span>
-                    <h4 className="text-xs font-black text-slate-900 dark:text-white mt-0.5">{getLocalizedName(entity.name, t)}</h4>
-                    <p className="text-[10px] text-slate-500 font-medium mt-1">{entity.status}</p>
+            {authorizedEntities.length === 0 ? (
+              <div className="p-6 rounded-2xl bg-slate-50 dark:bg-slate-900/50 border border-slate-100 dark:border-slate-800 text-center text-xs font-bold text-slate-500">
+                No authorized sharing entities linked yet. Add Care Circle members above to grant access.
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {authorizedEntities.map((entity, idx) => (
+                  <div key={idx} className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-900/50 border border-slate-100 dark:border-slate-800 flex items-center justify-between gap-3">
+                    <div>
+                      <span className="text-[10px] font-black uppercase text-teal-600 dark:text-cyan-400">{entity.role}</span>
+                      <h4 className="text-xs font-black text-slate-900 dark:text-white mt-0.5">{getLocalizedName(entity.name, t)}</h4>
+                      <p className="text-[10px] text-slate-500 font-medium mt-1">{entity.status}</p>
+                    </div>
+                    <span className={`text-[10px] font-black px-2.5 py-1 rounded border shrink-0 ${
+                      entity.active
+                        ? 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-400'
+                        : 'bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-900/30 dark:text-rose-400'
+                    }`}>
+                      {entity.active ? 'Active' : 'Revoked'}
+                    </span>
                   </div>
-                  <span className="text-[10px] font-black px-2.5 py-1 rounded bg-emerald-50 text-emerald-700 border border-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-400 shrink-0">
-                    Active
-                  </span>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -575,19 +639,27 @@ export const CaregiverCareCircleConsentView: React.FC = () => {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60">
-                {displayedAccessLogs.map((log: any, i: number) => (
-                  <tr key={i} className="text-slate-700 dark:text-slate-300">
-                    <td className="py-3 whitespace-nowrap text-[11px] font-semibold text-slate-500">{log.date}</td>
-                    <td className="py-3 font-bold text-slate-900 dark:text-white">{getLocalizedName(log.user, t)}</td>
-                    <td className="py-3 font-medium text-slate-800 dark:text-slate-200">{log.action}</td>
-                    <td className="py-3 text-[11px] font-semibold text-slate-500">{log.permission}</td>
-                    <td className="py-3">
-                      <span className="px-2 py-0.5 rounded text-[10px] font-black bg-emerald-50 text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800">
-                        {log.status === 'Success' ? t('caregiver.common.success', 'Success') : log.status}
-                      </span>
+                {displayedAccessLogs.length === 0 ? (
+                  <tr>
+                    <td colSpan={5} className="py-8 text-center text-xs font-bold text-slate-400">
+                      No audit events recorded yet for this dependent.
                     </td>
                   </tr>
-                ))}
+                ) : (
+                  displayedAccessLogs.map((log: any, i: number) => (
+                    <tr key={i} className="text-slate-700 dark:text-slate-300">
+                      <td className="py-3 whitespace-nowrap text-[11px] font-semibold text-slate-500">{log.date}</td>
+                      <td className="py-3 font-bold text-slate-900 dark:text-white">{getLocalizedName(log.user, t)}</td>
+                      <td className="py-3 font-medium text-slate-800 dark:text-slate-200">{log.action}</td>
+                      <td className="py-3 text-[11px] font-semibold text-slate-500">{log.permission}</td>
+                      <td className="py-3">
+                        <span className="px-2 py-0.5 rounded text-[10px] font-black bg-emerald-50 text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800">
+                          {log.status === 'Success' ? t('caregiver.common.success', 'Success') : log.status}
+                        </span>
+                      </td>
+                    </tr>
+                  ))
+                )}
               </tbody>
             </table>
           </div>
@@ -681,7 +753,8 @@ export const CaregiverCareCircleConsentView: React.FC = () => {
                 <div>
                   <label className="text-slate-500 uppercase text-[10px] block mb-1">Access Level</label>
                   <select 
-                    defaultValue={selectedMember.accessLevel}
+                    value={editAccessLevel}
+                    onChange={(e) => setEditAccessLevel(e.target.value)}
                     className="w-full h-10 px-3 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-bold text-slate-900 dark:text-white"
                   >
                     <option value="Full Legal Guardian">Full Legal Guardian</option>
@@ -695,16 +768,13 @@ export const CaregiverCareCircleConsentView: React.FC = () => {
               <div className="p-4 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/80 flex justify-between gap-3">
                 <button
                   onClick={() => handleRemoveMember(selectedMember.id)}
-                  className="px-4 py-2 rounded-xl bg-rose-50 text-rose-600 border border-rose-200 dark:bg-rose-900/30 dark:border-rose-800 dark:text-rose-400 font-black text-xs"
+                  className="px-4 py-2 rounded-xl bg-rose-50 text-rose-600 border border-rose-200 dark:bg-rose-900/30 dark:border-rose-800 dark:text-rose-400 font-black text-xs cursor-pointer"
                 >
                   {t('caregiver.consent.remove_member', 'Remove Member')}
                 </button>
                 <button
-                  onClick={() => {
-                    showToast('Access permissions updated.');
-                    setSelectedMember(null);
-                  }}
-                  className="px-5 py-2 rounded-xl bg-teal-500 hover:bg-teal-400 text-slate-950 font-black text-xs shadow-md shadow-teal-500/20"
+                  onClick={handleSaveMemberAccess}
+                  className="px-5 py-2 rounded-xl bg-teal-500 hover:bg-teal-400 text-slate-950 font-black text-xs shadow-md shadow-teal-500/20 cursor-pointer"
                 >
                   {t('caregiver.common.save', 'Save')}
                 </button>

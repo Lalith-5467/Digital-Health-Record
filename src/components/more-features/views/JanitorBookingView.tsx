@@ -1,9 +1,10 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { patientExtendedApi, profileApi } from '../../../services/dhrApis';
 import { motion, AnimatePresence } from 'framer-motion';
-import { 
-  Brush, 
-  Sparkles, 
-  ShieldCheck, 
+import {
+  Brush,
+  Sparkles,
+  ShieldCheck,
   CheckCircle2,
   CalendarPlus,
   Clock,
@@ -17,17 +18,79 @@ export const JanitorBookingView: React.FC = () => {
   const [isBookingModalOpen, setIsBookingModalOpen] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [selectedService, setSelectedService] = useState('Deep Sanitization');
+  const [preferredDate, setPreferredDate] = useState(() => {
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    return tomorrow.toISOString().split('T')[0];
+  });
+  const [preferredTime, setPreferredTime] = useState('10:00 AM');
+  const [areaDetails, setAreaDetails] = useState('');
+  const [serviceAddress, setServiceAddress] = useState('');
+  const [submitting, setSubmitting] = useState(false);
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
     setTimeout(() => setToastMessage(null), 3000);
   };
 
-  const handleBookService = (e: React.FormEvent) => {
-    e.preventDefault();
-    setIsBookingModalOpen(false);
-    showToast(`${selectedService} requested successfully!`);
+  const [bookings, setBookings] = useState<any[]>([]);
+
+  const loadBookings = async () => {
+    try {
+      const res = await patientExtendedApi.getSanitationBookings();
+      if (res?.data && Array.isArray(res.data)) setBookings(res.data);
+    } catch {
+      setBookings([]);
+    }
   };
+
+  useEffect(() => {
+    loadBookings();
+    profileApi
+      .getPatientProfile()
+      .then((res) => {
+        if (res?.data?.address) setServiceAddress(res.data.address);
+      })
+      .catch(() => {});
+  }, []);
+
+  const handleBookService = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (submitting) return;
+    setSubmitting(true);
+    try {
+      await patientExtendedApi.createSanitationBooking({
+        serviceType: selectedService,
+        packageName: selectedService,
+        scheduledDate: preferredDate || new Date().toISOString(),
+        scheduledTime: preferredTime,
+        address: serviceAddress.trim() || 'Registered Residence',
+        notes: areaDetails.trim() || undefined,
+      });
+      await loadBookings();
+      setIsBookingModalOpen(false);
+      setAreaDetails('');
+      showToast(`${selectedService} booking saved to database!`);
+    } catch {
+      showToast('Failed to submit sanitation booking');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleCancelBooking = async (id: string) => {
+    try {
+      await patientExtendedApi.updateSanitationBooking(id, { status: 'Cancelled' });
+      await loadBookings();
+      showToast('Sanitation booking cancelled');
+    } catch {
+      showToast('Failed to cancel booking');
+    }
+  };
+
+  const activeBookingsCount = bookings.filter(
+    (b) => String(b.status || '').toLowerCase() !== 'cancelled' && String(b.status || '').toLowerCase() !== 'completed'
+  ).length;
 
   const openBookingModal = (service: string) => {
     setSelectedService(service);
@@ -58,13 +121,13 @@ export const JanitorBookingView: React.FC = () => {
       </div>
 
       {/* 1. HERO CARD */}
-      <motion.div 
+      <motion.div
         initial={{ opacity: 0, y: 15 }}
         animate={{ opacity: 1, y: 0 }}
         className="bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl rounded-3xl p-6 sm:p-8 border border-slate-200 dark:border-white/10 shadow-lg flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 relative overflow-hidden ring-1 ring-inset ring-white/50 dark:ring-white/5"
       >
         <div className="absolute top-0 right-0 w-64 h-64 bg-amber-400/10 dark:bg-amber-500/10 blur-3xl rounded-full pointer-events-none"></div>
-        
+
         <div className="flex gap-4 relative z-10">
           <div className="hidden sm:flex shrink-0 p-3 bg-gradient-to-br from-amber-50 to-amber-100/50 dark:from-amber-900/20 dark:to-amber-800/10 rounded-2xl border border-amber-100 dark:border-amber-800/30 items-center justify-center">
             <Brush className="w-8 h-8 text-amber-600 dark:text-amber-400 drop-shadow-sm" />
@@ -81,8 +144,8 @@ export const JanitorBookingView: React.FC = () => {
             </div>
           </div>
         </div>
-        
-        <motion.button 
+
+        <motion.button
           whileHover={{ y: -2, scale: 1.02 }}
           whileTap={{ scale: 0.98 }}
           onClick={() => openBookingModal('Deep Sanitization')}
@@ -95,16 +158,16 @@ export const JanitorBookingView: React.FC = () => {
       </motion.div>
 
       {/* 2. QUICK HEALTH STATS */}
-      <motion.div 
+      <motion.div
         initial={{ opacity: 0, y: 15 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ delay: 0.1 }}
         className="grid grid-cols-2 lg:grid-cols-4 gap-4"
       >
         {[
-          { label: 'Active Requests', value: '0', icon: Clock, color: 'text-amber-600 dark:text-amber-400', bg: 'bg-amber-50 dark:bg-amber-900/10' },
-          { label: 'Avg Rating', value: '4.9', icon: ThumbsUp, color: 'text-emerald-600 dark:text-emerald-400', bg: 'bg-emerald-50 dark:bg-emerald-900/10' },
-          { label: 'Certified Staff', value: '45+', icon: ShieldCheck, color: 'text-blue-600 dark:text-blue-400', bg: 'bg-blue-50 dark:bg-blue-900/10' },
+          { label: 'Active Requests', value: String(activeBookingsCount), icon: Clock, color: 'text-amber-600 dark:text-amber-400', bg: 'bg-amber-50 dark:bg-amber-900/10' },
+          { label: 'Total Bookings', value: String(bookings.length), icon: ThumbsUp, color: 'text-emerald-600 dark:text-emerald-400', bg: 'bg-emerald-50 dark:bg-emerald-900/10' },
+          { label: 'Certified Staff', value: 'Verified', icon: ShieldCheck, color: 'text-blue-600 dark:text-blue-400', bg: 'bg-blue-50 dark:bg-blue-900/10' },
           { label: 'Service Types', value: '3', icon: Brush, color: 'text-purple-600 dark:text-purple-400', bg: 'bg-purple-50 dark:bg-purple-900/10' }
         ].map((stat, i) => (
           <div key={i} className="bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl p-4 rounded-2xl border border-slate-200 dark:border-white/10 shadow-sm flex items-center gap-4 hover:shadow-lg transition-all duration-300 hover:-translate-y-1 ring-1 ring-inset ring-white/50 dark:ring-white/5 hover:bg-white dark:hover:bg-slate-800/60">
@@ -125,11 +188,11 @@ export const JanitorBookingView: React.FC = () => {
           <Sparkles className="w-5 h-5 text-amber-500" />
           Service Packages
         </h2>
-        
+
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          
+
           {/* Package 1 */}
-          <motion.div 
+          <motion.div
             initial={{ opacity: 0, y: 15 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.2 }}
@@ -165,7 +228,7 @@ export const JanitorBookingView: React.FC = () => {
                 </li>
               </ul>
             </div>
-            <button 
+            <button
               onClick={() => openBookingModal('Deep Sanitization')}
               className="w-full py-3.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-900 dark:text-white font-black rounded-xl transition-colors group-hover:bg-amber-50 dark:group-hover:bg-amber-900/20 group-hover:text-amber-600 dark:group-hover:text-amber-400"
             >
@@ -174,7 +237,7 @@ export const JanitorBookingView: React.FC = () => {
           </motion.div>
 
           {/* Package 2 (Popular) */}
-          <motion.div 
+          <motion.div
             initial={{ opacity: 0, y: 15 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.25 }}
@@ -213,7 +276,7 @@ export const JanitorBookingView: React.FC = () => {
                 </li>
               </ul>
             </div>
-            <button 
+            <button
               onClick={() => openBookingModal('Equipment Cleaning')}
               className="w-full py-3.5 bg-gradient-to-b from-blue-500 to-blue-600 hover:from-blue-400 hover:to-blue-500 text-slate-900 dark:text-white font-black rounded-xl transition-all shadow-[0_4px_14px_0_rgba(59,130,246,0.39)] hover:shadow-[0_6px_20px_rgba(59,130,246,0.23)]"
             >
@@ -222,7 +285,7 @@ export const JanitorBookingView: React.FC = () => {
           </motion.div>
 
           {/* Package 3 */}
-          <motion.div 
+          <motion.div
             initial={{ opacity: 0, y: 15 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.3 }}
@@ -258,7 +321,7 @@ export const JanitorBookingView: React.FC = () => {
                 </li>
               </ul>
             </div>
-            <button 
+            <button
               onClick={() => openBookingModal('Routine Hygiene')}
               className="w-full py-3.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-900 dark:text-white font-black rounded-xl transition-colors group-hover:bg-slate-200 dark:group-hover:bg-slate-600"
             >
@@ -269,8 +332,76 @@ export const JanitorBookingView: React.FC = () => {
         </div>
       </section>
 
+      {/* 3.5 MY SANITATION BOOKINGS (PERSISTED IN MYSQL) */}
+      <section className="space-y-4">
+        <div className="flex items-center justify-between px-1">
+          <h2 className="text-base font-black text-slate-900 dark:text-white uppercase tracking-wider flex items-center gap-2">
+            <Clock className="w-5 h-5 text-amber-500" />
+            My Scheduled Sanitation Bookings ({bookings.length})
+          </h2>
+        </div>
+
+        {bookings.length === 0 ? (
+          <div className="bg-white/80 dark:bg-slate-900/40 backdrop-blur-xl rounded-3xl p-8 border border-slate-200 dark:border-white/10 text-center text-sm text-slate-500 dark:text-slate-400 font-medium">
+            No sanitation bookings yet. Select a service package above to schedule medical-grade home sanitization.
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {bookings.map((b) => {
+              const dt = b.scheduledDate
+                ? new Date(b.scheduledDate).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
+                : 'Scheduled';
+              const isCancelled = String(b.status || '').toLowerCase() === 'cancelled';
+              return (
+                <div
+                  key={b.id}
+                  className="bg-white/90 dark:bg-slate-900/60 p-5 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-3 flex flex-col justify-between"
+                >
+                  <div className="space-y-2">
+                    <div className="flex items-start justify-between gap-2">
+                      <h3 className="font-black text-slate-900 dark:text-white text-sm">{b.serviceType}</h3>
+                      <span
+                        className={`px-2.5 py-0.5 rounded-lg text-[10px] font-black uppercase tracking-wider ${
+                          isCancelled
+                            ? 'bg-rose-100 text-rose-700 dark:bg-rose-900/30 dark:text-rose-400'
+                            : 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400'
+                        }`}
+                      >
+                        {b.status || 'Scheduled'}
+                      </span>
+                    </div>
+                    <p className="text-xs font-bold text-amber-600 dark:text-amber-400">
+                      {dt} · {b.scheduledTime || '10:00 AM'}
+                    </p>
+                    <p className="text-xs text-slate-600 dark:text-slate-400">
+                      <strong className="text-slate-800 dark:text-slate-200">Address:</strong> {b.address}
+                    </p>
+                    {b.notes && (
+                      <p className="text-xs text-slate-500 dark:text-slate-400">
+                        <strong className="text-slate-700 dark:text-slate-300">Details:</strong> {b.notes}
+                      </p>
+                    )}
+                  </div>
+                  {!isCancelled && String(b.status || '').toLowerCase() !== 'completed' && (
+                    <div className="pt-2 border-t border-slate-100 dark:border-slate-800 flex justify-end">
+                      <button
+                        type="button"
+                        onClick={() => handleCancelBooking(b.id)}
+                        className="text-xs font-bold text-rose-600 hover:text-rose-700 dark:text-rose-400 cursor-pointer"
+                      >
+                        Cancel Request
+                      </button>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </section>
+
       {/* 4. HEALTH INSIGHTS */}
-      <motion.section 
+      <motion.section
         initial={{ opacity: 0, y: 15 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ delay: 0.4 }}
@@ -311,19 +442,19 @@ export const JanitorBookingView: React.FC = () => {
                   <Brush className="w-5 h-5 text-amber-500" />
                   Request Cleaning
                 </h2>
-                <button 
+                <button
                   onClick={() => setIsBookingModalOpen(false)}
                   className="p-2 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-full text-slate-500 transition-colors"
                 >
                   <X className="w-5 h-5" />
                 </button>
               </div>
-              
+
               <form onSubmit={handleBookService} className="p-6 space-y-5">
                 <div className="space-y-2 relative group">
                   <label className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Package Selected</label>
                   <div className="relative">
-                    <select 
+                    <select
                       value={selectedService}
                       onChange={(e) => setSelectedService(e.target.value)}
                       className="w-full bg-white dark:bg-slate-800 border-2 border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 outline-none focus:border-amber-500 dark:focus:border-amber-500 transition-all dark:text-white font-bold appearance-none cursor-pointer"
@@ -336,30 +467,64 @@ export const JanitorBookingView: React.FC = () => {
                   </div>
                 </div>
 
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Preferred Date</label>
+                    <input
+                      type="date"
+                      value={preferredDate}
+                      onChange={(e) => setPreferredDate(e.target.value)}
+                      min={new Date().toISOString().split('T')[0]}
+                      className="w-full bg-white dark:bg-slate-800 border-2 border-slate-200 dark:border-slate-700 rounded-xl px-3 py-3 outline-none focus:border-amber-500 dark:focus:border-amber-500 transition-all dark:text-white font-bold"
+                      required
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Time Slot</label>
+                    <select
+                      value={preferredTime}
+                      onChange={(e) => setPreferredTime(e.target.value)}
+                      className="w-full bg-white dark:bg-slate-800 border-2 border-slate-200 dark:border-slate-700 rounded-xl px-3 py-3 outline-none focus:border-amber-500 dark:focus:border-amber-500 transition-all dark:text-white font-bold"
+                    >
+                      <option value="09:00 AM">09:00 AM</option>
+                      <option value="10:00 AM">10:00 AM</option>
+                      <option value="12:00 PM">12:00 PM</option>
+                      <option value="02:00 PM">02:00 PM</option>
+                      <option value="04:00 PM">04:00 PM</option>
+                    </select>
+                  </div>
+                </div>
+
                 <div className="space-y-2">
-                  <label className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Preferred Date</label>
-                  <input 
-                    type="date" 
-                    className="w-full bg-white dark:bg-slate-800 border-2 border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 outline-none focus:border-amber-500 dark:focus:border-amber-500 transition-all dark:text-white font-bold" 
-                    required 
+                  <label className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Service Address</label>
+                  <input
+                    type="text"
+                    value={serviceAddress}
+                    onChange={(e) => setServiceAddress(e.target.value)}
+                    placeholder="Enter door no, street, city..."
+                    className="w-full bg-white dark:bg-slate-800 border-2 border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 outline-none focus:border-amber-500 dark:focus:border-amber-500 transition-all dark:text-white font-medium"
+                    required
                   />
                 </div>
-                
+
                 <div className="space-y-2">
                   <label className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Area / Equipment Details</label>
-                  <textarea 
-                    rows={2} 
+                  <textarea
+                    rows={2}
+                    value={areaDetails}
+                    onChange={(e) => setAreaDetails(e.target.value)}
                     className="w-full bg-white dark:bg-slate-800 border-2 border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 outline-none focus:border-amber-500 dark:focus:border-amber-500 transition-all dark:text-white font-medium resize-none"
                     placeholder="e.g., 2 bedrooms and oxygen concentrator..."
                     required
                   ></textarea>
                 </div>
 
-                <button 
+                <button
                   type="submit"
-                  className="w-full bg-gradient-to-b from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-900 dark:text-white font-black py-4 rounded-xl transition-all mt-2 shadow-[0_4px_14px_0_rgba(245,158,11,0.39)] hover:shadow-[0_6px_20px_rgba(245,158,11,0.23)] border border-amber-400/50"
+                  disabled={submitting}
+                  className="w-full bg-gradient-to-b from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-900 dark:text-white font-black py-4 rounded-xl transition-all mt-2 shadow-[0_4px_14px_0_rgba(245,158,11,0.39)] hover:shadow-[0_6px_20px_rgba(245,158,11,0.23)] border border-amber-400/50 disabled:opacity-60"
                 >
-                  Confirm Request
+                  {submitting ? 'Submitting Request...' : 'Confirm Request'}
                 </button>
               </form>
             </motion.div>

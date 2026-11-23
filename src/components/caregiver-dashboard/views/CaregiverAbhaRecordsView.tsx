@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
   FileText,
@@ -25,14 +25,118 @@ import {
   getLocalizedRecordType, 
   getLocalizedRelationship 
 } from '../../../utils/caregiverDataTranslator';
-import { MOCK_ABHA_DEPENDENTS, type AbhaDependentProfile, type AbhaRecordItem } from '../../../mocks/caregiverAbhaRecordsMock';
+import { type AbhaDependentProfile, type AbhaRecordItem } from '../../../mocks/caregiverAbhaRecordsMock';
+import { useCaregiverWorkflow } from '../../../utils/caregiverWorkflowStorage';
+import { caregiverApi } from '../../../services/dhrApis';
 
 export const CaregiverAbhaRecordsView: React.FC = () => {
   const { t } = useLanguage();
+  const { wards } = useCaregiverWorkflow();
+  const [wardRecordsMap, setWardRecordsMap] = useState<Record<string, AbhaRecordItem[]>>({});
 
-  // Dependents list from isolated mock data (Arun Raj default)
-  const dependents = MOCK_ABHA_DEPENDENTS;
-  const [selectedDepId, setSelectedDepId] = useState<string>('dep-arun-raj');
+  const dependents: AbhaDependentProfile[] = useMemo(() => {
+    if (!wards || wards.length === 0) {
+      return [{
+        id: 'empty',
+        name: 'No Dependent Linked',
+        abhaId: '—',
+        age: 0,
+        gender: 'Other',
+        bloodGroup: '—',
+        relationship: 'Dependent',
+        lastUpdated: 'Live',
+        recordStatus: 'Synced',
+        allergies: [],
+        medicalHistory: [],
+        currentMedications: [],
+        records: [],
+      } as any];
+    }
+    return wards.map((w) => ({
+      id: w.id,
+      name: w.name,
+      abhaId: w.abhaId || '—',
+      age: w.age || 0,
+      gender: w.gender || 'Other',
+      bloodGroup: w.bloodGroup || '—',
+      relationship: w.relationship || 'Dependent',
+      lastUpdated: 'Live MySQL Sync',
+      recordStatus: 'Synced',
+      allergies: w.allergies || [],
+      medicalHistory: w.primaryCondition ? [w.primaryCondition] : [],
+      currentMedications: (w.medications || []).map((m) => `${m.name} ${m.dosage}`),
+      records: wardRecordsMap[w.id] || [],
+    } as any));
+  }, [wards, wardRecordsMap]);
+
+  const [selectedDepId, setSelectedDepId] = useState<string>('');
+  const [lastSyncedAt, setLastSyncedAt] = useState<string>('');
+
+  useEffect(() => {
+    if (dependents.length > 0 && (!selectedDepId || !dependents.some((d) => d.id === selectedDepId))) {
+      setSelectedDepId(dependents[0].id);
+    }
+  }, [dependents, selectedDepId]);
+
+  const activeDependent: AbhaDependentProfile = useMemo(() => {
+    return dependents.find((d) => d.id === selectedDepId) || dependents[0];
+  }, [selectedDepId, dependents]);
+
+  const loadWardRecords = async (patientId: string) => {
+    if (!patientId || patientId === 'empty') return;
+    const res = await caregiverApi.getWardRecords(patientId);
+    const data = res?.data;
+    if (!data) return;
+    const items: AbhaRecordItem[] = [
+      ...(data.medicalRecords || []).map((r: any) => ({
+        id: r.id,
+        category:
+          r.type === 'LAB_REPORT'
+            ? 'Lab Reports'
+            : r.type === 'VACCINATION'
+            ? 'Vaccinations'
+            : r.type === 'PRESCRIPTION'
+            ? 'Prescriptions'
+            : 'Consultations',
+        title: r.title,
+        type: r.type || 'Medical Record',
+        date: r.recordDate ? new Date(r.recordDate).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : '—',
+        provider: r.doctorName || 'Attending Physician',
+        facility: r.hospital || 'Registered Facility',
+        diagnosis: r.category || '',
+        summary: r.notes || '',
+        notes: r.notes || '',
+        status: r.status || 'Verified',
+      })),
+      ...(data.prescriptions || []).map((rx: any) => ({
+        id: `rx-${rx.id}`,
+        category: 'Prescriptions',
+        title: rx.diagnosis || 'Clinical Prescription',
+        type: 'Prescription',
+        date: rx.issuedAt ? new Date(rx.issuedAt).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : '—',
+        provider: rx.doctor?.fullName || 'Attending Physician',
+        facility: rx.clinicName || 'Registered Clinic',
+        diagnosis: rx.diagnosis || '',
+        summary: rx.notes || '',
+        notes: rx.notes || '',
+        status: rx.status || 'Active',
+        medications: (rx.items || []).map((it: any) => ({
+          medicineName: it.medicineName,
+          dosage: it.dosage,
+          frequency: it.frequency,
+          duration: `${it.durationDays || 5} days`,
+        })),
+      })),
+    ];
+    setWardRecordsMap((prev) => ({ ...prev, [patientId]: items }));
+    setLastSyncedAt(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
+  };
+
+  useEffect(() => {
+    if (activeDependent?.id && activeDependent.id !== 'empty') {
+      loadWardRecords(activeDependent.id).catch(() => {});
+    }
+  }, [activeDependent?.id]);
 
   const [activeTab, setActiveTab] = useState<string>('All Records');
   const [searchQuery, setSearchQuery] = useState('');
@@ -40,11 +144,6 @@ export const CaregiverAbhaRecordsView: React.FC = () => {
   const [isFullViewOpen, setIsFullViewOpen] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
-
-  // Active dependent profile object
-  const activeDependent: AbhaDependentProfile = useMemo(() => {
-    return dependents.find(d => d.id === selectedDepId) || dependents[0];
-  }, [selectedDepId, dependents]);
 
   const TABS = [
     { id: 'All Records', label: t('caregiver.records.filter_all', 'All Records') },
@@ -75,13 +174,22 @@ export const CaregiverAbhaRecordsView: React.FC = () => {
     });
   }, [activeDependent, activeTab, searchQuery, t]);
 
-  const handleSync = () => {
-    setIsSyncing(true);
-    setTimeout(() => {
-      setIsSyncing(false);
-      setToastMsg('ABHA Records synchronized with ABDM Health Locker');
+  const handleSync = async () => {
+    if (!activeDependent?.id || activeDependent.id === 'empty') {
+      setToastMsg('No dependent linked to sync records.');
       setTimeout(() => setToastMsg(null), 3000);
-    }, 1000);
+      return;
+    }
+    setIsSyncing(true);
+    try {
+      await loadWardRecords(activeDependent.id);
+      setToastMsg('ABHA Records synchronized from MySQL Health Vault.');
+    } catch (err: any) {
+      setToastMsg(err?.message || 'Unable to synchronize records from server.');
+    } finally {
+      setIsSyncing(false);
+      setTimeout(() => setToastMsg(null), 3000);
+    }
   };
 
   const handleDownload = (recordToDownload?: AbhaRecordItem | null) => {
@@ -116,7 +224,7 @@ ${target.summary}
 ${target.diagnosis ? `Diagnosis: ${target.diagnosis}\n` : ''}
 ${target.notes ? `Clinical Notes: ${target.notes}\n` : ''}
 
-- Document Verification Code: ABHA-MOCK-${Math.floor(100000 + Math.random() * 900000)}
+- Document Record ID: ${target.id}
 - Generated on: ${new Date().toLocaleString('en-GB')}
 Official Digital Health Record generated via MediCare Healthcare System.
 ================================================================================`;
@@ -165,9 +273,9 @@ Official Digital Health Record generated via MediCare Healthcare System.
               <span>{t('caregiver.records.title', 'ABHA Health Records')}</span>
             </h1>
 
-            {/* PRIVACY INDICATOR BANNER */}
-            <span className="px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider bg-amber-500/10 text-amber-700 dark:text-amber-400 border border-amber-500/20 shrink-0">
-              {t('caregiver.records.mock_privacy_notice', 'Mock Health Records • For demonstration purposes only')}
+            {/* LIVE SYNC INDICATOR BANNER */}
+            <span className="px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-500/20 shrink-0">
+              {lastSyncedAt ? `ABDM Vault Synced • ${lastSyncedAt}` : 'ABDM Live Health Vault'}
             </span>
           </div>
           <p className="text-xs text-slate-500 dark:text-slate-400 font-medium mt-1">
@@ -410,12 +518,8 @@ Official Digital Health Record generated via MediCare Healthcare System.
                 </span>
               </div>
               <div className="flex justify-between items-center">
-                <span className="text-slate-500 font-bold">{t('caregiver.records.access_granted', 'Access Granted')}</span>
-                <span className="font-bold text-slate-900 dark:text-white">28 Aug 2026</span>
-              </div>
-              <div className="flex justify-between items-center">
-                <span className="text-slate-500 font-bold">{t('caregiver.records.access_expires', 'Access Expires')}</span>
-                <span className="font-bold text-slate-900 dark:text-white">28 Aug 2027</span>
+                <span className="text-slate-500 font-bold">{t('caregiver.records.last_synced', 'Last Synced')}</span>
+                <span className="font-bold text-slate-900 dark:text-white">{lastSyncedAt || 'Live'}</span>
               </div>
               <div className="flex justify-between items-center">
                 <span className="text-slate-500 font-bold">{t('caregiver.records.source', 'Source')}</span>

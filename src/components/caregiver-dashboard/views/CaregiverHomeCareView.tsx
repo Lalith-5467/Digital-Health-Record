@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useCallback, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
   HeartHandshake, 
@@ -10,25 +10,48 @@ import {
   Search, 
   Filter, 
   Calendar, 
-  ShieldCheck, 
   Truck, 
   UserCheck, 
   FileText, 
   X, 
   Activity,
-  CheckCircle,
-  AlertCircle,
-  Phone,
-  Sparkles,
-  ArrowRight
+  CheckCircle
 } from 'lucide-react';
 import { useCaregiverWorkflow } from '../../../utils/caregiverWorkflowStorage';
 import { useLanguage } from '../../../context/LanguageContext';
 import { getLocalizedName } from '../../../utils/caregiverDataTranslator';
-import { DEMO_HOME_CARE_BOOKINGS_BY_WARD, type DemoHomeCareBooking } from '../../../mocks/caregiverHomeCareMock';
+import { caregiverApi, clinicalApi } from '../../../services/dhrApis';
+
+type HomeCareStatus =
+  | 'Requested'
+  | 'Confirmed'
+  | 'Assigned'
+  | 'On The Way'
+  | 'Arrived'
+  | 'Visit Completed'
+  | 'Cancelled';
+
+interface HomeCareBookingItem {
+  id: string;
+  wardId: string;
+  dependentName: string;
+  serviceType: string;
+  careProfessionalName: string;
+  role: string;
+  specialization: string;
+  scheduledDate: string;
+  scheduledTime: string;
+  duration: string;
+  address: string;
+  status: HomeCareStatus;
+  notes: string;
+  contactPhone: string;
+  otp: string;
+  eta: string;
+}
 
 // Ordered steps for the tracking timeline
-const TIMELINE_STEPS: DemoHomeCareBooking['status'][] = [
+const TIMELINE_STEPS: HomeCareStatus[] = [
   'Requested',
   'Confirmed',
   'Assigned',
@@ -37,31 +60,78 @@ const TIMELINE_STEPS: DemoHomeCareBooking['status'][] = [
   'Visit Completed'
 ];
 
+function mapCareRequestStatus(raw: string): HomeCareStatus {
+  const s = String(raw || '').trim().toLowerCase();
+  if (s === 'completed' || s === 'visit completed') return 'Visit Completed';
+  if (s === 'on the way' || s === 'en route' || s === 'in transit') return 'On The Way';
+  if (s === 'arrived' || s === 'in progress') return 'Arrived';
+  if (s === 'accepted' || s === 'assigned') return 'Assigned';
+  if (s === 'confirmed') return 'Confirmed';
+  if (s === 'cancelled' || s === 'rejected') return 'Cancelled';
+  return 'Requested';
+}
+
 export const CaregiverHomeCareView: React.FC = () => {
   const { t } = useLanguage();
   const { wards, activeWard, setActiveWardId } = useCaregiverWorkflow();
 
-  // In-memory state initialized with mock dataset mapped by ward ID
-  const [bookingsMap, setBookingsMap] = useState<Record<string, DemoHomeCareBooking[]>>(DEMO_HOME_CARE_BOOKINGS_BY_WARD);
+  const [bookingsMap, setBookingsMap] = useState<Record<string, HomeCareBookingItem[]>>({});
+  const [updatingId, setUpdatingId] = useState<string | null>(null);
 
-  // Sync state on live medicare_caregiver_sync events
-  React.useEffect(() => {
-    const handleSync = () => {
-      setBookingsMap({ ...DEMO_HOME_CARE_BOOKINGS_BY_WARD });
-    };
+  const loadBookings = useCallback(async () => {
+    if (!activeWard?.id) return;
+    try {
+      const res = await caregiverApi.getWardRecords(activeWard.id);
+      const raw = res?.data?.careRequests || [];
+      const mapped: HomeCareBookingItem[] = raw.map((c: any) => {
+        const rawDate = c.scheduledDate || c.prefDate || c.createdAt;
+        const formattedDate = rawDate
+          ? new Date(rawDate).toLocaleDateString('en-US', {
+              month: 'short',
+              day: 'numeric',
+              year: 'numeric',
+            })
+          : '—';
+        return {
+          id: c.id,
+          wardId: activeWard.id,
+          dependentName: activeWard.name || c.patient?.fullName || 'Dependent',
+          serviceType: c.serviceType || 'Home Nursing Care',
+          careProfessionalName: c.nurse?.fullName || 'Pending Nurse Assignment',
+          role: c.nurse?.designation || 'Registered Nurse',
+          specialization: c.nurse?.department || 'Home Healthcare',
+          scheduledDate: formattedDate,
+          scheduledTime: c.scheduledTime || c.time || '10:00 AM',
+          duration: c.duration || 'Standard Visit',
+          address: c.location || c.address || activeWard.currentLocation || 'Patient Residence',
+          status: mapCareRequestStatus(c.status),
+          notes: c.nurseClinicalNotes || c.instructions || c.notes || '',
+          contactPhone: c.nurse?.phone || '—',
+          otp: c.otpPin || '—',
+          eta: c.etaMinutes ? `${c.etaMinutes} mins` : '—',
+        };
+      });
+      setBookingsMap((prev) => ({ ...prev, [activeWard.id]: mapped }));
+    } catch (err) {
+      console.error('Failed to load home care bookings from MySQL:', err);
+    }
+  }, [activeWard?.id, activeWard?.name, activeWard?.currentLocation]);
+
+  useEffect(() => {
+    loadBookings();
+    const handleSync = () => loadBookings();
     window.addEventListener('medicare_caregiver_sync', handleSync);
     return () => window.removeEventListener('medicare_caregiver_sync', handleSync);
-  }, []);
+  }, [loadBookings]);
 
   // Search and Filter states
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('All');
 
   // Modals & Drawers state
-  const [selectedDetailBooking, setSelectedDetailBooking] = useState<DemoHomeCareBooking | null>(null);
+  const [selectedDetailBooking, setSelectedDetailBooking] = useState<HomeCareBookingItem | null>(null);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
 
-  // Helper toast display
   const showToast = (msg: string) => {
     setToastMsg(msg);
     setTimeout(() => setToastMsg(null), 3500);
@@ -74,74 +144,83 @@ export const CaregiverHomeCareView: React.FC = () => {
 
   // Calculate dynamic summary stats for selected dependent
   const stats = useMemo(() => {
-    const activeVisits = currentDependentBookings.filter(b => 
+    const activeVisits = currentDependentBookings.filter((b) =>
       ['Confirmed', 'Assigned', 'On The Way', 'Arrived'].includes(b.status)
     ).length;
-    const completed = currentDependentBookings.filter(b => b.status === 'Visit Completed').length;
-    const requested = currentDependentBookings.filter(b => b.status === 'Requested').length;
-    const cancelled = currentDependentBookings.filter(b => b.status === 'Cancelled').length;
+    const completed = currentDependentBookings.filter((b) => b.status === 'Visit Completed').length;
+    const requested = currentDependentBookings.filter((b) => b.status === 'Requested').length;
+    const cancelled = currentDependentBookings.filter((b) => b.status === 'Cancelled').length;
 
     return { activeVisits, completed, requested, cancelled, total: currentDependentBookings.length };
   }, [currentDependentBookings]);
 
   // Filter and search bookings
   const filteredBookings = useMemo(() => {
-    return currentDependentBookings.filter(b => {
-      // Status filter
+    return currentDependentBookings.filter((b) => {
       if (statusFilter !== 'All' && b.status !== statusFilter) {
         return false;
       }
-      // Search query filter (Professional Name, Role, Specialization, Service, Address)
       if (searchQuery.trim() !== '') {
         const q = searchQuery.toLowerCase();
-        const profName = b.careProfessionalName.toLowerCase();
-        const role = b.role.toLowerCase();
-        const spec = b.specialization.toLowerCase();
-        const serv = b.serviceType.toLowerCase();
-        const addr = b.address.toLowerCase();
-
-        return profName.includes(q) || role.includes(q) || spec.includes(q) || serv.includes(q) || addr.includes(q);
+        return (
+          b.careProfessionalName.toLowerCase().includes(q) ||
+          b.role.toLowerCase().includes(q) ||
+          b.specialization.toLowerCase().includes(q) ||
+          b.serviceType.toLowerCase().includes(q) ||
+          b.address.toLowerCase().includes(q)
+        );
       }
       return true;
     });
   }, [currentDependentBookings, statusFilter, searchQuery]);
 
-  // Mock Action: Confirm Arrival
-  const handleConfirmArrival = (bookingId: string, professionalName: string) => {
-    setBookingsMap(prev => {
-      const wardBookings = prev[activeWard.id] || [];
-      const updated = wardBookings.map(b => b.bookingId === bookingId ? { ...b, status: 'Arrived' as const } : b);
-      return { ...prev, [activeWard.id]: updated };
-    });
-    showToast(`${professionalName} ${t('caregiver.home_care.arrived_toast', 'has arrived at the location!')}`);
+  // Persisted MySQL Actions via clinicalApi.updateCareRequest
+  const handleConfirmArrival = async (id: string, professionalName: string) => {
+    setUpdatingId(id);
+    try {
+      await clinicalApi.updateCareRequest(id, { status: 'Arrived' });
+      await loadBookings();
+      window.dispatchEvent(new Event('medicare_caregiver_sync'));
+      showToast(`${professionalName} ${t('caregiver.home_care.arrived_toast', 'arrival confirmed in database!')}`);
+    } catch (err: any) {
+      showToast(err?.message || 'Failed to confirm arrival on server.');
+    } finally {
+      setUpdatingId(null);
+    }
   };
 
-  // Mock Action: Mark Visit Completed
-  const handleMarkCompleted = (bookingId: string, professionalName: string) => {
-    setBookingsMap(prev => {
-      const wardBookings = prev[activeWard.id] || [];
-      const updated = wardBookings.map(b => b.bookingId === bookingId ? { ...b, status: 'Visit Completed' as const } : b);
-      return { ...prev, [activeWard.id]: updated };
-    });
-    showToast(`${t('caregiver.home_care.visit_completed_toast', 'Home care visit marked as completed.')}`);
+  const handleMarkCompleted = async (id: string, _professionalName: string) => {
+    setUpdatingId(id);
+    try {
+      await clinicalApi.updateCareRequest(id, { status: 'Completed' });
+      await loadBookings();
+      window.dispatchEvent(new Event('medicare_caregiver_sync'));
+      showToast(t('caregiver.home_care.visit_completed_toast', 'Home care visit marked as completed in MySQL.'));
+    } catch (err: any) {
+      showToast(err?.message || 'Failed to mark visit as completed on server.');
+    } finally {
+      setUpdatingId(null);
+    }
   };
 
-  // Mock Action: Cancel Booking
-  const handleCancelBooking = (bookingId: string) => {
-    setBookingsMap(prev => {
-      const wardBookings = prev[activeWard.id] || [];
-      const updated = wardBookings.map(b => b.bookingId === bookingId ? { ...b, status: 'Cancelled' as const } : b);
-      return { ...prev, [activeWard.id]: updated };
-    });
-    showToast(t('caregiver.home_care.cancelled_toast', 'Booking cancelled successfully. (Demo State Updated)'));
+  const handleCancelBooking = async (id: string) => {
+    setUpdatingId(id);
+    try {
+      await clinicalApi.updateCareRequest(id, { status: 'Cancelled' });
+      await loadBookings();
+      window.dispatchEvent(new Event('medicare_caregiver_sync'));
+      showToast(t('caregiver.home_care.cancelled_toast', 'Booking cancelled successfully.'));
+    } catch (err: any) {
+      showToast(err?.message || 'Failed to cancel booking on server.');
+    } finally {
+      setUpdatingId(null);
+    }
   };
 
-  // Helper function for status step index
-  const getStepIndex = (status: DemoHomeCareBooking['status']) => {
+  const getStepIndex = (status: HomeCareStatus) => {
     return TIMELINE_STEPS.indexOf(status);
   };
 
-  // Status badge style helper
   const getStatusBadgeStyle = (status: string) => {
     switch (status) {
       case 'On The Way':
@@ -179,7 +258,7 @@ export const CaregiverHomeCareView: React.FC = () => {
         </AnimatePresence>
       </div>
 
-      {/* HEADER & DEMO BADGE & DEPENDENT SWITCHER */}
+      {/* HEADER & DEPENDENT SWITCHER */}
       <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
         <div>
           <div className="flex items-center gap-3">
@@ -187,10 +266,9 @@ export const CaregiverHomeCareView: React.FC = () => {
               <HeartHandshake className="w-6 h-6 text-cyan-500 dark:text-cyan-400" />
               <span>{t('caregiver.home_care.title', 'Nurse & Home-Care Booking Tracking')}</span>
             </h1>
-            {/* DEMO DATA INDICATOR */}
-            <span className="px-3 py-1 rounded-full bg-cyan-500/10 border border-cyan-500/30 text-cyan-500 dark:text-cyan-400 text-[11px] font-black tracking-wide flex items-center gap-1.5 shadow-xs">
-              <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse" />
-              {t('caregiver.home_care.demo_badge', 'Demo Data')}
+            <span className="px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-600 dark:text-emerald-400 text-[11px] font-black tracking-wide flex items-center gap-1.5 shadow-xs">
+              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+              Live Dispatch
             </span>
           </div>
           <p className="text-xs text-slate-500 dark:text-slate-400 font-medium mt-1">
@@ -219,7 +297,6 @@ export const CaregiverHomeCareView: React.FC = () => {
 
       {/* SUMMARY STATS CARDS */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
-        {/* ACTIVE VISITS */}
         <div className="p-4 sm:p-5 rounded-2xl bg-white dark:bg-[#0b1120] border border-slate-200 dark:border-slate-800/80 shadow-sm flex items-center justify-between">
           <div>
             <p className="text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
@@ -234,7 +311,6 @@ export const CaregiverHomeCareView: React.FC = () => {
           </div>
         </div>
 
-        {/* COMPLETED */}
         <div className="p-4 sm:p-5 rounded-2xl bg-white dark:bg-[#0b1120] border border-slate-200 dark:border-slate-800/80 shadow-sm flex items-center justify-between">
           <div>
             <p className="text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
@@ -249,7 +325,6 @@ export const CaregiverHomeCareView: React.FC = () => {
           </div>
         </div>
 
-        {/* REQUESTED */}
         <div className="p-4 sm:p-5 rounded-2xl bg-white dark:bg-[#0b1120] border border-slate-200 dark:border-slate-800/80 shadow-sm flex items-center justify-between">
           <div>
             <p className="text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
@@ -264,7 +339,6 @@ export const CaregiverHomeCareView: React.FC = () => {
           </div>
         </div>
 
-        {/* CANCELLED */}
         <div className="p-4 sm:p-5 rounded-2xl bg-white dark:bg-[#0b1120] border border-slate-200 dark:border-slate-800/80 shadow-sm flex items-center justify-between">
           <div>
             <p className="text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
@@ -282,8 +356,6 @@ export const CaregiverHomeCareView: React.FC = () => {
 
       {/* SEARCH AND FILTERS BAR */}
       <div className="p-4 rounded-2xl bg-white dark:bg-[#0b1120] border border-slate-200 dark:border-slate-800/80 shadow-sm space-y-3 md:space-y-0 md:flex md:items-center md:justify-between gap-4">
-        
-        {/* SEARCH INPUT */}
         <div className="relative flex-1">
           <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
           <input
@@ -303,7 +375,6 @@ export const CaregiverHomeCareView: React.FC = () => {
           )}
         </div>
 
-        {/* STATUS FILTER */}
         <div className="flex items-center gap-1.5 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 px-3 py-1.5 rounded-xl text-xs font-bold">
           <Filter className="w-3.5 h-3.5 text-cyan-500" />
           <span className="text-slate-500 dark:text-slate-400">{t('caregiver.home_care.filter_status', 'Status')}:</span>
@@ -322,13 +393,11 @@ export const CaregiverHomeCareView: React.FC = () => {
             <option value="Cancelled" className="bg-slate-900 text-white">Cancelled</option>
           </select>
         </div>
-
       </div>
 
       {/* BOOKINGS LIST OR EMPTY STATE */}
       <div className="space-y-4">
         {currentDependentBookings.length === 0 ? (
-          /* EMPTY STATE FOR DEPENDENT */
           <div className="p-12 rounded-3xl bg-white dark:bg-[#0b1120] border border-slate-200 dark:border-slate-800 text-center space-y-3 shadow-sm">
             <div className="w-16 h-16 rounded-3xl bg-cyan-500/10 text-cyan-500 flex items-center justify-center mx-auto">
               <HeartHandshake className="w-8 h-8" />
@@ -341,7 +410,6 @@ export const CaregiverHomeCareView: React.FC = () => {
             </p>
           </div>
         ) : filteredBookings.length === 0 ? (
-          /* EMPTY STATE FOR SEARCH FILTER */
           <div className="p-12 rounded-3xl bg-white dark:bg-[#0b1120] border border-slate-200 dark:border-slate-800 text-center space-y-3 shadow-sm">
             <div className="w-16 h-16 rounded-3xl bg-amber-500/10 text-amber-500 flex items-center justify-center mx-auto">
               <Search className="w-8 h-8" />
@@ -363,10 +431,11 @@ export const CaregiverHomeCareView: React.FC = () => {
           filteredBookings.map((booking) => {
             const currentStepIdx = getStepIndex(booking.status);
             const isCancelled = booking.status === 'Cancelled';
+            const isBusy = updatingId === booking.id;
 
             return (
               <motion.div
-                key={booking.bookingId}
+                key={booking.id}
                 whileHover={{ y: -2 }}
                 className="p-5 sm:p-6 rounded-3xl bg-white dark:bg-[#0b1120] border border-slate-200 dark:border-slate-800 shadow-sm space-y-5 transition-all"
               >
@@ -385,7 +454,6 @@ export const CaregiverHomeCareView: React.FC = () => {
                         <span className="text-[11px] font-black px-2.5 py-0.5 rounded-md bg-cyan-50 dark:bg-cyan-950/60 text-cyan-700 dark:text-cyan-300 border border-cyan-500/20">
                           {booking.role}
                         </span>
-                        {/* STATUS BADGE */}
                         <span className={`text-[10px] font-black px-2.5 py-0.5 rounded-full border ${getStatusBadgeStyle(booking.status)}`}>
                           {booking.status}
                         </span>
@@ -398,7 +466,7 @@ export const CaregiverHomeCareView: React.FC = () => {
                       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-500 dark:text-slate-400 font-medium">
                         <span className="flex items-center gap-1">
                           <Calendar className="w-3.5 h-3.5 text-cyan-500" />
-                          {booking.bookingDate} at {booking.bookingTime} ({booking.duration})
+                          {booking.scheduledDate} at {booking.scheduledTime} ({booking.duration})
                         </span>
                         <span className="flex items-center gap-1">
                           <MapPin className="w-3.5 h-3.5 text-rose-500" />
@@ -408,43 +476,43 @@ export const CaregiverHomeCareView: React.FC = () => {
                     </div>
                   </div>
 
-                  {/* MOCK ACTIONS & DETAIL BUTTON */}
+                  {/* PERSISTED ACTIONS & DETAIL BUTTON */}
                   <div className="flex flex-wrap items-center gap-2 self-start md:self-center shrink-0">
                     <button
                       onClick={() => setSelectedDetailBooking(booking)}
-                      className="px-3.5 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-900 dark:text-white font-bold text-xs flex items-center gap-1.5 transition-all"
+                      className="px-3.5 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-900 dark:text-white font-bold text-xs flex items-center gap-1.5 transition-all cursor-pointer"
                     >
                       <FileText className="w-3.5 h-3.5 text-cyan-500" />
                       <span>{t('caregiver.home_care.view_details', 'View Booking Details')}</span>
                     </button>
 
-                    {/* CONFIRM ARRIVAL ACTION */}
-                    {(booking.status === 'Assigned' || booking.status === 'On The Way') && (
+                    {(booking.status === 'Assigned' || booking.status === 'On The Way' || booking.status === 'Confirmed') && (
                       <button
-                        onClick={() => handleConfirmArrival(booking.bookingId, booking.careProfessionalName)}
-                        className="px-3.5 py-2 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-black text-xs shadow-md shadow-cyan-500/20 flex items-center gap-1.5 transition-all"
+                        disabled={isBusy}
+                        onClick={() => handleConfirmArrival(booking.id, booking.careProfessionalName)}
+                        className="px-3.5 py-2 rounded-xl bg-cyan-500 hover:bg-cyan-400 disabled:opacity-50 text-slate-950 font-black text-xs shadow-md shadow-cyan-500/20 flex items-center gap-1.5 transition-all cursor-pointer"
                       >
                         <Truck className="w-3.5 h-3.5" />
                         <span>{t('caregiver.home_care.confirm_arrival', 'Confirm Arrival')}</span>
                       </button>
                     )}
 
-                    {/* MARK VISIT COMPLETED ACTION */}
                     {booking.status === 'Arrived' && (
                       <button
-                        onClick={() => handleMarkCompleted(booking.bookingId, booking.careProfessionalName)}
-                        className="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs shadow-md shadow-emerald-600/20 flex items-center gap-1.5 transition-all"
+                        disabled={isBusy}
+                        onClick={() => handleMarkCompleted(booking.id, booking.careProfessionalName)}
+                        className="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-black text-xs shadow-md shadow-emerald-600/20 flex items-center gap-1.5 transition-all cursor-pointer"
                       >
                         <CheckCircle className="w-3.5 h-3.5" />
                         <span>{t('caregiver.home_care.mark_completed', 'Mark Visit Completed')}</span>
                       </button>
                     )}
 
-                    {/* CANCEL BOOKING ACTION */}
                     {!['Visit Completed', 'Cancelled'].includes(booking.status) && (
                       <button
-                        onClick={() => handleCancelBooking(booking.bookingId)}
-                        className="px-3 py-2 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-600 dark:text-rose-400 font-bold text-xs border border-rose-500/20 transition-all"
+                        disabled={isBusy}
+                        onClick={() => handleCancelBooking(booking.id)}
+                        className="px-3 py-2 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 disabled:opacity-50 text-rose-600 dark:text-rose-400 font-bold text-xs border border-rose-500/20 transition-all cursor-pointer"
                       >
                         {t('caregiver.home_care.cancel_booking', 'Cancel Booking')}
                       </button>
@@ -469,11 +537,9 @@ export const CaregiverHomeCareView: React.FC = () => {
                       {TIMELINE_STEPS.map((step, idx) => {
                         const isCompletedStep = currentStepIdx > idx || booking.status === 'Visit Completed';
                         const isCurrentStep = currentStepIdx === idx && booking.status !== 'Visit Completed';
-                        const isFutureStep = currentStepIdx < idx && booking.status !== 'Visit Completed';
 
                         return (
                           <div key={step} className="flex flex-col items-center space-y-1.5 z-10">
-                            {/* STEP STEPPER ICON */}
                             <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-black transition-all ${
                               isCompletedStep
                                 ? 'bg-emerald-500 text-slate-950 shadow-md shadow-emerald-500/20 ring-2 ring-emerald-400/40'
@@ -484,7 +550,6 @@ export const CaregiverHomeCareView: React.FC = () => {
                               {isCompletedStep ? <CheckCircle className="w-4 h-4" /> : idx + 1}
                             </div>
 
-                            {/* STEP LABEL */}
                             <span className={`text-[10px] font-bold leading-tight ${
                               isCompletedStep
                                 ? 'text-emerald-600 dark:text-emerald-400'
@@ -521,7 +586,6 @@ export const CaregiverHomeCareView: React.FC = () => {
               exit={{ scale: 0.95, opacity: 0 }}
               className="relative z-10 w-full max-w-lg bg-white dark:bg-[#0b1120] rounded-3xl p-6 shadow-2xl border border-slate-200 dark:border-slate-800 space-y-4"
             >
-              {/* MODAL HEADER */}
               <div className="flex items-center justify-between pb-4 border-b border-slate-100 dark:border-slate-800">
                 <div className="flex items-center gap-2.5">
                   <div className="w-10 h-10 rounded-2xl bg-cyan-500/10 text-cyan-500 flex items-center justify-center font-bold">
@@ -531,8 +595,8 @@ export const CaregiverHomeCareView: React.FC = () => {
                     <h3 className="text-base font-black text-slate-900 dark:text-white">
                       {t('caregiver.home_care.details_title', 'Home-Care Booking Details')}
                     </h3>
-                    <span className="text-[10px] font-bold text-cyan-500 uppercase tracking-wider">
-                      {t('caregiver.home_care.demo_badge', 'Demo Data')}
+                    <span className="text-[10px] font-bold text-emerald-500 uppercase tracking-wider">
+                      ID: {selectedDetailBooking.id}
                     </span>
                   </div>
                 </div>
@@ -544,7 +608,6 @@ export const CaregiverHomeCareView: React.FC = () => {
                 </button>
               </div>
 
-              {/* MODAL BODY */}
               <div className="space-y-3 text-xs text-slate-700 dark:text-slate-300">
                 <div className="grid grid-cols-2 gap-3 p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-900 border border-slate-100 dark:border-slate-800">
                   <div>
@@ -580,7 +643,7 @@ export const CaregiverHomeCareView: React.FC = () => {
                   </div>
                   <div className="flex justify-between py-1 border-b border-slate-100 dark:border-slate-800/60">
                     <span className="text-slate-400 font-medium">Date & Time:</span>
-                    <span className="font-bold text-slate-900 dark:text-white">{selectedDetailBooking.bookingDate} at {selectedDetailBooking.bookingTime}</span>
+                    <span className="font-bold text-slate-900 dark:text-white">{selectedDetailBooking.scheduledDate} at {selectedDetailBooking.scheduledTime}</span>
                   </div>
                   <div className="flex justify-between py-1 border-b border-slate-100 dark:border-slate-800/60">
                     <span className="text-slate-400 font-medium">Duration:</span>
@@ -592,7 +655,6 @@ export const CaregiverHomeCareView: React.FC = () => {
                   </div>
                 </div>
 
-                {/* CARE NOTES */}
                 {selectedDetailBooking.notes && (
                   <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-900 border border-slate-100 dark:border-slate-800">
                     <span className="font-bold text-slate-900 dark:text-white block mb-0.5">
@@ -605,11 +667,10 @@ export const CaregiverHomeCareView: React.FC = () => {
                 )}
               </div>
 
-              {/* MODAL FOOTER */}
               <div className="flex justify-end pt-3 border-t border-slate-100 dark:border-slate-800">
                 <button
                   onClick={() => setSelectedDetailBooking(null)}
-                  className="px-5 py-2.5 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-black text-xs shadow-lg shadow-cyan-500/20 transition-all"
+                  className="px-5 py-2.5 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-black text-xs shadow-lg shadow-cyan-500/20 transition-all cursor-pointer"
                 >
                   {t('caregiver.common.close', 'Close')}
                 </button>

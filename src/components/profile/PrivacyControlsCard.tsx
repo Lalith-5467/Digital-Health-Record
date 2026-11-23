@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Lock, Eye, ShieldAlert, Users, QrCode } from 'lucide-react';
 import { useLanguage } from '../../context/LanguageContext';
+import { profileApi } from '../../services/dhrApis';
 
 interface PrivacyControlsCardProps {
   onToast: (msg: string) => void;
@@ -12,15 +13,31 @@ export const PrivacyControlsCard: React.FC<PrivacyControlsCardProps> = ({ onToas
     profileVisibility: true,
     emergencyAccess: true,
     familyAccess: false,
-    qrSharing: false
+    qrSharing: false,
   });
 
-  const handleToggle = (key: keyof typeof toggles, label: string) => {
+  useEffect(() => {
+    profileApi
+      .getPreferences()
+      .then((res) => {
+        const privacy = res?.data?.privacy;
+        if (privacy && typeof privacy === 'object') {
+          setToggles((prev) => ({ ...prev, ...privacy }));
+        }
+      })
+      .catch(() => { });
+  }, []);
+
+  const handleToggle = async (key: keyof typeof toggles, label: string) => {
     const nextState = !toggles[key];
     const updated = { ...toggles, [key]: nextState };
-    setToggles(updated);
-    localStorage.setItem('health_privacy_settings', JSON.stringify(updated));
-    onToast(`Privacy setting "${label}" turned ${nextState ? 'ON' : 'OFF'}`);
+    try {
+      await profileApi.updatePreferences({ privacy: updated });
+      setToggles(updated);
+      onToast(`Privacy setting "${label}" turned ${nextState ? 'ON' : 'OFF'}`);
+    } catch (err: any) {
+      onToast(err?.message || 'Failed to save privacy preference');
+    }
   };
 
   const privacyItems = [
@@ -74,14 +91,12 @@ export const PrivacyControlsCard: React.FC<PrivacyControlsCardProps> = ({ onToas
               <button
                 onClick={() => handleToggle(item.key, item.label)}
                 aria-label={`Toggle ${item.label}`}
-                className={`w-11 h-6 rounded-full transition-colors relative cursor-pointer shrink-0 ${
-                  isOn ? 'bg-[#00a896]' : 'bg-slate-300 dark:bg-slate-700'
-                }`}
+                className={`w-11 h-6 rounded-full transition-colors relative cursor-pointer shrink-0 ${isOn ? 'bg-[#00a896]' : 'bg-slate-300 dark:bg-slate-700'
+                  }`}
               >
                 <div
-                  className={`w-4 h-4 rounded-full bg-white shadow-md absolute top-1 transition-transform ${
-                    isOn ? 'translate-x-6' : 'translate-x-1'
-                  }`}
+                  className={`w-4 h-4 rounded-full bg-white shadow-md absolute top-1 transition-transform ${isOn ? 'translate-x-6' : 'translate-x-1'
+                    }`}
                 />
               </button>
             </div>

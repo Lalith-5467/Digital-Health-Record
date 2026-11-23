@@ -1,8 +1,9 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Activity, Plus, Trash2 } from 'lucide-react';
 import type { ConditionItem } from './AddConditionModal';
 import { AddConditionModal } from './AddConditionModal';
 import { useLanguage } from '../../context/LanguageContext';
+import { patientClinicalApi } from '../../services/dhrApis';
 
 interface ChronicConditionsSectionProps {
   onToast: (msg: string) => void;
@@ -10,20 +11,67 @@ interface ChronicConditionsSectionProps {
 
 export const ChronicConditionsSection: React.FC<ChronicConditionsSectionProps> = ({ onToast }) => {
   const { t } = useLanguage();
-  const [conditions, setConditions] = useState<ConditionItem[]>([
-    { id: '1', name: 'Hypertension', status: 'Under monitoring', lastReviewed: '15 Aug 2026', notes: 'Daily BP log maintained' },
-    { id: '2', name: 'Type 2 Diabetes', status: 'Managed', lastReviewed: '10 Jul 2026', notes: 'HbA1c: 6.2%' }
-  ]);
+  const [conditions, setConditions] = useState<ConditionItem[]>([]);
   const [modalOpen, setModalOpen] = useState(false);
 
-  const handleAdd = (item: ConditionItem) => {
-    setConditions((prev) => [...prev, item]);
-    onToast(`Added condition: ${item.name}`);
+  useEffect(() => {
+    patientClinicalApi
+      .getConditions()
+      .then((res) => {
+        if (res?.data && Array.isArray(res.data)) {
+          setConditions(
+            res.data.map((c: any) => ({
+              id: c.id,
+              name: c.name,
+              status: c.status || 'Active',
+              lastReviewed: c.updatedAt
+                ? new Date(c.updatedAt).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
+                : 'Recorded',
+              notes: c.notes || '',
+            }))
+          );
+        }
+      })
+      .catch(() => setConditions([]));
+  }, []);
+
+  const handleAdd = async (item: ConditionItem) => {
+    try {
+      const res = await patientClinicalApi.createCondition({
+        name: item.name,
+        status: item.status,
+        notes: item.notes,
+      });
+      if (res?.data) {
+        setConditions((prev) => [
+          {
+            id: res.data.id,
+            name: res.data.name,
+            status: res.data.status || 'Active',
+            lastReviewed: new Date(res.data.createdAt).toLocaleDateString('en-GB', {
+              day: '2-digit',
+              month: 'short',
+              year: 'numeric',
+            }),
+            notes: res.data.notes || '',
+          },
+          ...prev,
+        ]);
+        onToast(`Saved condition to database: ${item.name}`);
+      }
+    } catch (err: any) {
+      onToast(err?.message || 'Failed to save condition');
+    }
   };
 
-  const handleDelete = (id: string, name: string) => {
-    setConditions((prev) => prev.filter((c) => c.id !== id));
-    onToast(`Removed condition: ${name}`);
+  const handleDelete = async (id: string, name: string) => {
+    try {
+      await patientClinicalApi.deleteCondition(id);
+      setConditions((prev) => prev.filter((c) => c.id !== id));
+      onToast(`Removed condition: ${name}`);
+    } catch (err: any) {
+      onToast(err?.message || 'Failed to remove condition');
+    }
   };
 
   return (

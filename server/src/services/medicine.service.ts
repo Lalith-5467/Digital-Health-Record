@@ -255,7 +255,7 @@ export class MedicineService {
   /**
    * Record Dose Taken / Skipped in MySQL
    */
-  static async recordDoseLog(userId: string, role: Role, data: { doseId?: string; medicineId: string; status: 'taken' | 'skipped'; skipReason?: string }) {
+  static async recordDoseLog(userId: string, role: Role, data: { doseId?: string; medicineId: string; status: 'taken' | 'skipped' | 'upcoming'; skipReason?: string }) {
     // Find target patient medication
     const med = await prisma.patientMedication.findFirst({
       where: {
@@ -282,6 +282,30 @@ export class MedicineService {
       },
       orderBy: { createdAt: 'desc' },
     });
+
+    // Undo / reset to upcoming
+    if (data.status === 'upcoming') {
+      if (existingLog) {
+        await prisma.$transaction(async (tx) => {
+          await tx.doseLog.delete({ where: { id: existingLog.id } });
+          if (existingLog.status === 'taken') {
+            await tx.patientMedication.update({
+              where: { id: med.id },
+              data: {
+                takenDoses: { decrement: Math.min(med.takenDoses, 1) },
+                remainingDoses: { increment: 1 },
+              },
+            });
+          } else if (existingLog.status === 'skipped') {
+            await tx.patientMedication.update({
+              where: { id: med.id },
+              data: { skippedDoses: { decrement: Math.min(med.skippedDoses, 1) } },
+            });
+          }
+        });
+      }
+      return { id: existingLog?.id || data.doseId, status: 'upcoming' };
+    }
 
     // Handle duplicate take requests cleanly
     if (existingLog && existingLog.status === data.status && data.status === 'taken') {
@@ -323,27 +347,65 @@ export class MedicineService {
   }
 
   /**
-   * Update Patient Medication
+   * Get real DoseLog history from MySQL
    */
-  static async updatePatientMedication(id: string, data: any) {
+  static async getDoseHistory(userId: string, role: Role, patientIdQuery?: string, days = 30) {
+    let patientId = patientIdQuery;
+    if (role === Role.PATIENT) {
+      const patient = await prisma.patient.findUnique({ where: { userId } });
+      if (!patient) throw new AppError('Patient profile not found', 404);
+      patientId = patient.id;
+    } else if (role === Role.CAREGIVER && patientIdQuery) {
+      await CaregiverService.validateCaregiverAccess(userId, role, patientIdQuery);
+    }
+    if (!patientId) return [];
+
+    const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+    return prisma.doseLog.findMany({
+      where: { patientId, logDate: { gte: since } },
+      include: {
+        patientMedication: {
+          select: { id: true, name: true, dosage: true, unit: true, frequency: true },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 100,
+    });
+  }
+
+  /**
+   * Update Patient Medication (ownership-checked)
+   */
+  static async updatePatientMedication(id: string, data: any, userId: string, role: Role) {
+    const existing = await prisma.patientMedication.findUnique({ where: { id } });
+    if (!existing) throw new AppError('Medication record not found', 404);
+    await CaregiverService.validateCaregiverAccess(userId, role, existing.patientId);
+
     return prisma.patientMedication.update({
       where: { id },
       data: {
-        ...(data.name && { name: data.name }),
-        ...(data.dosage && { dosage: data.dosage }),
-        ...(data.unit && { unit: data.unit }),
-        ...(data.frequency && { frequency: data.frequency }),
-        ...(data.status && { status: data.status.toLowerCase() }),
-        ...(data.instructions && { instructions: data.instructions }),
-        ...(data.remainingDoses !== undefined && { remainingDoses: data.remainingDoses }),
+        ...(data.name !== undefined && { name: data.name }),
+        ...(data.dosage !== undefined && { dosage: data.dosage }),
+        ...(data.unit !== undefined && { unit: data.unit }),
+        ...(data.frequency !== undefined && { frequency: data.frequency }),
+        ...(data.status !== undefined && { status: String(data.status).toLowerCase() }),
+        ...(data.instructions !== undefined && { instructions: data.instructions }),
+        ...(data.purpose !== undefined && { purpose: data.purpose }),
+        ...(data.notes !== undefined && { notes: data.notes }),
+        ...(data.refillReminder !== undefined && { refillReminder: Boolean(data.refillReminder) }),
+        ...(data.remainingDoses !== undefined && { remainingDoses: Number(data.remainingDoses) }),
       },
     });
   }
 
   /**
-   * Delete Patient Medication
+   * Delete Patient Medication (ownership-checked)
    */
-  static async deletePatientMedication(id: string) {
+  static async deletePatientMedication(id: string, userId: string, role: Role) {
+    const existing = await prisma.patientMedication.findUnique({ where: { id } });
+    if (!existing) throw new AppError('Medication record not found', 404);
+    await CaregiverService.validateCaregiverAccess(userId, role, existing.patientId);
+
     return prisma.patientMedication.delete({
       where: { id },
     });

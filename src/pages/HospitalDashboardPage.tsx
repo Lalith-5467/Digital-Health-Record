@@ -8,12 +8,8 @@ import {
 } from 'lucide-react';
 import { Logo } from '../components/ui/Logo';
 import { ThemeToggle } from '../components/ui/ThemeToggle';
-import { adminApi } from '../services/dhrApis';
-import { 
-  getStoredHospitals, 
-  saveStoredHospitals,
-  type HospitalAdminRecord 
-} from '../utils/adminMockStorage';
+import { adminApi, adminExtendedApi } from '../services/dhrApis';
+import type { HospitalAdminRecord } from '../types/hospital';
 import { AdminStaffManagementView } from '../components/admin-dashboard/views/AdminStaffManagementView';
 import { AdminPatientManagementView } from '../components/admin-dashboard/views/AdminPatientManagementView';
 import { AdminOperationsView } from '../components/admin-dashboard/views/AdminOperationsView';
@@ -33,82 +29,94 @@ export const HospitalDashboardPage: React.FC<HospitalDashboardPageProps> = ({
   user,
   initialHospitalId,
   onLogout,
-  onNavigate,
+  onNavigate: _onNavigate,
 }) => {
-  const [hospitals, setHospitals] = useState<HospitalAdminRecord[]>(() => getStoredHospitals());
-  const [selectedHospital, setSelectedHospital] = useState<HospitalAdminRecord | null>(() => {
-    const list = getStoredHospitals();
-    let found: HospitalAdminRecord | undefined;
-    const urlParams = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null;
-    const qId = urlParams?.get('hospitalId') || initialHospitalId;
-
-    if (qId && list.length > 0) {
-      found = list.find((h) => h.id === qId || h.hospitalId === qId || h.code?.toLowerCase() === qId.toLowerCase());
-    }
-
-    if (!found && typeof localStorage !== 'undefined') {
-      try {
-        const stored = localStorage.getItem('active_hospital_portal');
-        if (stored) {
-          const parsed = JSON.parse(stored);
-          found = list.find((h) => h.id === parsed.id || h.name === parsed.name) || parsed;
-        }
-      } catch {}
-    }
-
-    return found || list[0] || null;
-  });
+  const [hospitals, setHospitals] = useState<HospitalAdminRecord[]>([]);
+  const [selectedHospital, setSelectedHospital] = useState<HospitalAdminRecord | null>(null);
+  const [loadingHospitals, setLoadingHospitals] = useState<boolean>(true);
   const [activeTab, setActiveTab] = useState<'overview' | 'doctors' | 'nurses' | 'patients' | 'pharmacists' | 'caregivers' | 'insurance'>('overview');
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
-  // Live real data counts from database
+  // Live real data from database
   const [liveDoctors, setLiveDoctors] = useState<any[]>([]);
   const [liveNurses, setLiveNurses] = useState<any[]>([]);
   const [livePatients, setLivePatients] = useState<any[]>([]);
   const [livePharmacists, setLivePharmacists] = useState<any[]>([]);
   const [liveCaregivers, setLiveCaregivers] = useState<any[]>([]);
   const [liveInsurance, setLiveInsurance] = useState<any[]>([]);
+  const [clinicalCounts, setClinicalCounts] = useState<{
+    appointments: number;
+    prescriptions: number;
+    medicalRecords: number;
+    vitals: number;
+    insuranceClaims: number;
+    pharmacyOrders: number;
+  }>({
+    appointments: 0,
+    prescriptions: 0,
+    medicalRecords: 0,
+    vitals: 0,
+    insuranceClaims: 0,
+    pharmacyOrders: 0,
+  });
 
-  // Function to refresh hospital list from backend and storage
-  const syncHospitalDirectory = () => {
-    adminApi.getHospitals().then((res) => {
-      if (res && res.data && Array.isArray(res.data) && res.data.length > 0) {
-        setHospitals(res.data);
-        saveStoredHospitals(res.data);
-      } else {
-        const local = getStoredHospitals();
-        if (local.length > 0) setHospitals(local);
+  const syncHospitalDirectory = async () => {
+    setLoadingHospitals(true);
+    try {
+      const res = await adminApi.getHospitals();
+      const list: HospitalAdminRecord[] = res?.data && Array.isArray(res.data) ? res.data : [];
+      setHospitals(list);
+
+      const urlParams = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null;
+      const qId = urlParams?.get('hospitalId') || initialHospitalId;
+      const userEmail = (user?.email || '').toLowerCase();
+
+      let chosen: HospitalAdminRecord | undefined;
+      if (qId) {
+        chosen = list.find(
+          (h) => h.id === qId || h.hospitalId === qId || h.code?.toLowerCase() === qId.toLowerCase()
+        );
       }
-    }).catch(() => {
-      const local = getStoredHospitals();
-      if (local.length > 0) setHospitals(local);
-    });
+      if (!chosen && userEmail) {
+        chosen = list.find(
+          (h) => h.adminEmail?.toLowerCase() === userEmail || h.email?.toLowerCase() === userEmail
+        );
+      }
+      setSelectedHospital((prev) => {
+        if (chosen) return chosen;
+        if (prev) {
+          const refreshed = list.find((h) => h.id === prev.id);
+          if (refreshed) return refreshed;
+        }
+        return list[0] || null;
+      });
+    } catch {
+      setHospitals([]);
+      setSelectedHospital(null);
+    } finally {
+      setLoadingHospitals(false);
+    }
   };
 
   useEffect(() => {
     syncHospitalDirectory();
-
-    // Listen to real-time additions from AdminHospitalManagementView
     const handleHospitalUpdate = () => {
-      const local = getStoredHospitals();
-      if (local.length > 0) {
-        setHospitals(local);
-      }
+      syncHospitalDirectory();
     };
-
     window.addEventListener('admin_hospitals_updated', handleHospitalUpdate);
-    window.addEventListener('storage', handleHospitalUpdate);
     return () => {
       window.removeEventListener('admin_hospitals_updated', handleHospitalUpdate);
-      window.removeEventListener('storage', handleHospitalUpdate);
     };
-  }, []);
+  }, [initialHospitalId, user?.email]);
 
   useEffect(() => {
-    // Fetch live registered users directly from the backend MySQL database
-    adminApi.getUsers({ limit: 100 }).then((res) => {
-      if (res && res.data) {
-        const all: any[] = Array.isArray(res.data) ? res.data : (res.data as any).users || [];
+    // Fetch live registered users and operational metrics directly from MySQL
+    Promise.all([
+      adminApi.getUsers({ limit: 100 }).catch(() => null),
+      adminExtendedApi.getClinicalOverview().catch(() => null),
+    ]).then(([usersRes, clinicalRes]) => {
+      if (usersRes && usersRes.data) {
+        const all: any[] = Array.isArray(usersRes.data) ? usersRes.data : (usersRes.data as any).users || [];
         setLiveDoctors(all.filter((u) => u.role === 'DOCTOR'));
         setLiveNurses(all.filter((u) => u.role === 'NURSE'));
         setLivePatients(all.filter((u) => u.role === 'PATIENT'));
@@ -116,15 +124,45 @@ export const HospitalDashboardPage: React.FC<HospitalDashboardPageProps> = ({
         setLiveCaregivers(all.filter((u) => u.role === 'CAREGIVER'));
         setLiveInsurance(all.filter((u) => u.role === 'INSURANCE_PROVIDER' || u.role === 'INSURANCE'));
       }
-    }).catch(() => {});
+      if (clinicalRes?.data?.counts) {
+        setClinicalCounts({
+          appointments: Number(clinicalRes.data.counts.appointments ?? 0),
+          prescriptions: Number(clinicalRes.data.counts.prescriptions ?? 0),
+          medicalRecords: Number(clinicalRes.data.counts.medicalRecords ?? 0),
+          vitals: Number(clinicalRes.data.counts.vitals ?? 0),
+          insuranceClaims: Number(clinicalRes.data.counts.insuranceClaims ?? 0),
+          pharmacyOrders: Number(clinicalRes.data.counts.pharmacyOrders ?? 0),
+        });
+      }
+    });
   }, []);
 
-  if (!selectedHospital) {
+  if (loadingHospitals) {
     return (
       <div className="h-screen flex items-center justify-center bg-slate-50 dark:bg-[#070c18] text-slate-900 dark:text-white">
         <div className="text-center space-y-3">
           <Building2 className="w-12 h-12 text-teal-500 mx-auto animate-pulse" />
-          <h2 className="text-lg font-bold">Loading Hospital Portal...</h2>
+          <h2 className="text-lg font-bold">Loading Hospital Portal from Database...</h2>
+        </div>
+      </div>
+    );
+  }
+
+  if (!selectedHospital) {
+    return (
+      <div className="h-screen flex items-center justify-center bg-slate-50 dark:bg-[#070c18] text-slate-900 dark:text-white p-6">
+        <div className="text-center space-y-4 max-w-md bg-white dark:bg-[#0b1120] border border-slate-200 dark:border-slate-800 rounded-3xl p-8 shadow-sm">
+          <Building2 className="w-12 h-12 text-slate-400 mx-auto" />
+          <h2 className="text-lg font-black">No Registered Hospital Facilities</h2>
+          <p className="text-xs text-slate-500 dark:text-slate-400">
+            No hospital records were found in the database. Onboard a hospital facility from the Admin Portal first.
+          </p>
+          <button
+            onClick={onLogout}
+            className="px-5 py-2.5 rounded-xl bg-teal-600 hover:bg-teal-700 text-white text-xs font-bold cursor-pointer"
+          >
+            Back to Login
+          </button>
         </div>
       </div>
     );
@@ -383,6 +421,28 @@ export const HospitalDashboardPage: React.FC<HospitalDashboardPageProps> = ({
                   </div>
                   <span className="text-2xl font-black text-slate-900 dark:text-white">{realInsurance.length}</span>
                   <span className="text-[10px] text-emerald-600 dark:text-emerald-400 block mt-0.5">TPA Partners</span>
+                </div>
+              </div>
+
+              {/* LIVE OPERATIONAL TELEMETRY FROM MYSQL */}
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <div className="p-4 rounded-2xl bg-white dark:bg-[#0b1120] border border-slate-200 dark:border-slate-800 shadow-xs">
+                  <span className="text-[11px] font-bold text-slate-400 block mb-1">Appointments Logged</span>
+                  <span className="text-2xl font-black text-slate-900 dark:text-white">{clinicalCounts.appointments}</span>
+                </div>
+                <div className="p-4 rounded-2xl bg-white dark:bg-[#0b1120] border border-slate-200 dark:border-slate-800 shadow-xs">
+                  <span className="text-[11px] font-bold text-slate-400 block mb-1">Prescriptions Issued</span>
+                  <span className="text-2xl font-black text-slate-900 dark:text-white">{clinicalCounts.prescriptions}</span>
+                </div>
+                <div className="p-4 rounded-2xl bg-white dark:bg-[#0b1120] border border-slate-200 dark:border-slate-800 shadow-xs">
+                  <span className="text-[11px] font-bold text-slate-400 block mb-1">Medical Records Vault</span>
+                  <span className="text-2xl font-black text-slate-900 dark:text-white">{clinicalCounts.medicalRecords}</span>
+                </div>
+                <div className="p-4 rounded-2xl bg-white dark:bg-[#0b1120] border border-slate-200 dark:border-slate-800 shadow-xs">
+                  <span className="text-[11px] font-bold text-slate-400 block mb-1">Claims / Pharmacy Orders</span>
+                  <span className="text-2xl font-black text-slate-900 dark:text-white">
+                    {clinicalCounts.insuranceClaims} / {clinicalCounts.pharmacyOrders}
+                  </span>
                 </div>
               </div>
 

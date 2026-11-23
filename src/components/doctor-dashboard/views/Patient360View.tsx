@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { 
-  Brain, FileText, Activity, Pill, HeartPulse, History, TestTube, 
+import {
+  Brain, FileText, Activity, Pill, HeartPulse, History, TestTube,
   ChevronRight, Stethoscope, Clock, Scan, ShieldAlert, Lock, ArrowLeft,
   AlertTriangle, CheckCircle2, ShieldCheck, Sparkles, User, Calendar,
   Eye, Download, Search, Building2, FlaskConical, FileCheck, ExternalLink, RefreshCw, Filter
@@ -28,7 +28,7 @@ export const Patient360View: React.FC<Patient360ViewProps> = ({ patientId, patie
   const [activeTab, setActiveTab] = useState<'summary' | 'medications' | 'vitals' | 'trends' | 'records' | 'reports'>(
     (initialTab as any) || 'summary'
   );
-  
+
   // Real Backend Data State
   const [authData, setAuthData] = useState<Patient360AuthorizedData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -65,60 +65,11 @@ export const Patient360View: React.FC<Patient360ViewProps> = ({ patientId, patie
         }
       } catch (err: any) {
         if (isMounted) {
-          const isForbidden = err.message?.includes('403') || err.message?.includes('Forbidden') || err.message?.includes('expired') || err.message?.includes('revoked');
-          
-          // Check if fallback mock record matches this patientId (for offline mock previews)
-          const fallbackMock = records.find(p => p.id === patientId || p.patientId === patientId);
-          if (fallbackMock && (!isForbidden || patientId === '1' || patientId?.startsWith('PT-') || patientId?.startsWith('MC-') || patientId?.startsWith('mock-'))) {
-            // Use mock data if not an explicit 403 forbidden security block
-            setAuthData({
-              session: {
-                id: 'mock-session',
-                status: 'ACTIVE',
-                purpose: 'Patient Consultation',
-                grantedAt: new Date().toISOString(),
-                expiresAt: new Date(Date.now() + 3600000).toISOString(),
-                approvedScopes: ['Basic Information', 'Medical Records', 'Prescriptions', 'Vitals', 'Medication History', 'Reports'],
-              },
-              patient: {
-                id: fallbackMock.id,
-                fullName: fallbackMock.name,
-                gender: fallbackMock.gender,
-                age: Number(fallbackMock.age) || 35,
-                bloodGroup: fallbackMock.bloodGroup,
-                address: 'Greams Road, Chennai',
-                emergencyContactName: 'Family Member',
-                emergencyContactPhone: '+91 98400 00000',
-                abhaId: fallbackMock.patientId,
-              },
-              vitals: [
-                { id: 'v1', systolicBp: 120, diastolicBp: 80, heartRate: 72, oxygenSaturation: 99, temperature: 98.6, bloodSugar: 104, recordedAt: new Date().toISOString() }
-              ],
-              medicalRecords: [
-                { id: 'm1', title: 'Cardiology Review', type: 'CONSULTATION', hospital: 'Apollo Hospitals', status: 'Normal', notes: 'Stable cardiovascular parameters.', recordDate: new Date().toISOString() }
-              ],
-              reports: [],
-              prescriptions: [
-                { id: 'p1', diagnosis: 'Essential Hypertension', issuedAt: new Date().toISOString(), doctor: { fullName: 'Dr. Rajesh Varma' }, items: [{ medicineName: 'Telmisartan', dosage: '40mg', frequency: '1-0-0', durationDays: 30 }] }
-              ],
-              medicationHistory: [
-                { medicineName: 'Telmisartan', dosage: '40mg', frequency: '1-0-0', durationDays: 30, prescribedBy: 'Dr. Rajesh Varma' }
-              ],
-              adherence: {
-                hasData: true,
-                percentage: 85,
-                completedReminders: 12,
-                totalReminders: 14,
-                summary: '85% adherence across active medication schedules'
-              }
-            });
-          } else {
-            setErrorStatus({
-              isError: true,
-              message: err.message || 'Access Denied: You do not have an active approved session for this patient.',
-              is403: true,
-            });
-          }
+          setErrorStatus({
+            isError: true,
+            message: err.message || 'Access Denied: You do not have an active approved session for this patient.',
+            is403: true,
+          });
         }
       } finally {
         if (isMounted) {
@@ -155,10 +106,10 @@ export const Patient360View: React.FC<Patient360ViewProps> = ({ patientId, patie
               {t("doctor.p360.error_title", "Patient Access Expired or Revoked")}
             </h2>
             <p className="text-sm text-slate-500 dark:text-slate-400 max-w-md mx-auto leading-relaxed font-medium">
-              {errorStatus.message === 'Patient not found' 
-                ? t("doctor.p360.patient_not_found", "Patient not found") 
-                : errorStatus.message === 'Access Denied: You do not have an active approved session for this patient.' 
-                  ? t("doctor.p360.access_denied_default", "Access Denied: You do not have an active approved session for this patient.") 
+              {errorStatus.message === 'Patient not found'
+                ? t("doctor.p360.patient_not_found", "Patient not found")
+                : errorStatus.message === 'Access Denied: You do not have an active approved session for this patient.'
+                  ? t("doctor.p360.access_denied_default", "Access Denied: You do not have an active approved session for this patient.")
                   : errorStatus.message}
             </p>
           </div>
@@ -287,7 +238,7 @@ ABDM Digital Consent Verified • Patient Consent Active`;
 
   const handleShare = (record: MedicalRecordItem) => {
     if (navigator.share) {
-      navigator.share({ title: record.title, text: `${record.title} - ${record.hospital}` }).catch(() => {});
+      navigator.share({ title: record.title, text: `${record.title} - ${record.hospital}` }).catch(() => { });
     } else {
       navigator.clipboard?.writeText?.(`${record.title} - ${record.hospital} (${record.date})`);
     }
@@ -388,13 +339,13 @@ ABDM Digital Consent Verified • Patient Consent Active`;
             </div>
           </div>
         </div>
-        
+
         <div className="flex flex-wrap sm:flex-nowrap items-center gap-3 relative z-10 w-full md:w-auto shrink-0">
-          <button 
+          <button
             onClick={() => onNavigate('consultations')}
             className="flex-1 md:flex-initial px-6 py-3.5 bg-gradient-to-r from-teal-500 to-cyan-500 hover:from-teal-400 hover:to-cyan-400 text-slate-950 font-black text-xs rounded-2xl transition-all shadow-lg shadow-teal-500/25 flex items-center justify-center gap-2 cursor-pointer hover:scale-102"
           >
-            <Stethoscope className="w-4 h-4" /> 
+            <Stethoscope className="w-4 h-4" />
             <span>{t("doctor.p360.start_consultation", "Start Active Consultation")}</span>
           </button>
         </div>
@@ -416,22 +367,20 @@ ABDM Digital Consent Verified • Patient Consent Active`;
               key={tab.id}
               onClick={() => setActiveTab(tab.id as any)}
               disabled={!tabAllowed}
-              className={`px-4 py-2.5 rounded-xl font-black text-xs flex items-center gap-2 transition-all cursor-pointer whitespace-nowrap ${
-                activeTab === tab.id
+              className={`px-4 py-2.5 rounded-xl font-black text-xs flex items-center gap-2 transition-all cursor-pointer whitespace-nowrap ${activeTab === tab.id
                   ? 'bg-teal-600 text-white shadow-md shadow-teal-500/20'
                   : tabAllowed
-                  ? 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
-                  : 'text-slate-300 dark:text-slate-700 cursor-not-allowed opacity-50'
-              }`}
+                    ? 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
+                    : 'text-slate-300 dark:text-slate-700 cursor-not-allowed opacity-50'
+                }`}
             >
               <tab.icon className="w-4 h-4" />
               <span>{tab.label}</span>
               {tab.count !== undefined && tab.count > 0 && (
-                <span className={`px-2 py-0.5 rounded-full text-[10px] font-mono font-bold ${
-                  activeTab === tab.id
+                <span className={`px-2 py-0.5 rounded-full text-[10px] font-mono font-bold ${activeTab === tab.id
                     ? 'bg-white/20 text-white'
                     : 'bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300'
-                }`}>
+                  }`}>
                   {tab.count}
                 </span>
               )}
@@ -451,187 +400,186 @@ ABDM Digital Consent Verified • Patient Consent Active`;
       {activeTab === 'summary' && (
         <div className="space-y-6">
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Patient Basic Information Card */}
-          <div className="bg-white dark:bg-slate-900 rounded-3xl p-6 border border-slate-200 dark:border-slate-800 shadow-xs space-y-4">
-            <h3 className="text-sm font-black text-slate-900 dark:text-white uppercase tracking-wider flex items-center gap-2">
-              <User className="w-4 h-4 text-teal-500" />
-              {t("doctor.p360.demographics", "Patient Demographics")}
-            </h3>
-            
-            <div className="space-y-3 text-xs">
-              <div className="flex justify-between py-1.5 border-b border-slate-100 dark:border-slate-800">
-                <span className="text-slate-400">{t("doctor.profile.full_name", "Full Name")}</span>
-                <span className="font-bold text-slate-900 dark:text-white">{patient.fullName}</span>
-              </div>
-              <div className="flex justify-between py-1.5 border-b border-slate-100 dark:border-slate-800">
-                <span className="text-slate-400">{t("doctor.patients.gender_age", "Gender / Age")}</span>
-                <span className="font-bold text-slate-900 dark:text-white">{t(`doctor.patients.${patient.gender.toLowerCase()}`, patient.gender)} • {patient.age} {t("doctor.patients.years", "Yrs")}</span>
-              </div>
-              <div className="flex justify-between py-1.5 border-b border-slate-100 dark:border-slate-800">
-                <span className="text-slate-400">{t("doctor.p360.blood_group", "Blood Group")}</span>
-                <span className="font-mono font-bold text-rose-600 dark:text-rose-400">{displayedBloodGroup}</span>
-              </div>
-              <div className="flex justify-between py-1.5 border-b border-slate-100 dark:border-slate-800">
-                <span className="text-slate-400">{t("doctor.p360.emergency_contact", "Emergency Contact")}</span>
-                <span className="font-bold text-slate-900 dark:text-white">{patient.emergencyContactName || t("doctor.p360.none_listed", "None listed")} ({patient.emergencyContactPhone || 'N/A'})</span>
-              </div>
-              <div className="flex justify-between py-1.5">
-                <span className="text-slate-400">{t("doctor.p360.address", "Address")}</span>
-                <span className="font-bold text-slate-900 dark:text-white text-right max-w-[180px]">{patient.address || 'Chennai, Tamil Nadu'}</span>
+            {/* Patient Basic Information Card */}
+            <div className="bg-white dark:bg-slate-900 rounded-3xl p-6 border border-slate-200 dark:border-slate-800 shadow-xs space-y-4">
+              <h3 className="text-sm font-black text-slate-900 dark:text-white uppercase tracking-wider flex items-center gap-2">
+                <User className="w-4 h-4 text-teal-500" />
+                {t("doctor.p360.demographics", "Patient Demographics")}
+              </h3>
+
+              <div className="space-y-3 text-xs">
+                <div className="flex justify-between py-1.5 border-b border-slate-100 dark:border-slate-800">
+                  <span className="text-slate-400">{t("doctor.profile.full_name", "Full Name")}</span>
+                  <span className="font-bold text-slate-900 dark:text-white">{patient.fullName}</span>
+                </div>
+                <div className="flex justify-between py-1.5 border-b border-slate-100 dark:border-slate-800">
+                  <span className="text-slate-400">{t("doctor.patients.gender_age", "Gender / Age")}</span>
+                  <span className="font-bold text-slate-900 dark:text-white">{t(`doctor.patients.${patient.gender.toLowerCase()}`, patient.gender)} • {patient.age} {t("doctor.patients.years", "Yrs")}</span>
+                </div>
+                <div className="flex justify-between py-1.5 border-b border-slate-100 dark:border-slate-800">
+                  <span className="text-slate-400">{t("doctor.p360.blood_group", "Blood Group")}</span>
+                  <span className="font-mono font-bold text-rose-600 dark:text-rose-400">{displayedBloodGroup}</span>
+                </div>
+                <div className="flex justify-between py-1.5 border-b border-slate-100 dark:border-slate-800">
+                  <span className="text-slate-400">{t("doctor.p360.emergency_contact", "Emergency Contact")}</span>
+                  <span className="font-bold text-slate-900 dark:text-white">{patient.emergencyContactName || t("doctor.p360.none_listed", "None listed")} ({patient.emergencyContactPhone || 'N/A'})</span>
+                </div>
+                <div className="flex justify-between py-1.5">
+                  <span className="text-slate-400">{t("doctor.p360.address", "Address")}</span>
+                  <span className="font-bold text-slate-900 dark:text-white text-right max-w-[180px]">{patient.address || 'Chennai, Tamil Nadu'}</span>
+                </div>
               </div>
             </div>
-          </div>
 
-          {/* Medication Adherence Card (Part 18) */}
-          <div className="bg-white dark:bg-slate-900 rounded-3xl p-6 border border-slate-200 dark:border-slate-800 shadow-xs space-y-4">
-            <h3 className="text-sm font-black text-slate-900 dark:text-white uppercase tracking-wider flex items-center gap-2">
-              <Pill className="w-4 h-4 text-cyan-500" />
-              {t("doctor.p360.medications_adherence", "Medication Adherence")}
-            </h3>
+            {/* Medication Adherence Card (Part 18) */}
+            <div className="bg-white dark:bg-slate-900 rounded-3xl p-6 border border-slate-200 dark:border-slate-800 shadow-xs space-y-4">
+              <h3 className="text-sm font-black text-slate-900 dark:text-white uppercase tracking-wider flex items-center gap-2">
+                <Pill className="w-4 h-4 text-cyan-500" />
+                {t("doctor.p360.medications_adherence", "Medication Adherence")}
+              </h3>
 
-            {authData?.adherence?.hasData ? (
-              <div className="space-y-4">
-                <div className="p-4 rounded-2xl bg-teal-50 dark:bg-teal-950/40 border border-teal-200 dark:border-teal-800/60 flex items-center justify-between">
-                  <div>
-                    <span className="text-3xl font-black text-teal-700 dark:text-teal-300">
-                      {authData.adherence.percentage}%
-                    </span>
-                    <p className="text-[11px] text-teal-600 dark:text-teal-400 font-bold mt-0.5">{t("doctor.p360.overall_adherence", "Overall Adherence")}</p>
+              {authData?.adherence?.hasData ? (
+                <div className="space-y-4">
+                  <div className="p-4 rounded-2xl bg-teal-50 dark:bg-teal-950/40 border border-teal-200 dark:border-teal-800/60 flex items-center justify-between">
+                    <div>
+                      <span className="text-3xl font-black text-teal-700 dark:text-teal-300">
+                        {authData.adherence.percentage}%
+                      </span>
+                      <p className="text-[11px] text-teal-600 dark:text-teal-400 font-bold mt-0.5">{t("doctor.p360.overall_adherence", "Overall Adherence")}</p>
+                    </div>
+                    <div className="text-right text-xs font-bold text-slate-600 dark:text-slate-300">
+                      <p>{t("doctor.p360.taken_label", "Taken:")} <span className="text-emerald-600 dark:text-emerald-400">{authData.adherence.completedReminders}</span></p>
+                      <p>{t("doctor.p360.total_label", "Total:")} {authData.adherence.totalReminders}</p>
+                    </div>
                   </div>
-                  <div className="text-right text-xs font-bold text-slate-600 dark:text-slate-300">
-                    <p>{t("doctor.p360.taken_label", "Taken:")} <span className="text-emerald-600 dark:text-emerald-400">{authData.adherence.completedReminders}</span></p>
-                    <p>{t("doctor.p360.total_label", "Total:")} {authData.adherence.totalReminders}</p>
-                  </div>
-                </div>
-                <p className="text-xs text-slate-600 dark:text-slate-400 font-medium">
-                  {authData.adherence.summary}
-                </p>
-              </div>
-            ) : (
-              <div className="p-6 rounded-2xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-700 text-center space-y-2">
-                <Clock className="w-8 h-8 text-slate-400 mx-auto" />
-                <p className="text-xs font-bold text-slate-600 dark:text-slate-300">
-                  {authData?.adherence?.message || t("doctor.p360.no_adherence", "Medication adherence data is not available.")}
-                </p>
-              </div>
-            )}
-          </div>
-
-          {/* Approved Permission Scope Badge List */}
-          <div className="bg-white dark:bg-slate-900 rounded-3xl p-6 border border-slate-200 dark:border-slate-800 shadow-xs space-y-4">
-            <h3 className="text-sm font-black text-slate-900 dark:text-white uppercase tracking-wider flex items-center gap-2">
-              <ShieldCheck className="w-4 h-4 text-emerald-500" />
-              {t("doctor.p360.approved_scope", "Approved Scope of Access")}
-            </h3>
-
-            <div className="space-y-2">
-              {scopes.map((scope) => (
-                <div
-                  key={scope}
-                  className="px-3 py-2 rounded-xl bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800/50 flex items-center justify-between text-xs font-bold text-emerald-800 dark:text-emerald-300"
-                >
-                  <span>{scope}</span>
-                  <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-
-        {/* Quick Access: Patient Uploaded Reports & Checkup Documents Card */}
-        {hasScope('Reports') && authData?.reports && authData.reports.length > 0 && (
-          <div className="bg-white dark:bg-slate-900 rounded-3xl p-6 border border-slate-200 dark:border-slate-800 shadow-xs space-y-4">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div className="flex items-center gap-2.5">
-                <div className="p-2.5 rounded-2xl bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20">
-                  <TestTube className="w-5 h-5" />
-                </div>
-                <div>
-                  <h3 className="text-sm font-black text-slate-900 dark:text-white uppercase tracking-wider flex items-center gap-2">
-                    <span>{t("doctor.p360.reports_preview_title", "Diagnostic Reports & Scanned Checkup Documents")}</span>
-                    <span className="px-2 py-0.5 rounded-full bg-teal-50 dark:bg-teal-950/40 text-teal-700 dark:text-teal-300 border border-teal-200 dark:border-teal-800/60 text-[10px] font-mono font-bold">
-                      {authData.reports.length} Available
-                    </span>
-                  </h3>
-                  <p className="text-xs text-slate-500 dark:text-slate-400 font-medium">
-                    All lab tests, diagnostic scans, and previous checkup documents uploaded by patient under ABDM consent
+                  <p className="text-xs text-slate-600 dark:text-slate-400 font-medium">
+                    {authData.adherence.summary}
                   </p>
                 </div>
-              </div>
-
-              <button
-                onClick={() => setActiveTab('reports')}
-                className="px-4 py-2 rounded-xl bg-teal-50 hover:bg-teal-100 dark:bg-teal-950/40 dark:hover:bg-teal-900/40 text-teal-700 dark:text-teal-300 border border-teal-200 dark:border-teal-800/60 text-xs font-black flex items-center gap-1.5 transition-colors cursor-pointer"
-              >
-                <span>{t("doctor.p360.view_all_reports", "View All Reports & Scans")} ({authData.reports.length})</span>
-                <ChevronRight className="w-4 h-4" />
-              </button>
+              ) : (
+                <div className="p-6 rounded-2xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-700 text-center space-y-2">
+                  <Clock className="w-8 h-8 text-slate-400 mx-auto" />
+                  <p className="text-xs font-bold text-slate-600 dark:text-slate-300">
+                    {authData?.adherence?.message || t("doctor.p360.no_adherence", "Medication adherence data is not available.")}
+                  </p>
+                </div>
+              )}
             </div>
 
-            {/* Grid of Latest Reports */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-1">
-              {authData.reports.slice(0, 3).map((rp, i) => {
-                const typeUpper = (rp.type || '').toUpperCase();
-                const isLab = typeUpper === 'LAB_REPORT' || typeUpper === 'LAB REPORT';
-                const isImaging = typeUpper === 'IMAGING';
-                return (
-                  <div
-                    key={rp.id || i}
-                    className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 hover:border-teal-400 dark:hover:border-teal-600 transition-all flex flex-col justify-between space-y-3"
-                  >
-                    <div>
-                      <div className="flex items-center justify-between text-[10px] font-bold text-slate-400 mb-1.5">
-                        <span className="font-mono">{new Date(rp.recordDate).toLocaleDateString()}</span>
-                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                          isLab
-                            ? 'bg-teal-100 text-teal-700 dark:bg-teal-950/60 dark:text-teal-300'
-                            : isImaging
-                            ? 'bg-indigo-100 text-indigo-700 dark:bg-indigo-950/60 dark:text-indigo-300'
-                            : 'bg-cyan-100 text-cyan-700 dark:bg-cyan-950/60 dark:text-cyan-300'
-                        }`}>
-                          {isLab ? 'Lab Report' : isImaging ? 'Imaging Scan' : 'Checkup Scan'}
-                        </span>
-                      </div>
-                      <h4 className="text-xs font-black text-slate-900 dark:text-white line-clamp-2">
-                        {rp.title}
-                      </h4>
-                      <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate mt-1 flex items-center gap-1">
-                        <Building2 className="w-3 h-3 text-slate-400 shrink-0" />
-                        <span className="truncate">{rp.hospital || 'MediCare Hospital'}</span>
-                      </p>
-                      {rp.fileName && (
-                        <div className="mt-2 text-[10px] text-slate-500 dark:text-slate-400 font-mono truncate flex items-center gap-1 bg-white/60 dark:bg-slate-900/60 px-2 py-1 rounded-lg border border-slate-200/60 dark:border-slate-800">
-                          <FileText className="w-3 h-3 text-teal-500 shrink-0" />
-                          <span className="truncate">{rp.fileName}</span>
-                          {rp.fileSize && <span className="text-slate-400 ml-auto shrink-0 font-sans font-bold">({rp.fileSize})</span>}
-                        </div>
-                      )}
-                    </div>
+            {/* Approved Permission Scope Badge List */}
+            <div className="bg-white dark:bg-slate-900 rounded-3xl p-6 border border-slate-200 dark:border-slate-800 shadow-xs space-y-4">
+              <h3 className="text-sm font-black text-slate-900 dark:text-white uppercase tracking-wider flex items-center gap-2">
+                <ShieldCheck className="w-4 h-4 text-emerald-500" />
+                {t("doctor.p360.approved_scope", "Approved Scope of Access")}
+              </h3>
 
-                    <button
-                      onClick={() => {
-                        setPreviewRecord(mapToMedicalRecordItem(rp));
-                        setPreviewModalOpen(true);
-                      }}
-                      className="w-full py-2 px-3 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 hover:bg-teal-600 hover:text-white hover:border-teal-600 dark:hover:bg-teal-600 dark:hover:border-teal-600 transition-all text-xs font-bold text-slate-700 dark:text-slate-200 flex items-center justify-center gap-1.5 cursor-pointer shadow-xs"
-                    >
-                      <Eye className="w-3.5 h-3.5" />
-                      <span>{t("doctor.p360.preview", "Preview Document")}</span>
-                    </button>
+              <div className="space-y-2">
+                {scopes.map((scope) => (
+                  <div
+                    key={scope}
+                    className="px-3 py-2 rounded-xl bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800/50 flex items-center justify-between text-xs font-bold text-emerald-800 dark:text-emerald-300"
+                  >
+                    <span>{scope}</span>
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600" />
                   </div>
-                );
-              })}
+                ))}
+              </div>
             </div>
           </div>
-        )}
-      </div>
-    )}
+
+          {/* Quick Access: Patient Uploaded Reports & Checkup Documents Card */}
+          {hasScope('Reports') && authData?.reports && authData.reports.length > 0 && (
+            <div className="bg-white dark:bg-slate-900 rounded-3xl p-6 border border-slate-200 dark:border-slate-800 shadow-xs space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="flex items-center gap-2.5">
+                  <div className="p-2.5 rounded-2xl bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20">
+                    <TestTube className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-black text-slate-900 dark:text-white uppercase tracking-wider flex items-center gap-2">
+                      <span>{t("doctor.p360.reports_preview_title", "Diagnostic Reports & Scanned Checkup Documents")}</span>
+                      <span className="px-2 py-0.5 rounded-full bg-teal-50 dark:bg-teal-950/40 text-teal-700 dark:text-teal-300 border border-teal-200 dark:border-teal-800/60 text-[10px] font-mono font-bold">
+                        {authData.reports.length} Available
+                      </span>
+                    </h3>
+                    <p className="text-xs text-slate-500 dark:text-slate-400 font-medium">
+                      All lab tests, diagnostic scans, and previous checkup documents uploaded by patient under ABDM consent
+                    </p>
+                  </div>
+                </div>
+
+                <button
+                  onClick={() => setActiveTab('reports')}
+                  className="px-4 py-2 rounded-xl bg-teal-50 hover:bg-teal-100 dark:bg-teal-950/40 dark:hover:bg-teal-900/40 text-teal-700 dark:text-teal-300 border border-teal-200 dark:border-teal-800/60 text-xs font-black flex items-center gap-1.5 transition-colors cursor-pointer"
+                >
+                  <span>{t("doctor.p360.view_all_reports", "View All Reports & Scans")} ({authData.reports.length})</span>
+                  <ChevronRight className="w-4 h-4" />
+                </button>
+              </div>
+
+              {/* Grid of Latest Reports */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-1">
+                {authData.reports.slice(0, 3).map((rp, i) => {
+                  const typeUpper = (rp.type || '').toUpperCase();
+                  const isLab = typeUpper === 'LAB_REPORT' || typeUpper === 'LAB REPORT';
+                  const isImaging = typeUpper === 'IMAGING';
+                  return (
+                    <div
+                      key={rp.id || i}
+                      className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 hover:border-teal-400 dark:hover:border-teal-600 transition-all flex flex-col justify-between space-y-3"
+                    >
+                      <div>
+                        <div className="flex items-center justify-between text-[10px] font-bold text-slate-400 mb-1.5">
+                          <span className="font-mono">{new Date(rp.recordDate).toLocaleDateString()}</span>
+                          <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${isLab
+                              ? 'bg-teal-100 text-teal-700 dark:bg-teal-950/60 dark:text-teal-300'
+                              : isImaging
+                                ? 'bg-indigo-100 text-indigo-700 dark:bg-indigo-950/60 dark:text-indigo-300'
+                                : 'bg-cyan-100 text-cyan-700 dark:bg-cyan-950/60 dark:text-cyan-300'
+                            }`}>
+                            {isLab ? 'Lab Report' : isImaging ? 'Imaging Scan' : 'Checkup Scan'}
+                          </span>
+                        </div>
+                        <h4 className="text-xs font-black text-slate-900 dark:text-white line-clamp-2">
+                          {rp.title}
+                        </h4>
+                        <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate mt-1 flex items-center gap-1">
+                          <Building2 className="w-3 h-3 text-slate-400 shrink-0" />
+                          <span className="truncate">{rp.hospital || 'MediCare Hospital'}</span>
+                        </p>
+                        {rp.fileName && (
+                          <div className="mt-2 text-[10px] text-slate-500 dark:text-slate-400 font-mono truncate flex items-center gap-1 bg-white/60 dark:bg-slate-900/60 px-2 py-1 rounded-lg border border-slate-200/60 dark:border-slate-800">
+                            <FileText className="w-3 h-3 text-teal-500 shrink-0" />
+                            <span className="truncate">{rp.fileName}</span>
+                            {rp.fileSize && <span className="text-slate-400 ml-auto shrink-0 font-sans font-bold">({rp.fileSize})</span>}
+                          </div>
+                        )}
+                      </div>
+
+                      <button
+                        onClick={() => {
+                          setPreviewRecord(mapToMedicalRecordItem(rp));
+                          setPreviewModalOpen(true);
+                        }}
+                        className="w-full py-2 px-3 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 hover:bg-teal-600 hover:text-white hover:border-teal-600 dark:hover:bg-teal-600 dark:hover:border-teal-600 transition-all text-xs font-bold text-slate-700 dark:text-slate-200 flex items-center justify-center gap-1.5 cursor-pointer shadow-xs"
+                      >
+                        <Eye className="w-3.5 h-3.5" />
+                        <span>{t("doctor.p360.preview", "Preview Document")}</span>
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* VITALS TAB */}
       {activeTab === 'vitals' && (
         <div className="space-y-6">
           <PatientHealthTrendsView patientId={patient.id} patientName={patient.fullName} mode="vitals" />
-          
+
           <div className="bg-white dark:bg-slate-900 rounded-3xl p-6 border border-slate-200 dark:border-slate-800 shadow-xs space-y-4">
             <h3 className="text-base font-black text-slate-900 dark:text-white flex items-center gap-2">
               <HeartPulse className="w-5 h-5 text-rose-500" />
@@ -669,7 +617,7 @@ ABDM Digital Consent Verified • Patient Consent Active`;
       {activeTab === 'medications' && (
         <div className="space-y-6">
           <PatientHealthTrendsView patientId={patient.id} patientName={patient.fullName} mode="medications" />
-          
+
           <div className="bg-white dark:bg-slate-900 rounded-3xl p-6 border border-slate-200 dark:border-slate-800 shadow-xs space-y-4">
             <h3 className="text-base font-black text-slate-900 dark:text-white flex items-center gap-2">
               <Pill className="w-5 h-5 text-teal-500" />
@@ -802,16 +750,14 @@ ABDM Digital Consent Verified • Patient Consent Active`;
               <button
                 key={f.id}
                 onClick={() => setReportFilter(f.id as any)}
-                className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer ${
-                  reportFilter === f.id
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer ${reportFilter === f.id
                     ? 'bg-teal-600 text-white shadow-xs'
                     : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700'
-                }`}
+                  }`}
               >
                 <span>{f.label}</span>
-                <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-mono ${
-                  reportFilter === f.id ? 'bg-white/20 text-white' : 'bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300'
-                }`}>
+                <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-mono ${reportFilter === f.id ? 'bg-white/20 text-white' : 'bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300'
+                  }`}>
                   {f.count}
                 </span>
               </button>
@@ -836,13 +782,12 @@ ABDM Digital Consent Verified • Patient Consent Active`;
                       {/* Top meta */}
                       <div className="flex items-center justify-between text-xs">
                         <div className="flex items-center gap-1.5">
-                          <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider ${
-                            isLab
+                          <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider ${isLab
                               ? 'bg-teal-100 text-teal-800 dark:bg-teal-950/60 dark:text-teal-300 border border-teal-200 dark:border-teal-800/60'
                               : isImaging
-                              ? 'bg-indigo-100 text-indigo-800 dark:bg-indigo-950/60 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800/60'
-                              : 'bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300 border border-amber-200 dark:border-amber-800/60'
-                          }`}>
+                                ? 'bg-indigo-100 text-indigo-800 dark:bg-indigo-950/60 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800/60'
+                                : 'bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300 border border-amber-200 dark:border-amber-800/60'
+                            }`}>
                             {isLab ? 'Lab Report' : isImaging ? 'Imaging Scan' : isRx ? 'Prescription Scan' : 'Checkup Document'}
                           </span>
                           <span className="text-[10px] font-mono text-emerald-600 dark:text-emerald-400 font-bold bg-emerald-50 dark:bg-emerald-950/40 px-2 py-0.5 rounded-full border border-emerald-200 dark:border-emerald-800/40">

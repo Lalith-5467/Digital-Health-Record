@@ -1,4 +1,5 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
+import { patientExtendedApi, recordApi, profileApi } from '../../../services/dhrApis';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
   Microscope, FileText, Calendar, Activity, Download, X, Clock, MapPin, AlertCircle, 
@@ -45,49 +46,93 @@ export const LabTestView: React.FC = () => {
   const [testDate, setTestDate] = useState('');
   const [testTime, setTestTime] = useState('08:00 AM');
 
-  // --- DATA ---
-  const [upcomingTests, setUpcomingTests] = useState([
-    {
-      id: 1,
-      title: 'Complete Blood Count (CBC)',
-      date: 'Sep 1, 2026',
-      time: '08:00 AM',
-      method: 'Home Collection',
-      fasting: true,
-      status: 'Scheduled' as TestStatus,
-      icon: 'activity',
-      instructions: ['Keep ID ready', 'No strenuous exercise', 'Phlebotomist arriving soon']
-    },
-    {
-      id: 2,
-      title: 'Lipid Profile',
-      date: 'Sep 3, 2026',
-      time: '07:30 AM',
-      method: 'Clinic Visit',
-      fasting: true,
-      status: 'Scheduled' as TestStatus,
-      icon: 'microscope',
-      instructions: ['12 hour fasting mandatory', 'Carry previous reports']
-    },
-    {
-      id: 3,
-      title: 'Thyroid Panel',
-      date: 'Sep 10, 2026',
-      time: '09:00 AM',
-      method: 'Home Collection',
-      fasting: false,
-      status: 'Scheduled' as TestStatus,
-      icon: 'microscope',
-      instructions: ['No special prep required']
-    }
-  ]);
+  // --- DATA (Hydrated from MySQL) ---
+  const [upcomingTests, setUpcomingTests] = useState<any[]>([]);
+  const [reports, setReports] = useState<any[]>([]);
+  const [rawBookings, setRawBookings] = useState<any[]>([]);
+  const [patientDisplay, setPatientDisplay] = useState({ name: 'Patient', ageSex: 'Not Recorded' });
 
-  const [reports] = useState([
-    { id: 101, title: "Thyroid Panel (T3, T4, TSH)", date: "Aug 15, 2026", status: "Normal" as ReportStatus, dr: "Dr. Smith" },
-    { id: 102, title: "Vitamin D & B12", date: "Jul 22, 2026", status: "Attention" as ReportStatus, dr: "Dr. Adams" },
-    { id: 103, title: "HbA1c (Diabetes)", date: "May 10, 2026", status: "Borderline" as ReportStatus, dr: "Dr. Smith" },
-    { id: 104, title: "Lipid Profile", date: "Apr 05, 2026", status: "Normal" as ReportStatus, dr: "Dr. Johnson" }
-  ]);
+  const loadLabTests = async () => {
+    try {
+      const [bookingsRes, recordsRes, profRes] = await Promise.all([
+        patientExtendedApi.getLabTests().catch(() => null),
+        recordApi.getMedicalRecords().catch(() => null),
+        profileApi.getPatientProfile().catch(() => null),
+      ]);
+
+      const pat: any = profRes?.data;
+      if (pat) {
+        const age = pat.dateOfBirth
+          ? Math.max(1, new Date().getFullYear() - new Date(pat.dateOfBirth).getFullYear())
+          : null;
+        setPatientDisplay({
+          name: pat.fullName || 'Patient',
+          ageSex: age ? `${age} / ${(pat.gender || 'N/A').slice(0, 1).toUpperCase()}` : (pat.gender || 'Not Recorded'),
+        });
+      }
+
+      const bookingsList = Array.isArray(bookingsRes?.data) ? bookingsRes!.data : [];
+      setRawBookings(bookingsList);
+      setUpcomingTests(
+        bookingsList.map((t: any) => ({
+          id: t.id,
+          title: t.testName,
+          date: t.scheduledDate ? new Date(t.scheduledDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : 'Scheduled',
+          time: t.scheduledTime || '08:00 AM',
+          method: t.collectionType || 'Home Collection',
+          fasting: String(t.testName || '').toLowerCase().includes('lipid') || String(t.testName || '').toLowerCase().includes('blood'),
+          status: (t.status || 'Scheduled') as TestStatus,
+          icon: 'activity',
+          instructions: [t.notes || 'Phlebotomist assigned'],
+        }))
+      );
+
+      const recordsList = Array.isArray(recordsRes?.data) ? recordsRes!.data : [];
+      const labRecords = recordsList
+        .filter((r: any) => String(r.type || '').toUpperCase() === 'LAB_REPORT')
+        .map((r: any) => {
+          const rawSt = String(r.status || 'Normal').toLowerCase();
+          const mappedStatus: ReportStatus = rawSt.includes('attention') || rawSt.includes('critical') || rawSt.includes('high')
+            ? 'Attention'
+            : rawSt.includes('borderline') || rawSt.includes('pending')
+            ? 'Borderline'
+            : 'Normal';
+          return {
+            id: r.id,
+            title: r.title,
+            date: r.recordDate ? new Date(r.recordDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '—',
+            status: mappedStatus,
+            dr: r.hospital || 'Diagnostic Lab',
+            notes: r.notes || '',
+            fileUrl: r.fileUrl || null,
+          };
+        });
+
+      const completedBookingReports = bookingsList
+        .filter((b: any) => String(b.status || '').toLowerCase() === 'completed' || b.resultValue)
+        .map((b: any) => ({
+          id: `BK-${b.id}`,
+          title: b.testName,
+          date: b.scheduledDate ? new Date(b.scheduledDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '—',
+          status: 'Normal' as ReportStatus,
+          dr: b.labName || 'Certified Diagnostics Lab',
+          resultValue: b.resultValue,
+          resultUnit: b.resultUnit,
+          referenceRange: b.referenceRange,
+          notes: b.notes || '',
+          fileUrl: b.reportUrl || null,
+        }));
+
+      setReports([...labRecords, ...completedBookingReports]);
+    } catch {
+      setUpcomingTests([]);
+      setReports([]);
+    }
+  };
+
+  useEffect(() => {
+    loadLabTests();
+  }, []);
 
   const popularTests = [
     { name: 'Complete Blood Count', desc: 'Blood cell health', price: '$45' },
@@ -97,12 +142,38 @@ export const LabTestView: React.FC = () => {
     { name: 'HbA1c', desc: 'Blood sugar (3 mo)', price: '$35' }
   ];
 
-  const trendDataMap: Record<string, { labels: string[], values: number[], min: number, max: number, normalRange: [number, number] }> = {
-    'HbA1c': { labels: ["Mar '26", "Apr '26", "May '26", "Jun '26", "Jul '26", "Aug '26"], values: [6.2, 5.8, 5.6, 5.4, 5.5, 5.3], min: 4.0, max: 7.0, normalRange: [4.0, 5.7] },
-    'Vitamin D': { labels: ["Mar '26", "Apr '26", "May '26", "Jun '26", "Jul '26", "Aug '26"], values: [22, 28, 35, 38, 40, 42], min: 10, max: 60, normalRange: [30, 100] },
-    'Cholesterol': { labels: ["Mar '26", "Apr '26", "May '26", "Jun '26", "Jul '26", "Aug '26"], values: [210, 205, 198, 190, 185, 180], min: 150, max: 250, normalRange: [0, 200] },
-    'Hemoglobin': { labels: ["Mar '26", "Apr '26", "May '26", "Jun '26", "Jul '26", "Aug '26"], values: [12.1, 12.5, 13.0, 13.2, 13.5, 13.8], min: 10, max: 16, normalRange: [13.5, 17.5] }
-  };
+  const trendDataMap = useMemo(() => {
+    const map: Record<string, { labels: string[]; values: number[]; min: number; max: number; normalRange: [number, number] }> = {};
+    const metrics = ['HbA1c', 'Vitamin D', 'Cholesterol', 'Hemoglobin'];
+    metrics.forEach((metric) => {
+      const matching = rawBookings
+        .filter((b: any) =>
+          String(b.testName || '').toLowerCase().includes(metric.toLowerCase()) &&
+          b.resultValue !== null &&
+          b.resultValue !== undefined &&
+          !isNaN(Number(b.resultValue))
+        )
+        .sort((a: any, b: any) => new Date(a.scheduledDate || a.createdAt).getTime() - new Date(b.scheduledDate || b.createdAt).getTime());
+
+      if (matching.length > 0) {
+        const vals = matching.map((b: any) => Number(b.resultValue));
+        const labels = matching.map((b: any) =>
+          new Date(b.scheduledDate || b.createdAt).toLocaleDateString('en-US', { month: 'short', year: '2-digit' })
+        );
+        const minV = Math.min(...vals);
+        const maxV = Math.max(...vals);
+        const pad = Math.max(1, (maxV - minV) * 0.25);
+        map[metric] = {
+          labels,
+          values: vals,
+          min: Math.max(0, minV - pad),
+          max: maxV + pad,
+          normalRange: [minV, maxV],
+        };
+      }
+    });
+    return map;
+  }, [rawBookings]);
 
   // --- ACTIONS ---
   const showToast = (msg: string) => {
@@ -110,35 +181,39 @@ export const LabTestView: React.FC = () => {
     setTimeout(() => setToastMessage(null), 3000);
   };
 
-  const handleBookTest = (e: React.FormEvent) => {
+  const handleBookTest = async (e: React.FormEvent) => {
     e.preventDefault();
-    const newTest = {
-      id: Date.now(),
-      title: testType,
-      date: testDate ? new Date(testDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : 'Pending',
-      time: testTime,
-      method: 'Home Collection',
-      fasting: testType.includes('Lipid') || testType.includes('Blood'),
-      status: 'Scheduled' as TestStatus,
-      icon: 'activity',
-      instructions: ['Phlebotomist assigned']
-    };
-    setUpcomingTests(prev => [newTest, ...prev]);
-    setIsBookingModalOpen(false);
-    showToast("Lab test booked successfully!");
-    setTestDate('');
+    try {
+      await patientExtendedApi.createLabTest({
+        testName: testType,
+        scheduledDate: testDate || new Date().toISOString(),
+        scheduledTime: testTime,
+        collectionType: 'Home Collection',
+      });
+      await loadLabTests();
+      setIsBookingModalOpen(false);
+      showToast('Lab test booking saved to MySQL!');
+      setTestDate('');
+    } catch {
+      showToast('Failed to book lab test');
+    }
   };
 
-  const handleReschedule = (e: React.FormEvent) => {
+  const handleReschedule = async (e: React.FormEvent) => {
     e.preventDefault();
-    setUpcomingTests(prev => prev.map(t => t.id === selectedUpcomingTest?.id ? {
-      ...t,
-      date: testDate ? new Date(testDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : t.date,
-      time: testTime
-    } : t));
-    setIsRescheduleModalOpen(false);
-    setSelectedUpcomingTest(null);
-    showToast("Test rescheduled successfully!");
+    if (!selectedUpcomingTest?.id) return;
+    try {
+      await patientExtendedApi.updateLabTest(String(selectedUpcomingTest.id), {
+        status: 'Scheduled',
+        notes: `Rescheduled to ${testDate || selectedUpcomingTest.date} at ${testTime}`,
+      });
+      await loadLabTests();
+      setIsRescheduleModalOpen(false);
+      setSelectedUpcomingTest(null);
+      showToast('Test rescheduled in database!');
+    } catch {
+      showToast('Failed to reschedule test');
+    }
   };
 
   // --- HELPERS ---
@@ -180,7 +255,15 @@ export const LabTestView: React.FC = () => {
   // --- TREND CHART RENDERER ---
   const renderTrendChart = () => {
     const data = trendDataMap[selectedTrendMetric];
-    if (!data) return null;
+    if (!data || data.values.length === 0) {
+      return (
+        <div className="relative w-full h-[200px] mt-4 flex flex-col items-center justify-center text-center bg-slate-50 dark:bg-slate-800/40 rounded-2xl border border-dashed border-slate-200 dark:border-slate-700 p-6">
+          <Activity className="w-7 h-7 text-slate-400 mb-2" />
+          <p className="text-sm font-bold text-slate-700 dark:text-slate-300">No {selectedTrendMetric} trend data recorded yet</p>
+          <p className="text-xs text-slate-500 mt-1">Completed lab test results with numeric values will appear here automatically.</p>
+        </div>
+      );
+    }
     const { labels, values, min, max } = data;
     
     // Simple SVG line chart logic
@@ -190,10 +273,11 @@ export const LabTestView: React.FC = () => {
     const padRight = 15;
     const padY = 25; // top/bottom padding
     
-    const range = max - min;
+    const range = Math.max(0.1, max - min);
     
     const points = values.map((val, i) => {
-      const x = padX + (i / (values.length - 1)) * (width - padX - padRight);
+      const denom = Math.max(1, values.length - 1);
+      const x = padX + (values.length === 1 ? (width - padX - padRight) / 2 : (i / denom) * (width - padX - padRight));
       const y = height - padY - ((val - min) / range) * (height - 2 * padY);
       return `${x},${y}`;
     }).join(' ');
@@ -219,11 +303,14 @@ export const LabTestView: React.FC = () => {
           })}
           
           {/* Line */}
-          <polyline points={points} fill="none" stroke="currentColor" strokeWidth="2.5" className="text-emerald-500 drop-shadow-sm" />
+          {values.length > 1 && (
+            <polyline points={points} fill="none" stroke="currentColor" strokeWidth="2.5" className="text-emerald-500 drop-shadow-sm" />
+          )}
           
           {/* Points & X-axis & Values */}
           {values.map((val, i) => {
-            const x = padX + (i / (values.length - 1)) * (width - padX - padRight);
+            const denom = Math.max(1, values.length - 1);
+            const x = padX + (values.length === 1 ? (width - padX - padRight) / 2 : (i / denom) * (width - padX - padRight));
             const y = height - padY - ((val - min) / range) * (height - 2 * padY);
             return (
               <g key={i}>
@@ -312,7 +399,7 @@ export const LabTestView: React.FC = () => {
               >
                 <div className="flex items-center justify-between mb-2">
                   <CheckCircle2 className="w-5 h-5 text-emerald-500 group-hover:scale-110 transition-transform" />
-                  <span className="text-2xl font-black text-emerald-700 dark:text-emerald-400">12</span>
+                  <span className="text-2xl font-black text-emerald-700 dark:text-emerald-400">{reports.filter((r) => r.status === 'Normal').length}</span>
                 </div>
                 <p className="text-[10px] font-bold text-emerald-600 dark:text-emerald-500 uppercase tracking-wider">Normal</p>
               </div>
@@ -323,7 +410,7 @@ export const LabTestView: React.FC = () => {
               >
                 <div className="flex items-center justify-between mb-2">
                   <AlertCircle className="w-5 h-5 text-amber-500 group-hover:scale-110 transition-transform" />
-                  <span className="text-2xl font-black text-amber-700 dark:text-amber-400">2</span>
+                  <span className="text-2xl font-black text-amber-700 dark:text-amber-400">{reports.filter((r) => r.status === 'Borderline').length}</span>
                 </div>
                 <p className="text-[10px] font-bold text-amber-600 dark:text-amber-500 uppercase tracking-wider">Borderline</p>
               </div>
@@ -334,7 +421,7 @@ export const LabTestView: React.FC = () => {
               >
                 <div className="flex items-center justify-between mb-2">
                   <Zap className="w-5 h-5 text-rose-500 fill-rose-500 group-hover:scale-110 transition-transform" />
-                  <span className="text-2xl font-black text-rose-700 dark:text-rose-400">1</span>
+                  <span className="text-2xl font-black text-rose-700 dark:text-rose-400">{reports.filter((r) => r.status === 'Attention').length}</span>
                 </div>
                 <p className="text-[10px] font-bold text-rose-600 dark:text-rose-500 uppercase tracking-wider">Attention</p>
               </div>
@@ -391,38 +478,55 @@ export const LabTestView: React.FC = () => {
               <h2 className="text-sm font-black uppercase tracking-wider text-blue-100">Upcoming Test</h2>
             </div>
             
-            <div className="mb-4">
-              <h3 className="text-xl font-black mb-1">Complete Blood Count (CBC)</h3>
-              <div className="flex items-center gap-3 text-sm font-medium text-blue-100">
-                <span className="flex items-center gap-1"><Calendar className="w-4 h-4" /> Sep 1, 2026</span>
-                <span className="flex items-center gap-1"><Clock className="w-4 h-4" /> 08:00 AM</span>
-              </div>
-            </div>
+            {upcomingTests[0] ? (
+              <>
+                <div className="mb-4">
+                  <h3 className="text-xl font-black mb-1">{upcomingTests[0].title}</h3>
+                  <div className="flex items-center gap-3 text-sm font-medium text-blue-100">
+                    <span className="flex items-center gap-1"><Calendar className="w-4 h-4" /> {upcomingTests[0].date}</span>
+                    <span className="flex items-center gap-1"><Clock className="w-4 h-4" /> {upcomingTests[0].time}</span>
+                  </div>
+                </div>
 
-            <div className="flex items-center gap-3">
-              <div className="relative flex-1 group">
-                <select 
-                  className="w-full bg-black/20 border border-white/20 text-sm font-bold px-4 py-2.5 rounded-xl appearance-none pr-8 cursor-pointer outline-none focus:border-white text-white placeholder-white/50"
-                  onChange={(e) => {
-                    setReminderStatus(e.target.value);
-                    showToast(`Reminder set for ${e.target.value.toLowerCase()}!`);
-                  }}
-                  value={reminderStatus || ""}
+                <div className="flex items-center gap-3">
+                  <div className="relative flex-1 group">
+                    <select 
+                      className="w-full bg-black/20 border border-white/20 text-sm font-bold px-4 py-2.5 rounded-xl appearance-none pr-8 cursor-pointer outline-none focus:border-white text-white placeholder-white/50"
+                      onChange={(e) => {
+                        setReminderStatus(e.target.value);
+                        showToast(`Reminder set for ${e.target.value.toLowerCase()}!`);
+                      }}
+                      value={reminderStatus || ""}
+                    >
+                      <option value="" disabled className="text-slate-900">Set Reminder...</option>
+                      <option value="1 day before" className="text-slate-900">1 day before</option>
+                      <option value="2 days before" className="text-slate-900">2 days before</option>
+                      <option value="1 week before" className="text-slate-900">1 week before</option>
+                    </select>
+                    <ChevronDown className="w-4 h-4 text-white/70 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  </div>
+                  <button 
+                    onClick={() => {
+                      setSelectedUpcomingTest(upcomingTests[0]);
+                      setIsRescheduleModalOpen(true);
+                    }}
+                    className="px-4 py-2.5 bg-white text-blue-700 font-bold rounded-xl text-sm hover:bg-blue-50 transition-colors shadow-sm"
+                  >
+                    Reschedule
+                  </button>
+                </div>
+              </>
+            ) : (
+              <div className="space-y-3">
+                <p className="text-sm font-medium text-blue-100">No upcoming lab tests scheduled yet.</p>
+                <button
+                  onClick={() => { setTestType('Complete Blood Count (CBC)'); setIsBookingModalOpen(true); }}
+                  className="px-4 py-2.5 bg-white text-blue-700 font-bold rounded-xl text-sm hover:bg-blue-50 transition-colors shadow-sm"
                 >
-                  <option value="" disabled className="text-slate-900">Set Reminder...</option>
-                  <option value="1 day before" className="text-slate-900">1 day before</option>
-                  <option value="2 days before" className="text-slate-900">2 days before</option>
-                  <option value="1 week before" className="text-slate-900">1 week before</option>
-                </select>
-                <ChevronDown className="w-4 h-4 text-white/70 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  Schedule a Lab Test
+                </button>
               </div>
-              <button 
-                onClick={() => setIsRescheduleModalOpen(true)}
-                className="px-4 py-2.5 bg-white text-blue-700 font-bold rounded-xl text-sm hover:bg-blue-50 transition-colors shadow-sm"
-              >
-                Reschedule
-              </button>
-            </div>
+            )}
           </div>
 
           {/* Before Your Test */}
@@ -733,18 +837,18 @@ export const LabTestView: React.FC = () => {
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4 pb-6 border-b border-slate-100 dark:border-slate-800">
                   <div>
                     <p className="text-xs text-slate-500 dark:text-slate-400 font-bold uppercase tracking-wider mb-1">Patient</p>
-                    <p className="font-bold text-slate-900 dark:text-white">Samson L.</p>
+                    <p className="font-bold text-slate-900 dark:text-white">{patientDisplay.name}</p>
                   </div>
                   <div>
                     <p className="text-xs text-slate-500 dark:text-slate-400 font-bold uppercase tracking-wider mb-1">Age / Sex</p>
-                    <p className="font-bold text-slate-900 dark:text-white">32 / M</p>
+                    <p className="font-bold text-slate-900 dark:text-white">{patientDisplay.ageSex}</p>
                   </div>
                   <div>
                     <p className="text-xs text-slate-500 dark:text-slate-400 font-bold uppercase tracking-wider mb-1">Date</p>
                     <p className="font-bold text-slate-900 dark:text-white">{selectedReport.date}</p>
                   </div>
                   <div>
-                    <p className="text-xs text-slate-500 dark:text-slate-400 font-bold uppercase tracking-wider mb-1">Referred By</p>
+                    <p className="text-xs text-slate-500 dark:text-slate-400 font-bold uppercase tracking-wider mb-1">Laboratory</p>
                     <p className="font-bold text-slate-900 dark:text-white">{selectedReport.dr}</p>
                   </div>
                 </div>
@@ -782,30 +886,19 @@ export const LabTestView: React.FC = () => {
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                        {selectedReport.status === 'Normal' ? (
-                          <>
-                            <tr className="hover:bg-slate-50 dark:hover:bg-slate-800/30 transition-colors">
-                              <td className="py-4 pr-4 font-bold text-slate-900 dark:text-white">TSH</td>
-                              <td className="py-4 px-4 font-black text-slate-900 dark:text-white">2.45</td>
-                              <td className="py-4 px-4 text-slate-500 dark:text-slate-400">uIU/mL</td>
-                              <td className="py-4 pl-4 text-slate-500 dark:text-slate-400">0.55 - 4.78</td>
-                            </tr>
-                            <tr className="hover:bg-slate-50 dark:hover:bg-slate-800/30 transition-colors">
-                              <td className="py-4 pr-4 font-bold text-slate-900 dark:text-white">Free T4</td>
-                              <td className="py-4 px-4 font-black text-slate-900 dark:text-white">1.12</td>
-                              <td className="py-4 px-4 text-slate-500 dark:text-slate-400">ng/dL</td>
-                              <td className="py-4 pl-4 text-slate-500 dark:text-slate-400">0.89 - 1.76</td>
-                            </tr>
-                          </>
+                        {selectedReport.resultValue ? (
+                          <tr className="hover:bg-slate-50 dark:hover:bg-slate-800/30 transition-colors">
+                            <td className="py-4 pr-4 font-bold text-slate-900 dark:text-white">{selectedReport.title}</td>
+                            <td className="py-4 px-4 font-black text-slate-900 dark:text-white">{selectedReport.resultValue}</td>
+                            <td className="py-4 px-4 text-slate-500 dark:text-slate-400">{selectedReport.resultUnit || '—'}</td>
+                            <td className="py-4 pl-4 text-slate-500 dark:text-slate-400">{selectedReport.referenceRange || '—'}</td>
+                          </tr>
                         ) : (
-                          <>
-                            <tr className="hover:bg-slate-50 dark:hover:bg-slate-800/30 transition-colors">
-                              <td className="py-4 pr-4 font-bold text-slate-900 dark:text-white">{selectedReport.title.includes('Vitamin') ? 'Vitamin D' : 'Value'}</td>
-                              <td className="py-4 px-4 font-black text-rose-600 dark:text-rose-400 bg-rose-50 dark:bg-rose-900/10 rounded-md">18.2 ↓</td>
-                              <td className="py-4 px-4 text-slate-500 dark:text-slate-400">ng/mL</td>
-                              <td className="py-4 pl-4 text-slate-500 dark:text-slate-400">30.0 - 100.0</td>
-                            </tr>
-                          </>
+                          <tr>
+                            <td colSpan={4} className="py-4 text-center text-slate-500 dark:text-slate-400 text-xs">
+                              {selectedReport.notes || 'No itemized parameter table stored for this report.'}
+                            </td>
+                          </tr>
                         )}
                       </tbody>
                     </table>
@@ -1032,28 +1125,36 @@ export const LabTestView: React.FC = () => {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                      {trendDataMap[selectedTrendMetric].labels.map((label, i) => {
-                        const val = trendDataMap[selectedTrendMetric].values[i];
-                        const normalRange = trendDataMap[selectedTrendMetric].normalRange;
-                        const isNormal = val >= normalRange[0] && val <= normalRange[1];
-                        return (
-                          <tr key={i} className="hover:bg-slate-50 dark:hover:bg-slate-800/30 transition-colors">
-                            <td className="py-3 pr-4 font-bold text-slate-900 dark:text-white">{label}</td>
-                            <td className="py-3 px-4 font-black text-slate-900 dark:text-white">{val}</td>
-                            <td className="py-3 px-4">
-                              {isNormal ? (
-                                <span className="inline-flex items-center gap-1.5 px-2 py-0.5 bg-emerald-50 dark:bg-emerald-900/10 border border-emerald-100 dark:border-emerald-800/30 text-emerald-600 dark:text-emerald-400 text-[10px] font-black uppercase tracking-wider rounded-md">
-                                  <CheckCircle2 className="w-3 h-3" /> Normal
-                                </span>
-                              ) : (
-                                <span className="inline-flex items-center gap-1.5 px-2 py-0.5 bg-amber-50 dark:bg-amber-900/10 border border-amber-100 dark:border-amber-800/30 text-amber-600 dark:text-amber-400 text-[10px] font-black uppercase tracking-wider rounded-md">
-                                  <AlertCircle className="w-3 h-3" /> Borderline
-                                </span>
-                              )}
-                            </td>
-                          </tr>
-                        );
-                      })}
+                      {(trendDataMap[selectedTrendMetric]?.labels || []).length === 0 ? (
+                        <tr>
+                          <td colSpan={3} className="py-6 text-center text-slate-500 text-xs">
+                            No historical readings recorded for {selectedTrendMetric} yet.
+                          </td>
+                        </tr>
+                      ) : (
+                        trendDataMap[selectedTrendMetric].labels.map((label, i) => {
+                          const val = trendDataMap[selectedTrendMetric].values[i];
+                          const normalRange = trendDataMap[selectedTrendMetric].normalRange;
+                          const isNormal = val >= normalRange[0] && val <= normalRange[1];
+                          return (
+                            <tr key={i} className="hover:bg-slate-50 dark:hover:bg-slate-800/30 transition-colors">
+                              <td className="py-3 pr-4 font-bold text-slate-900 dark:text-white">{label}</td>
+                              <td className="py-3 px-4 font-black text-slate-900 dark:text-white">{val}</td>
+                              <td className="py-3 px-4">
+                                {isNormal ? (
+                                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 bg-emerald-50 dark:bg-emerald-900/10 border border-emerald-100 dark:border-emerald-800/30 text-emerald-600 dark:text-emerald-400 text-[10px] font-black uppercase tracking-wider rounded-md">
+                                    <CheckCircle2 className="w-3 h-3" /> Normal
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 bg-amber-50 dark:bg-amber-900/10 border border-amber-100 dark:border-amber-800/30 text-amber-600 dark:text-amber-400 text-[10px] font-black uppercase tracking-wider rounded-md">
+                                    <AlertCircle className="w-3 h-3" /> Borderline
+                                  </span>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })
+                      )}
                     </tbody>
                   </table>
                 </div>

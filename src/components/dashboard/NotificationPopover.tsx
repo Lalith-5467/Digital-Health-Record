@@ -18,13 +18,12 @@ import {
   Check
 } from 'lucide-react';
 import type { NotificationLog } from '../reminders/remindersData';
-import { notificationApi } from '../../services/dhrApis';
+import { notificationApi, insuranceApi } from '../../services/dhrApis';
 import { healthShareApi, type AccessRequestItem } from '../../services/healthShareApi';
 import { socketService } from '../../services/socketService';
 import { notificationVoiceService } from '../../services/notificationVoiceService';
 import { useLanguage } from '../../context/LanguageContext';
 import { PatientAccessRequestsModal } from './PatientAccessRequestsModal';
-import { updateInsuranceClaimStatus, getStoredInsuranceRecords } from '../../utils/insuranceWorkflowStorage';
 import { showGlobalToast } from '../common/GlobalToastManager';
 
 const formatTimeAgo = (dateStr?: string) => {
@@ -158,76 +157,81 @@ export const NotificationPopover: React.FC<NotificationPopoverProps> = ({
         }
       });
 
-      // Ensure local storage notifications (e.g. from real-time insurance workflows) are merged
-      try {
-        const localRaw = localStorage.getItem('medicare_notifications');
-        const localList = localRaw ? JSON.parse(localRaw) : [];
-        if (Array.isArray(localList)) {
-          localList.forEach((ln: any) => {
-            const alreadyExists = mapped.some((m) => m.id === ln.id || (m.title === ln.title && m.description === ln.message));
-            if (!alreadyExists) {
-              mapped.unshift({
-                id: ln.id,
-                title: ln.title,
-                description: ln.message,
-                category: ln.category || 'Insurance Pre-Auth',
-                timeAgo: formatTimeAgo(ln.createdAt),
-                date: ln.createdAt ? new Date(ln.createdAt).toLocaleDateString() : new Date().toLocaleDateString(),
-                isRead: Boolean(ln.isRead),
-                relatedModule: ln.relatedModule || 'insurance',
-              });
-            }
-          });
-        }
-      } catch {}
-
       setNotifications(mapped);
     } catch {
-      // fallback if network error
+      setNotifications([]);
     }
   };
 
   const handleAcceptClaimFromNotif = async (notifItem: NotificationLog) => {
-    let claimId = '';
-    const match = notifItem.title.match(/CLM-[A-Za-z0-9_-]+/i) || notifItem.description.match(/CLM-[A-Za-z0-9_-]+/i);
-    if (match) claimId = match[0];
+    try {
+      let claimRef = '';
+      const match = notifItem.title.match(/CLM-[A-Za-z0-9_-]+/i) || notifItem.description.match(/CLM-[A-Za-z0-9_-]+/i);
+      if (match) claimRef = match[0];
 
-    const pool = getStoredInsuranceRecords();
-    const matchedRecord = pool.find(r => 
-      (r.currentClaim && (r.currentClaim.claimId === claimId || notifItem.description.includes(r.currentClaim.hospital))) ||
-      (r.insuranceId && notifItem.description.includes(r.patientName))
-    );
+      const claimsRes = await insuranceApi.getClaims().catch(() => ({ data: [] }));
+      const claims = Array.isArray(claimsRes?.data) ? claimsRes.data : [];
+      const matchedClaim = claims.find(
+        (c: any) =>
+          c.id === claimRef ||
+          c.claimNumber === claimRef ||
+          (c.hospitalName && notifItem.description.includes(c.hospitalName))
+      );
 
-    const insId = matchedRecord?.insuranceId || 'INS-MC-2026-10245';
-    const amt = matchedRecord?.currentClaim?.submittedAmount || 85000;
+      if (!matchedClaim) {
+        showGlobalToast('Could not locate matching insurance claim in database.', 'warning');
+        return;
+      }
 
-    await updateInsuranceClaimStatus(insId, 'Approved', amt, 'Claim ACCEPTED & Cashless Pre-Auth Approved');
-    handleMarkRead(notifItem.id);
-    showGlobalToast(`✓ Claim ${claimId || ''} ACCEPTED & APPROVED for ₹${amt.toLocaleString('en-IN')}! Patient notified immediately.`, 'success', 'Claim Approved');
-    loadNotifications();
+      const amt = Number(matchedClaim.claimedAmount || matchedClaim.amount || 0);
+      await insuranceApi.updateClaimStatus(matchedClaim.id, {
+        status: 'APPROVED',
+        approvedAmount: amt,
+        reason: 'Claim accepted & cashless pre-authorization approved',
+      });
+      await handleMarkRead(notifItem.id);
+      showGlobalToast(`✓ Claim ${matchedClaim.claimNumber || matchedClaim.id} approved for ₹${amt.toLocaleString('en-IN')}.`, 'success', 'Claim Approved');
+      loadNotifications();
+    } catch (err: any) {
+      showGlobalToast(err?.message || 'Failed to approve claim', 'error');
+    }
   };
 
   const handleDeclineClaimFromNotif = async (notifItem: NotificationLog) => {
-    let claimId = '';
-    const match = notifItem.title.match(/CLM-[A-Za-z0-9_-]+/i) || notifItem.description.match(/CLM-[A-Za-z0-9_-]+/i);
-    if (match) claimId = match[0];
+    try {
+      let claimRef = '';
+      const match = notifItem.title.match(/CLM-[A-Za-z0-9_-]+/i) || notifItem.description.match(/CLM-[A-Za-z0-9_-]+/i);
+      if (match) claimRef = match[0];
 
-    const pool = getStoredInsuranceRecords();
-    const matchedRecord = pool.find(r => 
-      (r.currentClaim && (r.currentClaim.claimId === claimId || notifItem.description.includes(r.currentClaim.hospital))) ||
-      (r.insuranceId && notifItem.description.includes(r.patientName))
-    );
+      const claimsRes = await insuranceApi.getClaims().catch(() => ({ data: [] }));
+      const claims = Array.isArray(claimsRes?.data) ? claimsRes.data : [];
+      const matchedClaim = claims.find(
+        (c: any) =>
+          c.id === claimRef ||
+          c.claimNumber === claimRef ||
+          (c.hospitalName && notifItem.description.includes(c.hospitalName))
+      );
 
-    const insId = matchedRecord?.insuranceId || 'INS-MC-2026-10245';
-    const userReason = window.prompt("Reason for declining claim:", "Missing itemized hospital pharmacy breakdown & prescription");
-    if (userReason === null) return; // user cancelled prompt
+      if (!matchedClaim) {
+        showGlobalToast('Could not locate matching insurance claim in database.', 'warning');
+        return;
+      }
 
-    const finalReason = userReason.trim() || 'Missing itemized hospital pharmacy breakdown & prescription';
+      const userReason = window.prompt('Reason for declining claim:', 'Missing itemized hospital pharmacy breakdown & prescription');
+      if (userReason === null) return;
 
-    await updateInsuranceClaimStatus(insId, 'Rejected', 0, `Claim DECLINED: ${finalReason}`);
-    handleMarkRead(notifItem.id);
-    showGlobalToast(`Claim ${claimId || ''} DECLINED. Rejection notice sent to patient.`, 'warning', 'Claim Declined');
-    loadNotifications();
+      const finalReason = userReason.trim() || 'Missing itemized hospital pharmacy breakdown & prescription';
+      await insuranceApi.updateClaimStatus(matchedClaim.id, {
+        status: 'REJECTED',
+        approvedAmount: 0,
+        reason: finalReason,
+      });
+      await handleMarkRead(notifItem.id);
+      showGlobalToast(`Claim ${matchedClaim.claimNumber || matchedClaim.id} declined.`, 'warning', 'Claim Declined');
+      loadNotifications();
+    } catch (err: any) {
+      showGlobalToast(err?.message || 'Failed to decline claim', 'error');
+    }
   };
 
   useEffect(() => {
@@ -256,120 +260,28 @@ export const NotificationPopover: React.FC<NotificationPopoverProps> = ({
     }
   }, [isOpen]);
 
-  const updateLocalStorageRead = (id?: string) => {
-    try {
-      const raw = localStorage.getItem('medicare_notifications');
-      if (raw) {
-        const list = JSON.parse(raw);
-        if (Array.isArray(list)) {
-          const updated = list.map((item: any) => {
-            if (!id || item.id === id) {
-              return { ...item, isRead: true, read: true };
-            }
-            return item;
-          });
-          localStorage.setItem('medicare_notifications', JSON.stringify(updated));
-        }
-      }
-    } catch {}
-
-    try {
-      const raw = localStorage.getItem('user_notifications');
-      if (raw) {
-        const list = JSON.parse(raw);
-        if (Array.isArray(list)) {
-          const updated = list.map((item: any) => {
-            if (!id || item.id === id) {
-              return { ...item, isRead: true };
-            }
-            return item;
-          });
-          localStorage.setItem('user_notifications', JSON.stringify(updated));
-        }
-      }
-    } catch {}
-  };
-
-  const removeLocalStorageNotif = (id: string) => {
-    try {
-      const raw = localStorage.getItem('medicare_notifications');
-      if (raw) {
-        const list = JSON.parse(raw);
-        if (Array.isArray(list)) {
-          localStorage.setItem('medicare_notifications', JSON.stringify(list.filter((item: any) => item.id !== id)));
-        }
-      }
-    } catch {}
-
-    try {
-      const raw = localStorage.getItem('user_notifications');
-      if (raw) {
-        const list = JSON.parse(raw);
-        if (Array.isArray(list)) {
-          localStorage.setItem('user_notifications', JSON.stringify(list.filter((item: any) => item.id !== id)));
-        }
-      }
-    } catch {}
-  };
-
-  const clearLocalStorageNotifs = (unreadOnly: boolean) => {
-    try {
-      if (unreadOnly) {
-        const raw = localStorage.getItem('medicare_notifications');
-        if (raw) {
-          const list = JSON.parse(raw);
-          if (Array.isArray(list)) {
-            localStorage.setItem('medicare_notifications', JSON.stringify(list.filter((item: any) => Boolean(item.isRead || item.read))));
-          }
-        }
-        const rawUser = localStorage.getItem('user_notifications');
-        if (rawUser) {
-          const list = JSON.parse(rawUser);
-          if (Array.isArray(list)) {
-            localStorage.setItem('user_notifications', JSON.stringify(list.filter((item: any) => Boolean(item.isRead))));
-          }
-        }
-      } else {
-        localStorage.setItem('medicare_notifications', JSON.stringify([]));
-        localStorage.setItem('user_notifications', JSON.stringify([]));
-      }
-    } catch {}
-  };
-
   const handleMarkRead = async (id: string, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
-    // 1. Optimistic update
     setNotifications((prev) => prev.map((n) => (n.id === id ? { ...n, isRead: true } : n)));
 
-    // 2. Persist to localStorage
-    updateLocalStorageRead(id);
-
-    // 3. Persist to server
     try {
       await notificationApi.markAsRead(id);
     } catch (err) {
       console.error('[NotificationPopover] Failed to mark as read:', err);
     }
 
-    // 4. Dispatch event after database commit
     window.dispatchEvent(new Event('notifications_updated'));
   };
 
   const handleMarkAllRead = async () => {
-    // 1. Optimistic update
     setNotifications((prev) => prev.map((n) => ({ ...n, isRead: true })));
 
-    // 2. Persist to localStorage
-    updateLocalStorageRead();
-
-    // 3. Persist to server
     try {
       await notificationApi.markAllAsRead();
     } catch (err) {
       console.error('[NotificationPopover] Failed to mark all as read:', err);
     }
 
-    // 4. Dispatch event after database commit
     window.dispatchEvent(new Event('notifications_updated'));
   };
 
@@ -377,11 +289,9 @@ export const NotificationPopover: React.FC<NotificationPopoverProps> = ({
     try {
       if (filter === 'unread') {
         const unreadNotifs = notifications.filter((n) => !n.isRead);
-        clearLocalStorageNotifs(true);
         await Promise.all(unreadNotifs.map((n) => notificationApi.deleteNotification(n.id).catch(() => null)));
         setNotifications((prev) => prev.filter((n) => n.isRead));
       } else {
-        clearLocalStorageNotifs(false);
         await notificationApi.clearAllNotifications().catch(() => null);
         setNotifications([]);
       }
@@ -394,7 +304,6 @@ export const NotificationPopover: React.FC<NotificationPopoverProps> = ({
   const handleRemoveSingle = async (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
     try {
-      removeLocalStorageNotif(id);
       await notificationApi.deleteNotification(id).catch(() => null);
       setNotifications((prev) => prev.filter((n) => n.id !== id));
       window.dispatchEvent(new Event('notifications_updated'));

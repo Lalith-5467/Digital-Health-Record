@@ -118,22 +118,46 @@ export const CaregiverMedicationsView: React.FC = () => {
     }
   };
 
-  // 4. Handle Refill via Pharmacy Order API
+  // 4. Handle Refill via real Pharmacy Order API / Caregiver Refill Task in MySQL
   const handleRefill = async (wardId: string, medId: string, medName: string, sourcePrescriptionId?: string) => {
+    if (!wardId) return;
     try {
+      let orderedDirectly = false;
       if (sourcePrescriptionId && !sourcePrescriptionId.startsWith('RX-MED-')) {
-        await pharmacyApi.createPharmacyOrder({
-          prescriptionId: sourcePrescriptionId,
-          pharmacyId: 'PHARM-1',
-          deliveryAddress: 'Home Address',
-        });
-        showToast(`Prescription refill ordered for ${medName}! Dispatched to pharmacy.`);
-      } else {
-        showToast(`Prescription refill ordered for ${medName}! Dispatched to pharmacy.`);
+        const pharmaciesRes = await pharmacyApi.getAvailablePharmacies().catch(() => null);
+        const pharmacyId = Array.isArray(pharmaciesRes?.data) ? pharmaciesRes.data[0]?.id : undefined;
+        if (pharmacyId) {
+          await pharmacyApi.createPharmacyOrder({
+            prescriptionId: sourcePrescriptionId,
+            pharmacyId,
+            deliveryAddress: workflowActiveWard?.currentLocation || 'Patient Residence',
+            deliveryType: 'Home Delivery',
+          });
+          orderedDirectly = true;
+        }
       }
+
+      if (!orderedDirectly) {
+        await caregiverApi.createTask({
+          patientId: wardId,
+          title: `Medication Refill Request: ${medName}`,
+          category: 'Medication',
+          scheduledTime: 'ASAP',
+          priority: 'high',
+          notes: `Refill requested for ${medName} (Med ID: ${medId})`,
+        });
+      }
+
+      showToast(
+        orderedDirectly
+          ? `Prescription refill order dispatched to pharmacy for ${medName}!`
+          : `Refill task for ${medName} logged in MySQL database!`
+      );
+      window.dispatchEvent(new Event('medicare_caregiver_sync'));
       await fetchMedications(wardId);
     } catch (err: any) {
-      showToast(`Prescription refill ordered for ${medName}! Dispatched to pharmacy.`);
+      console.error('Failed to process medication refill:', err);
+      showToast(err?.message || `Unable to submit refill request for ${medName}.`);
     }
   };
 
@@ -162,9 +186,9 @@ export const CaregiverMedicationsView: React.FC = () => {
       instructions: m.instructions || 'Take post meals with water',
       takenToday: isTaken,
       takenAt: takenLog?.actualTime || '08:30 AM',
-      stockLeft: m.stockRemaining !== undefined ? m.stockRemaining : (m.remainingDoses || 10),
+      stockLeft: m.stockRemaining !== undefined ? m.stockRemaining : (m.remainingDoses || 0),
       totalStock: m.totalStock !== undefined ? m.totalStock : (m.totalDoses || 30),
-      prescribedBy: m.prescribedBy || 'Dr. Rajesh Varma',
+      prescribedBy: m.prescribedBy || 'Attending Physician',
       sourcePrescriptionId: m.sourcePrescriptionId,
     };
   });
@@ -177,7 +201,7 @@ export const CaregiverMedicationsView: React.FC = () => {
   const totalCount = formattedMeds.length;
   const takenCount = formattedMeds.filter(m => m.takenToday).length;
   const lowStockCount = formattedMeds.filter(m => m.stockLeft <= 5).length;
-  const adherencePct = totalCount > 0 ? Math.round((takenCount / totalCount) * 100) : 100;
+  const adherencePct = totalCount > 0 ? Math.round((takenCount / totalCount) * 100) : 0;
 
   return (
     <div className="space-y-6 select-none pb-12">

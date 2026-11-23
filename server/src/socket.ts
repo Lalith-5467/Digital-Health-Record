@@ -1,8 +1,7 @@
 import { Server as SocketIOServer, Socket } from 'socket.io';
 import http from 'http';
-import jwt from 'jsonwebtoken';
-import { config } from './config/env';
 import { prisma } from './config/prisma';
+import { verifySessionToken } from './middleware/auth.middleware';
 
 export interface OrderStatusUpdatePayload {
   orderId: string;
@@ -30,42 +29,22 @@ export function initSocketServer(httpServer: http.Server): SocketIOServer {
     },
   });
 
-  // Authentication Middleware for Socket.IO
+  // Authentication Middleware for Socket.IO (strict JWT + active UserSession enforcement)
   io.use(async (socket: Socket, next) => {
     try {
       const token =
         socket.handshake.auth?.token ||
         socket.handshake.headers?.authorization?.replace(/^Bearer\s+/i, '');
 
-      if (!token) {
-        if (config.nodeEnv === 'development') {
-          const fallbackUser = await prisma.user.findFirst({ where: { isActive: true } });
-          if (fallbackUser) {
-            (socket as any).user = { id: fallbackUser.id, email: fallbackUser.email, role: fallbackUser.role };
-            return next();
-          }
-        }
+      if (!token || typeof token !== 'string') {
         return next(new Error('Authentication error: Token required'));
       }
 
-      let decoded: any;
-      try {
-        decoded = jwt.verify(token, config.jwtSecret);
-      } catch (jwtErr) {
-        if (config.nodeEnv === 'development') {
-          const fallbackUser = await prisma.user.findFirst({ where: { isActive: true } });
-          if (fallbackUser) {
-            (socket as any).user = { id: fallbackUser.id, email: fallbackUser.email, role: fallbackUser.role };
-            return next();
-          }
-        }
-        throw jwtErr;
-      }
-
-      (socket as any).user = decoded;
+      const authUser = await verifySessionToken(token.trim());
+      (socket as any).user = authUser;
       next();
     } catch (err: any) {
-      next(new Error(`Authentication error: ${err.message || 'Invalid token'}`));
+      next(new Error(`Authentication error: ${err?.message || 'Invalid token'}`));
     }
   });
 
@@ -140,16 +119,42 @@ export function initSocketServer(httpServer: http.Server): SocketIOServer {
       console.error('Socket room setup error:', err);
     }
 
-    // Allow client to subscribe to insurance updates
+    // Allow authorized roles to subscribe to insurance updates
     socket.on('insurance:subscribe', () => {
-      socket.join('insurance:room');
+      const r = String(user.role || '').toUpperCase();
+      if (r === 'INSURANCE_PROVIDER' || r === 'INSURANCE' || r === 'ADMIN' || r === 'SUPER_ADMIN') {
+        socket.join('insurance:room');
+      }
     });
 
-    // Allow client to track a specific order in real time
-    socket.on('order:subscribe', (orderId: string) => {
-      if (orderId && typeof orderId === 'string') {
-        socket.join(`order:${orderId}`);
-      }
+    // Allow authorized participant to track a specific order in real time
+    socket.on('order:subscribe', async (orderId: string) => {
+      if (!orderId || typeof orderId !== 'string') return;
+      try {
+        const r = String(user.role || '').toUpperCase();
+        if (r === 'ADMIN' || r === 'SUPER_ADMIN') {
+          socket.join(`order:${orderId}`);
+          return;
+        }
+        const order = await prisma.pharmacyOrder.findUnique({
+          where: { id: orderId },
+          include: { patient: { select: { userId: true } } },
+        });
+        if (!order) return;
+        if (r === 'PHARMACIST') {
+          const pharmacist = await prisma.pharmacist.findUnique({
+            where: { userId: user.id },
+            select: { pharmacyId: true },
+          });
+          if (pharmacist?.pharmacyId && order.pharmacyId === pharmacist.pharmacyId) {
+            socket.join(`order:${orderId}`);
+          }
+          return;
+        }
+        if (order.patient.userId === user.id) {
+          socket.join(`order:${orderId}`);
+        }
+      } catch {}
     });
 
     // Video consultation room authorization & joining
@@ -190,7 +195,7 @@ export function initSocketServer(httpServer: http.Server): SocketIOServer {
           return;
         }
 
-        const targetRoom = data.roomId || consultation.roomId || `consultation:${consultation.id}`;
+        const targetRoom = consultation.roomId || `consultation:${consultation.id}`;
         socket.join(targetRoom);
         socket.join(`consultation:${consultation.id}`);
 
@@ -308,38 +313,53 @@ export function initSocketServer(httpServer: http.Server): SocketIOServer {
         });
         if (!consultation) return;
 
-        // Verify authorization: check userId or direct patient/doctor entity id or allow in dev
+        // Verify strict participant authorization
         const isAuthorized =
           consultation.patient.userId === user?.id ||
-          consultation.doctor.userId === user?.id ||
-          consultation.patient.id === user?.id ||
-          consultation.doctor.id === user?.id ||
-          config.nodeEnv === 'development';
+          consultation.doctor.userId === user?.id;
 
         if (!isAuthorized) return;
+
+        // Persist message to MySQL ConsultationMessage so it survives refresh
+        const savedMsg = await prisma.consultationMessage.create({
+          data: {
+            videoConsultationId: consultation.id,
+            senderUserId: user.id,
+            senderRole: consultation.doctor.userId === user.id ? 'DOCTOR' : 'PATIENT',
+            senderName: data.message.senderName || user.email,
+            text: String(data.message.text || '').trim(),
+          },
+        }).catch(() => null);
+
+        const outboundMessage = {
+          ...data.message,
+          id: savedMsg?.id || data.message.id,
+          sender: (consultation.doctor.userId === user.id ? 'Doctor' : 'Patient') as 'Doctor' | 'Patient',
+          timestamp: savedMsg?.createdAt?.toISOString() || data.message.timestamp,
+        };
 
         const targetRoom = consultation.roomId || `consultation:${consultation.id}`;
         // Broadcast message to everyone in the room (both parties)
         io?.to(targetRoom).emit('call:chat-message', {
           consultationId: consultation.id,
-          message: data.message,
+          message: outboundMessage,
         });
 
         // Also emit to personal rooms to guarantee cross-window reception
         io?.to(`consultation:${consultation.id}`).emit('call:chat-message', {
           consultationId: consultation.id,
-          message: data.message,
+          message: outboundMessage,
         });
         if (consultation.patient.userId) {
           io?.to(`user:${consultation.patient.userId}`).emit('call:chat-message', {
             consultationId: consultation.id,
-            message: data.message,
+            message: outboundMessage,
           });
         }
         if (consultation.doctor.userId) {
           io?.to(`user:${consultation.doctor.userId}`).emit('call:chat-message', {
             consultationId: consultation.id,
-            message: data.message,
+            message: outboundMessage,
           });
         }
       } catch (err: any) {
@@ -369,7 +389,6 @@ export function emitInsuranceClaimEvent(event: string, payload: any) {
     io.to(`patient:${payload.patientId}`).emit(event, payload);
   }
   io.to('admin:room').emit(event, payload);
-  io.emit(event, payload);
 }
 
 /**
@@ -388,13 +407,12 @@ export function emitOrderStatusUpdate(payload: OrderStatusUpdatePayload) {
     io.to(`patient:${payload.patientId}`).emit('pharmacy:order-status-updated', payload);
   }
 
-  // Also emit to the assigned pharmacy room for pharmacists
+  // Emit to the assigned pharmacy room for pharmacists (tenant-scoped; no cross-pharmacy broadcast)
   if (payload.pharmacyId) {
     io.to(`pharmacy:${payload.pharmacyId}`).emit('pharmacy:order-status-updated', payload);
   }
 
-  // Emit to pharmacist room and admin monitoring room
-  io.to('pharmacist:room').emit('pharmacy:order-status-updated', payload);
+  // Emit to admin monitoring room
   io.to('admin:room').emit('pharmacy:order-status-updated', payload);
 }
 
@@ -423,10 +441,6 @@ export function emitHealthShareEvent(payload: HealthShareEventPayload) {
     // Socket.IO accepts an array of room names and automatically deduplicates sockets in multiple rooms
     io.to(Array.from(targetRooms)).emit(payload.event, payload);
   }
-
-  // Also broadcast to all connected clients (client-side App.tsx & QRScannerView filter strictly by role: isPatient vs isDoctor)
-  // This guarantees multi-tab testing and reconnection scenarios reliably receive the event without room mismatch drops
-  io.emit(payload.event, payload);
 }
 
 export interface VideoConsultationCallEventPayload {
@@ -466,12 +480,8 @@ export function emitVideoConsultationEvent(payload: VideoConsultationCallEventPa
   }
   targetRooms.add(`consultation:${payload.consultationId}`);
 
-  // Emit event to target rooms
+  // Emit event strictly to target rooms
   io.to(Array.from(targetRooms)).emit(payload.event, payload);
-
-  // Broadcast to all connected clients (client-side IncomingCallModal & role filtering ensures only target doctor rings)
-  // This guarantees cross-window, dev, and multi-tab calls are reliably received without room drops
-  io.emit(payload.event, payload);
 }
 
 

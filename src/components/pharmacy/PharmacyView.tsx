@@ -20,12 +20,6 @@ import {
 } from 'lucide-react';
 import type { Pharmacy, StockItem, PharmacyOrder, LinkedPrescription } from './pharmacyData';
 import {
-  INITIAL_PHARMACIES,
-  INITIAL_MEDICINE_STOCK
-} from './pharmacyData';
-import {
-  getPharmacyOrders as getStoredPharmacyOrders,
-  getLinkedPrescriptions as getStoredLinkedPrescriptions,
   getLatestWorkflow,
   clearLatestWorkflowResult
 } from '../../utils/healthWorkflowStorage';
@@ -37,7 +31,7 @@ import { PharmacyFilterDrawer } from './PharmacyFilterDrawer';
 import { CancelOrderModal } from './CancelOrderModal';
 import { fetchPatientPharmacyOrders, DHR_STATUS_PERCENT, DHR_STATUS_DISPLAY } from '../../services/pharmacyOrderApi';
 import { socketService } from '../../services/socketService';
-import { pharmacyApi } from '../../services/dhrApis';
+import { pharmacyApi, medicineApi, prescriptionApi, profileApi } from '../../services/dhrApis';
 import { useLanguage } from '../../context/LanguageContext';
 
 interface UserProfile {
@@ -62,9 +56,9 @@ export const PharmacyView: React.FC<PharmacyViewProps> = ({
   const [_loading, setLoading] = useState(true);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
-  // STATE & LOCALSTORAGE PERSISTENCE (Live from MySQL)
-  const [pharmacies, setPharmacies] = useState<Pharmacy[]>(INITIAL_PHARMACIES);
-  const [stockItems] = useState<StockItem[]>(INITIAL_MEDICINE_STOCK);
+  // STATE (Live from MySQL)
+  const [pharmacies, setPharmacies] = useState<Pharmacy[]>([]);
+  const [stockItems, setStockItems] = useState<StockItem[]>([]);
   const [orders, setOrders] = useState<ExtendedPharmacyOrder[]>([]);
   const [prescriptions, setPrescriptions] = useState<LinkedPrescription[]>([]);
 
@@ -73,7 +67,7 @@ export const PharmacyView: React.FC<PharmacyViewProps> = ({
   const [stockFilter, setStockFilter] = useState<'All' | 'Low Stock' | 'Good Stock'>('All');
 
   // PREFERENCES
-  const [preferredPharmacy, setPreferredPharmacy] = useState<string>('Apollo Central Pharmacy');
+  const [preferredPharmacy, setPreferredPharmacy] = useState<string>('');
   const [preferredDelivery, setPreferredDelivery] = useState<'Home Delivery' | 'Pickup'>('Home Delivery');
 
   // MODALS & DRAWERS
@@ -87,34 +81,98 @@ export const PharmacyView: React.FC<PharmacyViewProps> = ({
 
   const loadAllData = async () => {
     try {
-      const [liveOrders, livePharmaciesRes] = await Promise.all([
-        fetchPatientPharmacyOrders().catch(() => null),
+      const [liveOrders, livePharmaciesRes, liveMedsRes, liveRxRes, patProfRes] = await Promise.all([
+        fetchPatientPharmacyOrders().catch(() => []),
         pharmacyApi.getAvailablePharmacies().catch(() => pharmacyApi.getPharmacies().catch(() => null)),
+        medicineApi.getActiveMedications().catch(() => null),
+        prescriptionApi.getPrescriptions().catch(() => null),
+        profileApi.getPatientProfile().catch(() => null),
       ]);
 
-      if (livePharmaciesRes && livePharmaciesRes.data && livePharmaciesRes.data.length > 0) {
+      const patProf: any = patProfRes?.data;
+      if (patProf?.preferredDeliveryMethod === 'Home Delivery' || patProf?.preferredDeliveryMethod === 'Pickup') {
+        setPreferredDelivery(patProf.preferredDeliveryMethod);
+      }
+
+      if (livePharmaciesRes && livePharmaciesRes.data && Array.isArray(livePharmaciesRes.data)) {
         const mappedPharms: Pharmacy[] = livePharmaciesRes.data.map((p: any) => ({
           id: p.pharmacyId || p.id,
           name: p.name,
           rating: 4.8,
-          reviewCount: 142,
+          reviewCount: 0,
           distanceKm: 1.2,
           deliveryTime: '30–45 mins',
           deliveryAvailable: true,
           pickupAvailable: true,
-          address: p.address || 'Chennai, Tamil Nadu',
-          phone: p.phone || '+91 98400 12345',
-          hours: '24/7 Delivery Available',
+          address: p.address || 'Registered Pharmacy',
+          phone: p.phone || '—',
+          hours: p.operatingHours || '24/7 Delivery Available',
           isPreferred: p.tieUpStatus === 'ACTIVE',
         }));
         setPharmacies(mappedPharms);
+
+        const savedPharmId = patProf?.preferredPharmacyId;
+        const matchedPharm = savedPharmId
+          ? mappedPharms.find((mp) => mp.id === savedPharmId || mp.name === savedPharmId)
+          : null;
+        if (matchedPharm) {
+          setPreferredPharmacy(matchedPharm.name);
+        } else if (!preferredPharmacy && mappedPharms[0]?.name) {
+          setPreferredPharmacy(mappedPharms[0].name);
+        }
       }
 
-      if (liveOrders !== null && Array.isArray(liveOrders)) {
+      const rawMeds: any = liveMedsRes?.data;
+      const medsList: any[] = Array.isArray(rawMeds?.medications)
+        ? rawMeds.medications
+        : Array.isArray(rawMeds)
+        ? rawMeds
+        : [];
+      if (medsList.length > 0) {
+        const mappedStock: StockItem[] = medsList.map((m: any) => {
+          const remaining = Number(m.totalQuantity ?? 30);
+          const stockLevel: StockItem['stockLevel'] =
+            remaining <= 0 ? 'Out of Stock' : remaining <= 5 ? 'Low Stock' : remaining <= 15 ? 'Medium Stock' : 'Good Stock';
+          return {
+            id: m.id,
+            medicineName: m.name || m.medicineName || 'Medicine',
+            dosage: m.dosage || 'Standard',
+            currentQuantity: remaining,
+            totalQuantity: Math.max(remaining, 30),
+            unit: 'Units',
+            stockLevel,
+            supplyDays: Math.max(1, remaining),
+            lastRefilled: m.updatedAt ? new Date(m.updatedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '—',
+            nextExpectedRefill: m.endDate ? new Date(m.endDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : 'Active Rx',
+          };
+        });
+        setStockItems(mappedStock);
+      } else {
+        setStockItems([]);
+      }
+
+      if (liveRxRes?.data && Array.isArray(liveRxRes.data)) {
+        const mappedRx: LinkedPrescription[] = liveRxRes.data.map((rx: any) => {
+          const medNames = Array.isArray(rx.items) ? rx.items.map((it: any) => `${it.medicineName} ${it.dosage || ''}`.trim()) : [];
+          return {
+            id: rx.id,
+            doctorName: rx.doctor?.fullName || 'Attending Physician',
+            date: rx.createdAt ? new Date(rx.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '—',
+            medicinesCount: medNames.length,
+            status: rx.status === 'COMPLETED' || rx.status === 'DISPENSED' ? 'Completed' : 'Active',
+            associatedMedicines: medNames,
+          };
+        });
+        setPrescriptions(mappedRx);
+      } else {
+        setPrescriptions([]);
+      }
+
+      if (Array.isArray(liveOrders)) {
         const mappedLive: ExtendedPharmacyOrder[] = liveOrders.map((bo) => ({
           id: bo.id,
           date: bo.orderedAt ? new Date(bo.orderedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '—',
-          pharmacyName: bo.pharmacy?.name || 'Apollo Central Pharmacy',
+          pharmacyName: bo.pharmacy?.name || 'Registered Pharmacy',
           pharmacyId: bo.pharmacyId || bo.pharmacy?.pharmacyId || '—',
           sourcePrescriptionId: bo.prescriptionId || '—',
           doctorName: bo.prescription?.doctor?.fullName || 'Attending Physician',
@@ -140,16 +198,10 @@ export const PharmacyView: React.FC<PharmacyViewProps> = ({
             DHR_STATUS_PERCENT[bo.status] ?? (bo.status === 'PENDING' ? 20 : 0),
         }));
         setOrders(mappedLive);
-      } else {
-        const loadedOrders = getStoredPharmacyOrders().filter((o) => !o.id.startsWith('RX-ORD-7740') && !o.id.startsWith('RX-ORD-9104') && !o.id.startsWith('RX-ORD-8821'));
-        setOrders(loadedOrders);
       }
     } catch {
-      const loadedOrders = getStoredPharmacyOrders().filter((o) => !o.id.startsWith('RX-ORD-7740') && !o.id.startsWith('RX-ORD-9104') && !o.id.startsWith('RX-ORD-8821'));
-      setOrders(loadedOrders);
+      setOrders([]);
     }
-    const loadedPrescriptions = getStoredLinkedPrescriptions();
-    setPrescriptions(loadedPrescriptions);
   };
 
   // Load from localStorage on mount & listen to workflow updates
@@ -219,26 +271,41 @@ export const PharmacyView: React.FC<PharmacyViewProps> = ({
 
   const saveOrdersState = (newOrders: ExtendedPharmacyOrder[]) => {
     setOrders(newOrders);
-    localStorage.setItem('user_pharmacy_orders', JSON.stringify(newOrders));
     window.dispatchEvent(new Event('health_workflow_updated'));
   };
 
   // ORDER ACTIONS
-  const handleCreateOrder = (newOrder: PharmacyOrder) => {
-    const updated = [newOrder, ...orders];
-    saveOrdersState(updated);
-    showToast(`✓ Refill request ${newOrder.id} created!`);
+  const handleCreateOrder = async (newOrder: PharmacyOrder) => {
+    try {
+      const targetPharmacy = pharmacies.find((p) => p.name === newOrder.pharmacyName) || pharmacies[0];
+      await pharmacyApi.createPharmacyOrder({
+        pharmacyId: targetPharmacy?.id,
+        deliveryType: newOrder.deliveryMethod,
+        deliveryAddress: newOrder.deliveryAddress,
+        items: (newOrder.items || []).map((it) => ({
+          medicineName: it.name,
+          dosage: it.dosage,
+          quantity: it.quantity,
+        })),
+      });
+      await loadAllData();
+      window.dispatchEvent(new Event('health_workflow_updated'));
+      showToast('✓ Refill request saved to database!');
+    } catch (err: any) {
+      showToast(err?.message || 'Failed to create pharmacy order');
+    }
   };
 
-  const handleCancelOrder = (orderId: string) => {
-    const updated = orders.map((o) => {
-      if (o.id === orderId) {
-        return { ...o, status: 'Cancelled' as const };
-      }
-      return o;
-    });
-    saveOrdersState(updated);
-    showToast('✓ Refill request cancelled');
+  const handleCancelOrder = async (orderId: string) => {
+    try {
+      const { pharmacyOpsApi } = await import('../../services/dhrApis');
+      await pharmacyOpsApi.cancelPharmacyOrder(orderId, 'Cancelled by patient');
+      const updated = orders.map((o) => (o.id === orderId ? { ...o, status: 'Cancelled' as const } : o));
+      saveOrdersState(updated);
+      showToast('✓ Refill request cancelled in database');
+    } catch (err: any) {
+      showToast(err?.message || 'Failed to cancel pharmacy order');
+    }
   };
 
   // REORDER PREVIOUS ORDER
@@ -386,6 +453,7 @@ export const PharmacyView: React.FC<PharmacyViewProps> = ({
       {/* 3. LOW STOCK ALERT CARD & LIVE ORDER TRACKING BANNER */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
         {/* LOW STOCK ALERT CARD (LEFT 6 COLS) */}
+        {lowStockItem ? (
         <div className="lg:col-span-6 bg-gradient-to-br from-amber-50 via-orange-50/60 to-white dark:from-slate-900 dark:via-slate-900 dark:to-amber-950/30 border border-amber-200 dark:border-amber-500/30 rounded-3xl p-6 sm:p-8 space-y-5 shadow-xl flex flex-col justify-between">
           <div className="space-y-3">
             <div className="flex items-center justify-between">
@@ -394,7 +462,7 @@ export const PharmacyView: React.FC<PharmacyViewProps> = ({
                 <span>{t('pharmacy.running_low', 'Medicine Running Low')}</span>
               </div>
               <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/30 font-mono">
-                {t('pharmacy.low_stock', 'Low Stock')}
+                {lowStockItem.stockLevel}
               </span>
             </div>
 
@@ -409,12 +477,14 @@ export const PharmacyView: React.FC<PharmacyViewProps> = ({
             <div className="space-y-1.5 pt-1">
               <div className="flex justify-between text-[11px] font-bold">
                 <span className="text-slate-600 dark:text-slate-400">{t('pharmacy.med_supply', 'Medicine Supply')}</span>
-                <span className="text-amber-700 dark:text-amber-400 font-mono font-extrabold">20%</span>
+                <span className="text-amber-700 dark:text-amber-400 font-mono font-extrabold">
+                  {Math.min(100, Math.round((lowStockItem.currentQuantity / Math.max(1, lowStockItem.totalQuantity)) * 100))}%
+                </span>
               </div>
               <div className="w-full h-2.5 bg-slate-200 dark:bg-slate-800 rounded-full overflow-hidden">
                 <motion.div
                   initial={{ width: 0 }}
-                  animate={{ width: '20%' }}
+                  animate={{ width: `${Math.min(100, Math.round((lowStockItem.currentQuantity / Math.max(1, lowStockItem.totalQuantity)) * 100))}%` }}
                   transition={{ duration: 0.8 }}
                   className="h-full bg-gradient-to-r from-amber-500 to-orange-500 rounded-full"
                 />
@@ -433,6 +503,17 @@ export const PharmacyView: React.FC<PharmacyViewProps> = ({
             <span>{t('pharmacy.request_refill', 'Request Refill')}</span>
           </button>
         </div>
+        ) : (
+        <div className="lg:col-span-6 bg-white dark:bg-slate-900/80 border border-slate-200/90 dark:border-slate-800 rounded-3xl p-6 sm:p-8 space-y-4 shadow-xl flex flex-col items-center justify-center text-center">
+          <Pill className="w-10 h-10 text-[#00a896] mx-auto" />
+          <div>
+            <h3 className="text-base font-extrabold text-slate-900 dark:text-white">No Low Stock Alerts</h3>
+            <p className="text-xs text-slate-600 dark:text-slate-400 mt-1 max-w-sm font-medium">
+              No active medications tracked yet. Add medications or submit a prescription to monitor stock levels.
+            </p>
+          </div>
+        </div>
+        )}
 
         {/* ACTIVE ORDER LIVE TRACKING CARD (RIGHT 6 COLS) */}
         {activePendingOrder ? (
@@ -900,15 +981,28 @@ export const PharmacyView: React.FC<PharmacyViewProps> = ({
               <label className="block text-slate-700 dark:text-slate-300 font-extrabold mb-1.5">Preferred Partner Pharmacy</label>
               <select
                 value={preferredPharmacy}
-                onChange={(e) => {
-                  setPreferredPharmacy(e.target.value);
-                  showToast(`Preferred pharmacy updated to ${e.target.value}`);
+                onChange={async (e) => {
+                  const chosenName = e.target.value;
+                  setPreferredPharmacy(chosenName);
+                  const chosenObj = pharmacies.find((p) => p.name === chosenName);
+                  try {
+                    await profileApi.updatePatientProfile({
+                      preferredPharmacyId: chosenObj?.id || chosenName,
+                    });
+                    showToast(`✓ Preferred pharmacy saved: ${chosenName}`);
+                  } catch {
+                    showToast('Failed to save preferred pharmacy');
+                  }
                 }}
                 className="w-full px-4 py-2.5 rounded-xl bg-slate-100 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white font-extrabold focus:outline-none focus:border-[#00a896]"
               >
-                {pharmacies.map((pharm) => (
-                  <option key={pharm.id} value={pharm.name}>{pharm.name} ({pharm.distanceKm} km)</option>
-                ))}
+                {pharmacies.length === 0 ? (
+                  <option value="">No registered pharmacies available</option>
+                ) : (
+                  pharmacies.map((pharm) => (
+                    <option key={pharm.id} value={pharm.name}>{pharm.name} ({pharm.distanceKm} km)</option>
+                  ))
+                )}
               </select>
             </div>
 
@@ -919,9 +1013,14 @@ export const PharmacyView: React.FC<PharmacyViewProps> = ({
                   <button
                     key={m}
                     type="button"
-                    onClick={() => {
+                    onClick={async () => {
                       setPreferredDelivery(m);
-                      showToast(`Delivery preference set to ${m}`);
+                      try {
+                        await profileApi.updatePatientProfile({ preferredDeliveryMethod: m });
+                        showToast(`✓ Delivery preference saved: ${m}`);
+                      } catch {
+                        showToast('Failed to save delivery preference');
+                      }
                     }}
                     className={`py-2 px-3 rounded-xl font-extrabold border transition-colors cursor-pointer ${
                       preferredDelivery === m

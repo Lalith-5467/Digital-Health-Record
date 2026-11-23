@@ -7,6 +7,7 @@ import {
   getRecordByIdController,
   updateRecordController,
   deleteRecordController,
+  bulkDeleteRecordsController,
 } from '../controllers/medicalRecord.controller';
 
 const router = Router();
@@ -48,6 +49,11 @@ router.patch(
 );
 
 // 5. Delete medical record (Patients, Admins, Super Admins)
+router.post(
+  '/bulk-delete',
+  requireRole('PATIENT', 'ADMIN', 'SUPER_ADMIN'),
+  bulkDeleteRecordsController
+);
 router.delete(
   '/:id',
   requireRole('PATIENT', 'ADMIN', 'SUPER_ADMIN'),

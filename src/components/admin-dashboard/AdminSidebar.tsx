@@ -198,10 +198,10 @@ export const AdminSidebar: React.FC<AdminSidebarProps> = ({
           {!isCollapsed ? (
             <div>
               <p className="text-sm font-black text-white tracking-tight truncate">
-                {isSuperAdmin ? 'Super Admin Directorate' : 'Hospital Executive Admin'}
+                {isSuperAdmin ? 'Super Admin Directorate' : 'System Administration'}
               </p>
               <p className="text-xs text-teal-100/95 font-semibold truncate mt-0.5">
-                {isSuperAdmin ? 'Master System Governance' : 'Clinical Operations'}
+                {isSuperAdmin ? 'Master System Governance' : 'Administrative Operations'}
               </p>
             </div>
           ) : (

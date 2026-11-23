@@ -1,33 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../../../services/api';
+import { patientExtendedApi, profileApi } from '../../../services/dhrApis';
 import { 
   Apple, ChevronRight, Search, History, Plus, AlertCircle, 
   Droplets, Target, Sparkles, RefreshCw, Edit2, Trash2, 
-  CheckCircle2, X, FileText, ArrowRight, Save, Download, Send, CheckSquare, Square
+  CheckCircle2, X, FileText, Save, Download, Send, CheckSquare, Square
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-
-// --- MOCK DATA ---
-const patientInfo = {
-  name: "Anitha Kumar",
-  id: "MC-10245",
-  age: 32,
-  activity: "Moderate",
-  goal: "Balanced Nutrition",
-  allergies: "Peanuts, Shellfish",
-  lastUpdated: "08 Sep 2026",
-  avatar: "A"
-};
-
-const mockMeals = [
-  { id: 1, type: "Breakfast", name: "Oats Idli with Sambar", time: "08:30 AM", portion: "3 pieces, 1 bowl", cal: 320, pro: 12, days: ['Monday', 'Wednesday', 'Friday'] },
-  { id: 6, type: "Breakfast", name: "Poha with Peanuts", time: "08:30 AM", portion: "1 bowl", cal: 280, pro: 8, days: ['Tuesday', 'Thursday', 'Saturday', 'Sunday'] },
-  { id: 2, type: "Morning Snack", name: "Mixed Fruit Bowl", time: "11:00 AM", portion: "1 medium bowl", cal: 150, pro: 2, days: ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'] },
-  { id: 3, type: "Lunch", name: "Brown Rice with Dal & Veggies", time: "01:30 PM", portion: "1 cup rice, 1 cup dal", cal: 450, pro: 18, days: ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'] },
-  { id: 4, type: "Evening Snack", name: "Roasted Makhana", time: "05:00 PM", portion: "1 small bowl", cal: 120, pro: 3, days: ['Monday', 'Wednesday', 'Friday'] },
-  { id: 7, type: "Evening Snack", name: "Sprouts Salad", time: "05:00 PM", portion: "1 bowl", cal: 110, pro: 5, days: ['Tuesday', 'Thursday', 'Saturday', 'Sunday'] },
-  { id: 5, type: "Dinner", name: "Roti with Paneer Sabzi", time: "08:30 PM", portion: "2 rotis, 1 cup sabzi", cal: 400, pro: 16, days: ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'] }
-];
 
 export interface DietPlanViewProps {
   patientName?: string;
@@ -41,6 +20,37 @@ export function DietPlanView({ patientName, user }: DietPlanViewProps = {}) {
   const [activeDay, setActiveDay] = useState('Monday');
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [meals, setMeals] = useState<any[]>([]);
+
+  // Live Patient Profile & Assessment State (Hydrated from MySQL)
+  const [patientInfo, setPatientInfo] = useState({
+    name: patientName || user?.name || 'Patient',
+    id: user?.abhaId || 'Not Recorded',
+    age: user?.age ? String(user.age) : 'Not Recorded',
+    activity: 'Not Recorded',
+    goal: 'Balanced Nutrition',
+    allergies: 'None Recorded',
+    lastUpdated: 'Not Saved Yet',
+    avatar: (patientName || user?.name || 'P').slice(0, 1).toUpperCase(),
+  });
+
+  const [assessment, setAssessment] = useState({
+    eatingPattern: 'Regular meals',
+    activityLevel: 'Moderate',
+    mealFrequency: '4 meals',
+    hydrationHabit: 'Moderate',
+    foodPreference: 'South Indian',
+    dietaryRestriction: 'Vegetarian',
+    goal: 'Balanced Nutrition',
+    planDuration: '4 Weeks',
+    targetCalories: 2000,
+    targetProtein: 75,
+    notes: '',
+    nextReview: '',
+    reviewFrequency: 'Weekly',
+    updatedAt: null as string | null,
+  });
+
+  const [allergiesArray, setAllergiesArray] = useState<string[]>([]);
 
   // Calculate current week dates dynamically
   const weekDates = React.useMemo(() => {
@@ -74,20 +84,74 @@ export function DietPlanView({ patientName, user }: DietPlanViewProps = {}) {
 
   const fetchMeals = async () => {
     try {
-      const response = await api.get(`/diet/${patientInfo.id}/meals`);
-      if (response.data && response.data.length > 0) {
-        setMeals(response.data);
-      } else {
-        // Seed mock data if database is empty
-        for (const m of mockMeals) {
-           await api.post(`/diet/${patientInfo.id}/meals`, m);
+      const [response, assessRes, profRes] = await Promise.all([
+        api.get('/diet/me/meals').catch(() => ({ data: [] })),
+        patientExtendedApi.getDietAssessment().catch(() => null),
+        profileApi.getPatientProfile().catch(() => null),
+      ]);
+      setMeals(Array.isArray(response?.data) ? response.data : []);
+
+      const pat: any = profRes?.data;
+      const assess: any = assessRes?.data;
+
+      const patAllergies: string[] = Array.isArray(pat?.allergies)
+        ? pat.allergies.map((a: any) => a.allergen || a.name).filter(Boolean)
+        : [];
+      setAllergiesArray(patAllergies);
+
+      const calcAge = pat?.dateOfBirth
+        ? String(Math.max(1, new Date().getFullYear() - new Date(pat.dateOfBirth).getFullYear()))
+        : user?.age ? String(user.age) : 'Not Recorded';
+
+      const resolvedName = pat?.fullName || patientName || user?.name || 'Patient';
+      const resolvedId = pat?.abhaId || pat?.id?.slice(-8)?.toUpperCase() || user?.abhaId || 'Not Recorded';
+
+      setPatientInfo({
+        name: resolvedName,
+        id: resolvedId,
+        age: calcAge,
+        activity: assess?.activityLevel || 'Not Recorded',
+        goal: assess?.goal || 'Balanced Nutrition',
+        allergies: patAllergies.length > 0 ? patAllergies.join(', ') : 'None Recorded',
+        lastUpdated: assess?.updatedAt
+          ? new Date(assess.updatedAt).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
+          : 'Not Saved Yet',
+        avatar: resolvedName.slice(0, 1).toUpperCase(),
+      });
+
+      if (assess) {
+        let extraConditions: any = {};
+        if (assess.conditionsJson) {
+          try { extraConditions = JSON.parse(assess.conditionsJson); } catch {}
         }
-        const freshResponse = await api.get(`/diet/${patientInfo.id}/meals`);
-        setMeals(freshResponse.data);
+        setAssessment((prev) => ({
+          ...prev,
+          goal: assess.goal || prev.goal,
+          foodPreference: assess.dietPreference || prev.foodPreference,
+          activityLevel: assess.activityLevel || prev.activityLevel,
+          targetCalories: assess.targetCalories || prev.targetCalories,
+          notes: assess.notes || prev.notes,
+          eatingPattern: extraConditions?.eatingPattern || prev.eatingPattern,
+          mealFrequency: extraConditions?.mealFrequency || prev.mealFrequency,
+          hydrationHabit: extraConditions?.hydrationHabit || prev.hydrationHabit,
+          dietaryRestriction: extraConditions?.dietaryRestriction || prev.dietaryRestriction,
+          planDuration: extraConditions?.planDuration || prev.planDuration,
+          targetProtein: extraConditions?.targetProtein || prev.targetProtein,
+          nextReview: extraConditions?.nextReview || prev.nextReview,
+          reviewFrequency: extraConditions?.reviewFrequency || prev.reviewFrequency,
+          updatedAt: assess.updatedAt || null,
+        }));
+      }
+
+      if (assess?.checklistJson) {
+        try {
+          const parsed = JSON.parse(assess.checklistJson);
+          if (parsed && typeof parsed === 'object') setInstructions((prev) => ({ ...prev, ...parsed }));
+        } catch {}
       }
     } catch (e) {
-      console.error("Failed to fetch meals, falling back to mock", e);
-      setMeals(mockMeals);
+      console.error('Failed to fetch diet data from MySQL:', e);
+      setMeals([]);
     }
   };
   
@@ -111,7 +175,83 @@ export function DietPlanView({ patientName, user }: DietPlanViewProps = {}) {
   // Form States (Simplified for UI Demo)
   const [instructions, setInstructions] = useState({ timings: true, hydration: true, portions: false, track: true, review: false, share: true });
 
-  const toggleInstruction = (key: keyof typeof instructions) => setInstructions(prev => ({ ...prev, [key]: !prev[key] }));
+  const saveAssessmentToDb = async (overrides: Partial<typeof assessment> = {}, statusLabel?: string) => {
+    const merged = { ...assessment, ...overrides };
+    setAssessment(merged);
+    try {
+      const res = await patientExtendedApi.saveDietAssessment({
+        goal: merged.goal,
+        dietPreference: merged.foodPreference,
+        activityLevel: merged.activityLevel,
+        targetCalories: Number(merged.targetCalories) || 2000,
+        allergies: allergiesArray,
+        conditions: {
+          eatingPattern: merged.eatingPattern,
+          mealFrequency: merged.mealFrequency,
+          hydrationHabit: merged.hydrationHabit,
+          dietaryRestriction: merged.dietaryRestriction,
+          planDuration: merged.planDuration,
+          targetProtein: Number(merged.targetProtein) || 75,
+          nextReview: merged.nextReview,
+          reviewFrequency: merged.reviewFrequency,
+          planStatus: statusLabel || 'Active',
+        },
+        checklist: instructions,
+        notes: merged.notes,
+      });
+      if (res?.data?.updatedAt) {
+        const dtStr = new Date(res.data.updatedAt).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+        setAssessment((prev) => ({ ...prev, updatedAt: res.data.updatedAt }));
+        setPatientInfo((prev) => ({
+          ...prev,
+          activity: merged.activityLevel,
+          goal: merged.goal,
+          lastUpdated: dtStr,
+        }));
+      }
+      return true;
+    } catch (e) {
+      console.error('Failed to save diet assessment:', e);
+      return false;
+    }
+  };
+
+  const handleSwapMeal = async (alt: { name: string; portion: string; cal: number; pro: number }) => {
+    if (!selectedMealForSwap) return;
+    try {
+      const payload = {
+        ...selectedMealForSwap,
+        name: alt.name,
+        portion: alt.portion,
+        cal: alt.cal,
+        pro: alt.pro,
+      };
+      const response = await api.put(`/diet/me/meals/${selectedMealForSwap.id}`, payload);
+      setMeals((prev) => prev.map((m) => (m.id === selectedMealForSwap.id ? (response?.data || payload) : m)));
+      setShowSwapDrawer(false);
+      setSelectedMealForSwap(null);
+      showToast(`✓ Replaced meal with ${alt.name} in database`);
+    } catch (e) {
+      console.error('Failed to swap meal:', e);
+      showToast('Failed to swap meal');
+    }
+  };
+
+  const toggleInstruction = (key: keyof typeof instructions) => {
+    setInstructions((prev) => {
+      const next = { ...prev, [key]: !prev[key] };
+      patientExtendedApi.saveDietAssessment({
+        goal: assessment.goal,
+        dietPreference: assessment.foodPreference,
+        activityLevel: assessment.activityLevel,
+        targetCalories: Number(assessment.targetCalories) || 2000,
+        allergies: allergiesArray,
+        checklist: next,
+        notes: assessment.notes,
+      }).catch(() => {});
+      return next;
+    });
+  };
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
@@ -153,11 +293,11 @@ export function DietPlanView({ patientName, user }: DietPlanViewProps = {}) {
     
     try {
       if (editingMeal) {
-        const response = await api.put(`/diet/${patientInfo.id}/meals/${editingMeal.id}`, { ...mealForm, days: fullDays });
+        const response = await api.put(`/diet/me/meals/${editingMeal.id}`, { ...mealForm, days: fullDays });
         setMeals(prev => prev.map(m => m.id === editingMeal.id ? response.data : m));
         showToast("Meal updated");
       } else {
-        const response = await api.post(`/diet/${patientInfo.id}/meals`, { ...mealForm, days: fullDays });
+        const response = await api.post('/diet/me/meals', { ...mealForm, days: fullDays });
         setMeals(prev => [...prev, response.data]);
         showToast("Meal added");
       }
@@ -170,7 +310,7 @@ export function DietPlanView({ patientName, user }: DietPlanViewProps = {}) {
 
   const handleDeleteMeal = async (id: string | number) => {
     try {
-      await api.delete(`/diet/${patientInfo.id}/meals/${id}`);
+      await api.delete(`/diet/me/meals/${id}`);
       setMeals(prev => prev.filter(m => m.id !== id));
       showToast("Meal deleted");
     } catch (e) {
@@ -204,7 +344,11 @@ export function DietPlanView({ patientName, user }: DietPlanViewProps = {}) {
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
           <div>
             <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">Eating Pattern</label>
-            <select className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 text-sm font-semibold text-slate-700 dark:text-slate-300 outline-none focus:ring-2 focus:ring-cyan-500/20">
+            <select
+              value={assessment.eatingPattern}
+              onChange={(e) => setAssessment((prev) => ({ ...prev, eatingPattern: e.target.value }))}
+              className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 text-sm font-semibold text-slate-700 dark:text-slate-300 outline-none focus:ring-2 focus:ring-cyan-500/20"
+            >
               <option>Regular meals</option>
               <option>Irregular meals</option>
               <option>Frequently skips meals</option>
@@ -212,7 +356,11 @@ export function DietPlanView({ patientName, user }: DietPlanViewProps = {}) {
           </div>
           <div>
             <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">Activity Level</label>
-            <select className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 text-sm font-semibold text-slate-700 dark:text-slate-300 outline-none focus:ring-2 focus:ring-cyan-500/20" defaultValue="Moderate">
+            <select
+              value={assessment.activityLevel}
+              onChange={(e) => setAssessment((prev) => ({ ...prev, activityLevel: e.target.value }))}
+              className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 text-sm font-semibold text-slate-700 dark:text-slate-300 outline-none focus:ring-2 focus:ring-cyan-500/20"
+            >
               <option>Sedentary</option>
               <option>Light</option>
               <option>Moderate</option>
@@ -221,7 +369,11 @@ export function DietPlanView({ patientName, user }: DietPlanViewProps = {}) {
           </div>
           <div>
             <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">Meal Frequency</label>
-            <select className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 text-sm font-semibold text-slate-700 dark:text-slate-300 outline-none focus:ring-2 focus:ring-cyan-500/20" defaultValue="4 meals">
+            <select
+              value={assessment.mealFrequency}
+              onChange={(e) => setAssessment((prev) => ({ ...prev, mealFrequency: e.target.value }))}
+              className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 text-sm font-semibold text-slate-700 dark:text-slate-300 outline-none focus:ring-2 focus:ring-cyan-500/20"
+            >
               <option>2 meals</option>
               <option>3 meals</option>
               <option>4 meals</option>
@@ -230,7 +382,11 @@ export function DietPlanView({ patientName, user }: DietPlanViewProps = {}) {
           </div>
           <div>
             <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">Hydration Habit</label>
-            <select className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 text-sm font-semibold text-slate-700 dark:text-slate-300 outline-none focus:ring-2 focus:ring-cyan-500/20" defaultValue="Moderate">
+            <select
+              value={assessment.hydrationHabit}
+              onChange={(e) => setAssessment((prev) => ({ ...prev, hydrationHabit: e.target.value }))}
+              className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 text-sm font-semibold text-slate-700 dark:text-slate-300 outline-none focus:ring-2 focus:ring-cyan-500/20"
+            >
               <option>Low</option>
               <option>Moderate</option>
               <option>Good</option>
@@ -241,7 +397,11 @@ export function DietPlanView({ patientName, user }: DietPlanViewProps = {}) {
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
            <div>
             <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">Food Preferences</label>
-            <select className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 text-sm font-semibold text-slate-700 dark:text-slate-300 outline-none focus:ring-2 focus:ring-cyan-500/20" defaultValue="South Indian">
+            <select
+              value={assessment.foodPreference}
+              onChange={(e) => setAssessment((prev) => ({ ...prev, foodPreference: e.target.value }))}
+              className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 text-sm font-semibold text-slate-700 dark:text-slate-300 outline-none focus:ring-2 focus:ring-cyan-500/20"
+            >
               <option>South Indian</option>
               <option>North Indian</option>
               <option>Indian</option>
@@ -251,7 +411,11 @@ export function DietPlanView({ patientName, user }: DietPlanViewProps = {}) {
           </div>
           <div>
             <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">Dietary Restrictions</label>
-            <select className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 text-sm font-semibold text-slate-700 dark:text-slate-300 outline-none focus:ring-2 focus:ring-cyan-500/20" defaultValue="Non-Vegetarian">
+            <select
+              value={assessment.dietaryRestriction}
+              onChange={(e) => setAssessment((prev) => ({ ...prev, dietaryRestriction: e.target.value }))}
+              className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 text-sm font-semibold text-slate-700 dark:text-slate-300 outline-none focus:ring-2 focus:ring-cyan-500/20"
+            >
               <option>Vegetarian</option>
               <option>Non-Vegetarian</option>
               <option>Vegan</option>
@@ -275,7 +439,11 @@ export function DietPlanView({ patientName, user }: DietPlanViewProps = {}) {
           <div className="space-y-4">
              <div>
               <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">Primary Goal</label>
-              <select className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 text-sm font-bold text-slate-700 dark:text-slate-300 outline-none focus:ring-2 focus:ring-cyan-500/20" defaultValue="Balanced Nutrition">
+              <select
+                value={assessment.goal}
+                onChange={(e) => setAssessment((prev) => ({ ...prev, goal: e.target.value }))}
+                className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 text-sm font-bold text-slate-700 dark:text-slate-300 outline-none focus:ring-2 focus:ring-cyan-500/20"
+              >
                 <option>Balanced Nutrition</option>
                 <option>Weight Management</option>
                 <option>Improve Energy</option>
@@ -285,7 +453,11 @@ export function DietPlanView({ patientName, user }: DietPlanViewProps = {}) {
             </div>
             <div>
               <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">Plan Duration</label>
-              <select className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 text-sm font-bold text-slate-700 dark:text-slate-300 outline-none focus:ring-2 focus:ring-cyan-500/20" defaultValue="4 Weeks">
+              <select
+                value={assessment.planDuration}
+                onChange={(e) => setAssessment((prev) => ({ ...prev, planDuration: e.target.value }))}
+                className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 text-sm font-bold text-slate-700 dark:text-slate-300 outline-none focus:ring-2 focus:ring-cyan-500/20"
+              >
                 <option>2 Weeks</option>
                 <option>4 Weeks</option>
                 <option>8 Weeks</option>
@@ -301,15 +473,14 @@ export function DietPlanView({ patientName, user }: DietPlanViewProps = {}) {
             <h3 className="text-sm font-black uppercase tracking-widest text-slate-500 dark:text-slate-400 flex items-center gap-2">
               <Target className="w-4 h-4 text-cyan-500" /> Nutrient Targets
             </h3>
-            <button className="text-xs font-bold text-cyan-600 dark:text-cyan-400 hover:underline">Edit Targets</button>
            </div>
            
            <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
               {[
-                { label: 'Calories', val: '2,000', unit: 'kcal/day', color: 'bg-amber-50 dark:bg-amber-900/10 border-amber-100 dark:border-amber-900/30' },
-                { label: 'Protein', val: '75', unit: 'g/day', color: 'bg-blue-50 dark:bg-blue-900/10 border-blue-100 dark:border-blue-900/30' },
-                { label: 'Carbohydrates', val: '250', unit: 'g/day', color: 'bg-emerald-50 dark:bg-emerald-900/10 border-emerald-100 dark:border-emerald-900/30' },
-                { label: 'Healthy Fats', val: '65', unit: 'g/day', color: 'bg-rose-50 dark:bg-rose-900/10 border-rose-100 dark:border-rose-900/30' },
+                { label: 'Calories', val: String(assessment.targetCalories), unit: 'kcal/day', color: 'bg-amber-50 dark:bg-amber-900/10 border-amber-100 dark:border-amber-900/30' },
+                { label: 'Protein', val: String(assessment.targetProtein), unit: 'g/day', color: 'bg-blue-50 dark:bg-blue-900/10 border-blue-100 dark:border-blue-900/30' },
+                { label: 'Carbohydrates', val: String(Math.round((assessment.targetCalories * 0.5) / 4)), unit: 'g/day', color: 'bg-emerald-50 dark:bg-emerald-900/10 border-emerald-100 dark:border-emerald-900/30' },
+                { label: 'Healthy Fats', val: String(Math.round((assessment.targetCalories * 0.3) / 9)), unit: 'g/day', color: 'bg-rose-50 dark:bg-rose-900/10 border-rose-100 dark:border-rose-900/30' },
                 { label: 'Fibre', val: '30', unit: 'g/day', color: 'bg-purple-50 dark:bg-purple-900/10 border-purple-100 dark:border-purple-900/30' },
                 { label: 'Water', val: '2.5', unit: 'L/day', color: 'bg-cyan-50 dark:bg-cyan-900/10 border-cyan-100 dark:border-cyan-900/30' },
               ].map(t => (
@@ -325,7 +496,17 @@ export function DietPlanView({ patientName, user }: DietPlanViewProps = {}) {
       
       <div className="mt-8 flex justify-end gap-3 pt-6 border-t border-slate-200 dark:border-slate-800">
          <button onClick={() => setShowAssessmentModal(false)} className="px-5 py-2.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 text-sm font-bold rounded-xl transition-colors">Cancel</button>
-         <button onClick={() => { setShowAssessmentModal(false); setActiveTab('plan'); showToast("Assessment Saved! Ready to generate plan."); }} className="px-5 py-2.5 bg-cyan-600 hover:bg-cyan-700 text-white text-sm font-bold rounded-xl transition-colors shadow-md">Save Assessment</button>
+         <button
+           onClick={async () => {
+             const ok = await saveAssessmentToDb({}, 'Active');
+             setShowAssessmentModal(false);
+             setActiveTab('plan');
+             showToast(ok ? '✓ Assessment saved to database!' : 'Failed to save assessment');
+           }}
+           className="px-5 py-2.5 bg-cyan-600 hover:bg-cyan-700 text-white text-sm font-bold rounded-xl transition-colors shadow-md"
+         >
+           Save Assessment
+         </button>
       </div>
       
     </div>
@@ -490,7 +671,26 @@ export function DietPlanView({ patientName, user }: DietPlanViewProps = {}) {
     </div>
   );
 
-  const renderAnalysisTab = () => (
+  const renderAnalysisTab = () => {
+    const dayMeals = meals.filter((m) => Array.isArray(m.days) && m.days.includes(activeDay));
+    const totalCal = dayMeals.reduce((sum, m) => sum + (Number(m.cal) || 0), 0);
+    const totalPro = dayMeals.reduce((sum, m) => sum + (Number(m.pro) || 0), 0);
+    const totalCarbs = dayMeals.reduce((sum, m) => sum + (Number(m.carbs) || Math.round((Number(m.cal) || 0) * 0.5 / 4)), 0);
+    const totalFat = dayMeals.reduce((sum, m) => sum + (Number(m.fat) || Math.round((Number(m.cal) || 0) * 0.3 / 9)), 0);
+    const targetCal = Number(assessment.targetCalories) || 2000;
+    const targetPro = Number(assessment.targetProtein) || 75;
+    const targetCarbs = Math.round((targetCal * 0.5) / 4);
+    const targetFat = Math.round((targetCal * 0.3) / 9);
+
+    const calScore = targetCal > 0 ? Math.min(100, Math.round((totalCal / targetCal) * 100)) : 0;
+    const proScore = targetPro > 0 ? Math.min(100, Math.round((totalPro / targetPro) * 100)) : 0;
+    const qualityScore = meals.length === 0 ? 0 : Math.round((calScore + proScore) / 2);
+    const weeklyCounts = days.map((d) => meals.filter((m) => Array.isArray(m.days) && m.days.includes(d)).length);
+    const maxDayCount = Math.max(1, ...weeklyCounts);
+    const activeInstructionCount = Object.values(instructions).filter(Boolean).length;
+    const instructionPct = Math.round((activeInstructionCount / Object.keys(instructions).length) * 100);
+
+    return (
     <div className="space-y-8 animate-in fade-in duration-500">
       
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
@@ -502,21 +702,21 @@ export function DietPlanView({ patientName, user }: DietPlanViewProps = {}) {
               <Target className="w-4 h-4 text-emerald-500" /> Nutrition Plan Quality
             </h2>
             <div className="flex items-end gap-3 mb-2">
-              <span className="text-6xl font-black text-slate-900 dark:text-white tracking-tighter">82</span>
+              <span className="text-6xl font-black text-slate-900 dark:text-white tracking-tighter">{qualityScore}</span>
               <span className="text-xl font-bold text-slate-400 mb-1">/ 100</span>
             </div>
             <div className="inline-block px-3 py-1 bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400 text-xs font-black uppercase tracking-wider rounded-lg mb-8 border border-emerald-200 dark:border-emerald-800/50">
-              Status: Good
+              Status: {qualityScore >= 75 ? 'Good' : qualityScore > 0 ? 'Needs Tuning' : 'No Meals Yet'}
             </div>
             
             <div className="space-y-3">
               <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">Breakdown</p>
               {[
-                { label: 'Meal Balance', ok: true },
-                { label: 'Protein Coverage', ok: true },
-                { label: 'Hydration', ok: true },
-                { label: 'Food Variety', ok: true },
-                { label: 'Fibre Target', ok: false },
+                { label: 'Meal Balance', ok: dayMeals.length >= 3 },
+                { label: 'Protein Coverage', ok: proScore >= 70 },
+                { label: 'Hydration Checklist', ok: instructions.hydration },
+                { label: 'Food Variety', ok: meals.length >= 3 },
+                { label: 'Calorie Target', ok: calScore >= 70 },
               ].map(b => (
                 <div key={b.label} className="flex items-center gap-2 text-sm font-bold text-slate-700 dark:text-slate-300">
                   {b.ok ? <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0"/> : <AlertCircle className="w-4 h-4 text-amber-500 shrink-0"/>}
@@ -525,33 +725,31 @@ export function DietPlanView({ patientName, user }: DietPlanViewProps = {}) {
               ))}
             </div>
           </div>
-          <p className="text-xs font-medium text-slate-400 mt-6">* This is a plan quality indicator based on targeted macros, not a medical diagnosis.</p>
+          <p className="text-xs font-medium text-slate-400 mt-6">* Computed from your saved meals in the database for {activeDay}.</p>
         </div>
 
         {/* Daily Nutrient Breakdown */}
         <div className="bg-white dark:bg-slate-900 rounded-3xl p-6 md:p-8 border border-slate-200 dark:border-slate-800 shadow-sm col-span-1 lg:col-span-2">
           <h2 className="text-sm font-black uppercase tracking-widest text-slate-900 dark:text-white mb-6 flex items-center gap-2">
-             <Apple className="w-4 h-4 text-cyan-500" /> Daily Nutrient Breakdown
+             <Apple className="w-4 h-4 text-cyan-500" /> Daily Nutrient Breakdown ({activeDay})
           </h2>
           <div className="space-y-6">
             {[
-              { label: 'Calories', current: 1780, max: 2000, unit: 'kcal', color: 'bg-amber-400' },
-              { label: 'Protein', current: 62, max: 75, unit: 'g', color: 'bg-blue-400' },
-              { label: 'Carbohydrates', current: 215, max: 250, unit: 'g', color: 'bg-emerald-400' },
-              { label: 'Fat', current: 48, max: 65, unit: 'g', color: 'bg-rose-400' },
-              { label: 'Fibre', current: 24, max: 30, unit: 'g', color: 'bg-purple-400' },
-              { label: 'Water', current: 2.1, max: 2.5, unit: 'L', color: 'bg-cyan-400' },
+              { label: 'Calories', current: totalCal, max: targetCal, unit: 'kcal', color: 'bg-amber-400' },
+              { label: 'Protein', current: totalPro, max: targetPro, unit: 'g', color: 'bg-blue-400' },
+              { label: 'Carbohydrates', current: totalCarbs, max: targetCarbs, unit: 'g', color: 'bg-emerald-400' },
+              { label: 'Fat', current: totalFat, max: targetFat, unit: 'g', color: 'bg-rose-400' },
             ].map(macro => {
-              const percent = Math.min(100, Math.round((macro.current / macro.max) * 100));
+              const percent = macro.max > 0 ? Math.min(100, Math.round((macro.current / macro.max) * 100)) : 0;
               return (
                 <div key={macro.label}>
                   <div className="flex justify-between text-xs font-bold mb-2">
                     <span className="text-slate-600 dark:text-slate-300 uppercase tracking-wider">{macro.label}</span>
                     <span className="text-slate-900 dark:text-white">{macro.current} <span className="text-slate-400 font-medium">/ {macro.max} {macro.unit}</span></span>
                   </div>
-                  <div className="w-full bg-slate-100 dark:bg-slate-800 rounded-full h-2.5 overflow-hidden border border-slate-200/50 dark:border-slate-200 dark:border-slate-700/50">
+                  <div className="w-full bg-slate-100 dark:bg-slate-800 rounded-full h-2.5 overflow-hidden border border-slate-200/50 dark:border-slate-700/50">
                     <motion.div 
-                      initial={{ width: 0 }} animate={{ width: `${percent}%` }} transition={{ duration: 1, ease: "easeOut" }}
+                      initial={{ width: 0 }} animate={{ width: `${percent}%` }} transition={{ duration: 0.6, ease: "easeOut" }}
                       className={`h-full ${macro.color} rounded-full`}
                     />
                   </div>
@@ -568,43 +766,37 @@ export function DietPlanView({ patientName, user }: DietPlanViewProps = {}) {
         <div className="bg-white dark:bg-slate-900 rounded-3xl p-6 md:p-8 border border-slate-200 dark:border-slate-800 shadow-sm col-span-1 lg:col-span-2">
           <div className="flex justify-between items-center mb-6">
             <h2 className="text-sm font-black uppercase tracking-widest text-slate-900 dark:text-white flex items-center gap-2">
-              <History className="w-4 h-4 text-cyan-500" /> Patient Adherence & Progress
+              <History className="w-4 h-4 text-cyan-500" /> Weekly Meal Coverage
             </h2>
-            <select className="bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-200 dark:border-slate-700 rounded-xl px-3 py-1.5 text-xs font-bold text-slate-700 dark:text-slate-300 outline-none">
-              <option>7 Days</option>
-              <option>30 Days</option>
-              <option>Custom</option>
-            </select>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-6 mb-8">
             <div className="p-5 rounded-2xl bg-slate-50 dark:bg-slate-800/50 border border-slate-100 dark:border-slate-800">
-               <p className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Meals Completed</p>
-               <div className="text-3xl font-black text-slate-900 dark:text-white">86%</div>
+               <p className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Planned Meals</p>
+               <div className="text-3xl font-black text-slate-900 dark:text-white">{meals.length}</div>
             </div>
             <div className="p-5 rounded-2xl bg-slate-50 dark:bg-slate-800/50 border border-slate-100 dark:border-slate-800">
-               <p className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Water Goal</p>
-               <div className="text-3xl font-black text-slate-900 dark:text-white">74%</div>
+               <p className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Checklist Active</p>
+               <div className="text-3xl font-black text-slate-900 dark:text-white">{instructionPct}%</div>
             </div>
             <div className="p-5 rounded-2xl bg-slate-50 dark:bg-slate-800/50 border border-slate-100 dark:border-slate-800">
-               <p className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Plan Followed</p>
-               <div className="text-3xl font-black text-slate-900 dark:text-white">81%</div>
+               <p className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Today's Target</p>
+               <div className="text-3xl font-black text-slate-900 dark:text-white">{calScore}%</div>
             </div>
           </div>
 
           <div className="h-48 flex items-end justify-between gap-2 opacity-80">
-            {/* Simulated Chart Bars */}
-            {[60, 80, 40, 90, 75, 85, 100].map((h, i) => (
-              <div key={i} className="w-full h-full bg-slate-100 dark:bg-slate-800 rounded-t-xl relative group overflow-hidden">
-                <motion.div initial={{ height: 0 }} animate={{ height: `${h}%` }} transition={{ duration: 1, ease: 'easeOut', delay: i * 0.1 }} className="absolute bottom-0 w-full bg-cyan-500/80 group-hover:bg-cyan-400 transition-colors"></motion.div>
-              </div>
-            ))}
+            {weeklyCounts.map((count, i) => {
+              const h = meals.length === 0 ? 0 : Math.round((count / maxDayCount) * 100);
+              return (
+                <div key={i} className="w-full h-full bg-slate-100 dark:bg-slate-800 rounded-t-xl relative group overflow-hidden">
+                  <motion.div initial={{ height: 0 }} animate={{ height: `${h}%` }} transition={{ duration: 0.6, ease: 'easeOut', delay: i * 0.05 }} className="absolute bottom-0 w-full bg-cyan-500/80 group-hover:bg-cyan-400 transition-colors"></motion.div>
+                </div>
+              );
+            })}
           </div>
           <div className="flex justify-between mt-2 text-xs font-bold text-slate-400">
             <span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span><span>Sun</span>
-          </div>
-          <div className="mt-6">
-            <button className="text-xs font-bold text-cyan-600 dark:text-cyan-400 hover:underline">View Detailed Progress</button>
           </div>
         </div>
 
@@ -616,24 +808,41 @@ export function DietPlanView({ patientName, user }: DietPlanViewProps = {}) {
               <FileText className="w-4 h-4 text-cyan-500" /> Clinical Notes
             </h2>
             <textarea 
-              className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-200 dark:border-slate-700 text-sm font-medium text-slate-900 dark:text-white rounded-2xl p-4 outline-none focus:ring-2 focus:ring-cyan-500/20 resize-none h-32 mb-4" 
+              value={assessment.notes}
+              onChange={(e) => setAssessment((prev) => ({ ...prev, notes: e.target.value }))}
+              className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-sm font-medium text-slate-900 dark:text-white rounded-2xl p-4 outline-none focus:ring-2 focus:ring-cyan-500/20 resize-none h-32 mb-4" 
               placeholder="Enter clinical observations, adjustments, and dietetic notes here..."
             />
             <div className="grid grid-cols-2 gap-4 mb-4">
               <div>
                 <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1">Next Review</label>
-                <input type="date" className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs font-bold text-slate-700 dark:text-slate-300 outline-none" />
+                <input
+                  type="date"
+                  value={assessment.nextReview}
+                  onChange={(e) => setAssessment((prev) => ({ ...prev, nextReview: e.target.value }))}
+                  className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs font-bold text-slate-700 dark:text-slate-300 outline-none"
+                />
               </div>
               <div>
                 <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1">Frequency</label>
-                <select className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs font-bold text-slate-700 dark:text-slate-300 outline-none">
+                <select
+                  value={assessment.reviewFrequency}
+                  onChange={(e) => setAssessment((prev) => ({ ...prev, reviewFrequency: e.target.value }))}
+                  className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs font-bold text-slate-700 dark:text-slate-300 outline-none"
+                >
                   <option>Weekly</option>
                   <option>Bi-Weekly</option>
                   <option>Monthly</option>
                 </select>
               </div>
             </div>
-            <button className="w-full py-2.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 rounded-xl text-sm font-bold transition-colors">
+            <button
+              onClick={async () => {
+                const ok = await saveAssessmentToDb();
+                showToast(ok ? '✓ Clinical notes saved to database!' : 'Failed to save clinical notes');
+              }}
+              className="w-full py-2.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 rounded-xl text-sm font-bold transition-colors"
+            >
               Save Notes
             </button>
           </div>
@@ -674,7 +883,8 @@ export function DietPlanView({ patientName, user }: DietPlanViewProps = {}) {
 
       </div>
     </div>
-  );
+    );
+  };
 
   const renderHistoryTab = () => (
     <div id="plan-history-section" className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden p-6 animate-in fade-in duration-500">
@@ -682,51 +892,36 @@ export function DietPlanView({ patientName, user }: DietPlanViewProps = {}) {
         <History className="w-4 h-4 text-cyan-500" /> Plan History & Versions
       </h3>
 
-      <div className="overflow-x-auto">
-        <table className="w-full text-left border-collapse">
-          <thead>
-            <tr className="border-b border-slate-200 dark:border-slate-800">
-              <th className="pb-4 text-xs font-black uppercase tracking-wider text-slate-500">Plan Name</th>
-              <th className="pb-4 text-xs font-black uppercase tracking-wider text-slate-500">Duration</th>
-              <th className="pb-4 text-xs font-black uppercase tracking-wider text-slate-500">Status</th>
-              <th className="pb-4 text-xs font-black uppercase tracking-wider text-slate-500">Updated</th>
-              <th className="pb-4 text-xs font-black uppercase tracking-wider text-slate-500 text-right">Action</th>
-            </tr>
-          </thead>
-          <tbody className="text-sm font-bold text-slate-700 dark:text-slate-300">
-            <tr className="border-b border-slate-100 dark:border-slate-800/50 hover:bg-slate-50 dark:hover:bg-slate-800/20 transition-colors">
-              <td className="py-4">Balanced Nutrition Plan <br/><span className="text-xs font-medium text-slate-400">Version 3</span></td>
-              <td className="py-4 text-slate-500">01–28 Sep</td>
-              <td className="py-4"><span className="px-2.5 py-1 bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400 rounded-lg text-xs">Active</span></td>
-              <td className="py-4">08 Sep 2026</td>
-              <td className="py-4 text-right space-x-3">
-                <button className="text-cyan-600 hover:underline">View</button>
-                <button className="text-slate-400 hover:text-slate-700 dark:hover:text-slate-200">Duplicate</button>
-              </td>
-            </tr>
-            <tr className="border-b border-slate-100 dark:border-slate-800/50 hover:bg-slate-50 dark:hover:bg-slate-800/20 transition-colors">
-              <td className="py-4">Nutrition Plan <br/><span className="text-xs font-medium text-slate-400">Version 1</span></td>
-              <td className="py-4 text-slate-500">01–28 Aug</td>
-              <td className="py-4"><span className="px-2.5 py-1 bg-slate-100 dark:bg-slate-800 text-slate-500 rounded-lg text-xs">Completed</span></td>
-              <td className="py-4">28 Aug 2026</td>
-              <td className="py-4 text-right space-x-3">
-                <button className="text-cyan-600 hover:underline">View</button>
-                <button className="text-slate-400 hover:text-slate-700 dark:hover:text-slate-200">Duplicate</button>
-              </td>
-            </tr>
-            <tr className="hover:bg-slate-50 dark:hover:bg-slate-800/20 transition-colors">
-              <td className="py-4">Basic Diet Plan <br/><span className="text-xs font-medium text-slate-400">Version 1</span></td>
-              <td className="py-4 text-slate-500">15–30 Jul</td>
-              <td className="py-4"><span className="px-2.5 py-1 bg-slate-100 dark:bg-slate-800 text-slate-500 rounded-lg text-xs">Completed</span></td>
-              <td className="py-4">30 Jul 2026</td>
-              <td className="py-4 text-right space-x-3">
-                <button className="text-cyan-600 hover:underline">View</button>
-                <button className="text-slate-400 hover:text-slate-700 dark:hover:text-slate-200">Duplicate</button>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
+      {!assessment.updatedAt && meals.length === 0 ? (
+        <div className="py-12 text-center text-slate-500 dark:text-slate-400 text-sm font-medium">
+          No saved nutrition plan history yet. Create an assessment or add meals to start tracking.
+        </div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-left border-collapse">
+            <thead>
+              <tr className="border-b border-slate-200 dark:border-slate-800">
+                <th className="pb-4 text-xs font-black uppercase tracking-wider text-slate-500">Plan Name</th>
+                <th className="pb-4 text-xs font-black uppercase tracking-wider text-slate-500">Duration</th>
+                <th className="pb-4 text-xs font-black uppercase tracking-wider text-slate-500">Status</th>
+                <th className="pb-4 text-xs font-black uppercase tracking-wider text-slate-500">Updated</th>
+                <th className="pb-4 text-xs font-black uppercase tracking-wider text-slate-500 text-right">Action</th>
+              </tr>
+            </thead>
+            <tbody className="text-sm font-bold text-slate-700 dark:text-slate-300">
+              <tr className="border-b border-slate-100 dark:border-slate-800/50 hover:bg-slate-50 dark:hover:bg-slate-800/20 transition-colors">
+                <td className="py-4">{assessment.goal} Plan <br/><span className="text-xs font-medium text-slate-400">{meals.length} planned meals · {assessment.targetCalories} kcal/day</span></td>
+                <td className="py-4 text-slate-500">{assessment.planDuration}</td>
+                <td className="py-4"><span className="px-2.5 py-1 bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400 rounded-lg text-xs">Active</span></td>
+                <td className="py-4">{patientInfo.lastUpdated}</td>
+                <td className="py-4 text-right space-x-3">
+                  <button onClick={() => setActiveTab('plan')} className="text-cyan-600 hover:underline">View</button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 
@@ -768,7 +963,7 @@ export function DietPlanView({ patientName, user }: DietPlanViewProps = {}) {
               <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 z-10" />
               <input 
                 type="text" 
-                placeholder="Search Patient..." 
+                placeholder="Search meals..." 
                 value={searchQuery}
                 onChange={(e) => {
                   setSearchQuery(e.target.value);
@@ -776,7 +971,7 @@ export function DietPlanView({ patientName, user }: DietPlanViewProps = {}) {
                 }}
                 onFocus={() => setShowSearchResults(searchQuery.length > 0)}
                 onBlur={() => setTimeout(() => setShowSearchResults(false), 200)}
-                className="bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-200 dark:border-slate-700 rounded-xl pl-9 pr-4 py-2.5 outline-none text-sm font-medium focus:ring-2 focus:ring-cyan-500/20 w-48 sm:w-64 relative z-10" 
+                className="bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl pl-9 pr-4 py-2.5 outline-none text-sm font-medium focus:ring-2 focus:ring-cyan-500/20 w-48 sm:w-64 relative z-10" 
               />
               
               {/* Search Results Dropdown */}
@@ -786,37 +981,31 @@ export function DietPlanView({ patientName, user }: DietPlanViewProps = {}) {
                     initial={{ opacity: 0, y: 10 }} 
                     animate={{ opacity: 1, y: 0 }} 
                     exit={{ opacity: 0, y: 10 }} 
-                    className="absolute top-full left-0 mt-2 w-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-200 dark:border-slate-700 rounded-xl shadow-xl z-50 overflow-hidden"
+                    className="absolute top-full left-0 mt-2 w-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl z-50 overflow-hidden"
                   >
                     <div className="p-2">
-                      <div 
-                        className="px-4 py-3 hover:bg-slate-50 dark:hover:bg-slate-700/50 rounded-lg cursor-pointer transition-colors flex items-center gap-3"
-                        onClick={() => {
-                          setSearchQuery('');
-                          setShowSearchResults(false);
-                          showToast("Loaded patient: Rahul Sharma");
-                        }}
-                      >
-                        <div className="w-8 h-8 rounded-full bg-cyan-100 dark:bg-cyan-900/50 text-cyan-600 flex items-center justify-center font-bold text-xs">RS</div>
-                        <div>
-                          <p className="text-sm font-bold text-slate-900 dark:text-white">Rahul Sharma</p>
-                          <p className="text-xs text-slate-500">ID: MED-9921</p>
-                        </div>
-                      </div>
-                      <div 
-                        className="px-4 py-3 hover:bg-slate-50 dark:hover:bg-slate-700/50 rounded-lg cursor-pointer transition-colors flex items-center gap-3"
-                        onClick={() => {
-                          setSearchQuery('');
-                          setShowSearchResults(false);
-                          showToast("Loaded patient: Priya Patel");
-                        }}
-                      >
-                        <div className="w-8 h-8 rounded-full bg-purple-100 dark:bg-purple-900/50 text-purple-600 flex items-center justify-center font-bold text-xs">PP</div>
-                        <div>
-                          <p className="text-sm font-bold text-slate-900 dark:text-white">Priya Patel</p>
-                          <p className="text-xs text-slate-500">ID: MED-4452</p>
-                        </div>
-                      </div>
+                      {meals.filter((m) => String(m.name || '').toLowerCase().includes(searchQuery.toLowerCase())).length === 0 ? (
+                        <div className="px-4 py-3 text-xs text-slate-500">No matching meals found</div>
+                      ) : (
+                        meals
+                          .filter((m) => String(m.name || '').toLowerCase().includes(searchQuery.toLowerCase()))
+                          .slice(0, 5)
+                          .map((m) => (
+                            <div
+                              key={m.id}
+                              className="px-4 py-2.5 hover:bg-slate-50 dark:hover:bg-slate-700/50 rounded-lg cursor-pointer transition-colors"
+                              onClick={() => {
+                                setSearchQuery('');
+                                setShowSearchResults(false);
+                                if (Array.isArray(m.days) && m.days[0]) setActiveDay(m.days[0]);
+                                setActiveTab('plan');
+                              }}
+                            >
+                              <p className="text-sm font-bold text-slate-900 dark:text-white">{m.name}</p>
+                              <p className="text-xs text-slate-500">{m.type} · {m.cal} kcal</p>
+                            </div>
+                          ))
+                      )}
                     </div>
                   </motion.div>
                 )}
@@ -914,17 +1103,34 @@ export function DietPlanView({ patientName, user }: DietPlanViewProps = {}) {
           >
             <div className="max-w-7xl w-full mx-auto px-2 flex flex-col sm:flex-row justify-between items-center gap-4">
               <div className="text-sm font-bold text-slate-500">
-                Last saved: <span className="text-slate-900 dark:text-white">Just now</span>
+                Last saved: <span className="text-slate-900 dark:text-white">{patientInfo.lastUpdated}</span>
               </div>
               <div className="flex flex-wrap items-center justify-end gap-3 w-full sm:w-auto">
-                <button onClick={() => showToast("Draft Saved Successfully!")} className="px-5 py-2.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 rounded-xl text-sm font-bold hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors shadow-sm">
+                <button
+                  onClick={async () => {
+                    const ok = await saveAssessmentToDb({}, 'Draft');
+                    showToast(ok ? '✓ Draft saved to database!' : 'Failed to save draft');
+                  }}
+                  className="px-5 py-2.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 rounded-xl text-sm font-bold hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors shadow-sm"
+                >
                   Save Draft
                 </button>
-                <button onClick={() => showToast("Opening Preview...")} className="px-5 py-2.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 rounded-xl text-sm font-bold hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors shadow-sm hidden sm:block">
+                <button onClick={() => setActiveTab('analysis')} className="px-5 py-2.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 rounded-xl text-sm font-bold hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors shadow-sm hidden sm:block">
                   Preview Plan
                 </button>
-                <button onClick={() => showToast("Downloading PDF...")} className="px-5 py-2.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 rounded-xl text-sm font-bold hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors shadow-sm flex items-center justify-center gap-2">
-                  <Download className="w-4 h-4" /> Export PDF
+                <button
+                  onClick={() => {
+                    const content = JSON.stringify({ patientInfo, assessment, meals }, null, 2);
+                    const blob = new Blob([content], { type: 'application/json' });
+                    const link = document.createElement('a');
+                    link.href = URL.createObjectURL(blob);
+                    link.download = `Diet_Plan_${patientInfo.name.replace(/\s+/g, '_')}.json`;
+                    link.click();
+                    showToast('✓ Exported diet plan');
+                  }}
+                  className="px-5 py-2.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 rounded-xl text-sm font-bold hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors shadow-sm flex items-center justify-center gap-2"
+                >
+                  <Download className="w-4 h-4" /> Export Plan
                 </button>
                 <button onClick={() => setShowAssignModal(true)} className="px-8 py-2.5 bg-slate-900 dark:bg-cyan-600 text-white rounded-xl text-sm font-black hover:bg-slate-800 dark:hover:bg-cyan-500 transition-colors shadow-lg flex items-center justify-center gap-2">
                   <Send className="w-4 h-4" /> Assign Plan
@@ -953,39 +1159,91 @@ export function DietPlanView({ patientName, user }: DietPlanViewProps = {}) {
                 <div className="grid grid-cols-2 gap-4">
                   <div>
                     <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">Nutrition Goal</label>
-                    <select className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 text-sm font-semibold text-slate-900 dark:text-white outline-none" defaultValue={patientInfo.goal}><option>Balanced Nutrition</option><option>Weight Management</option></select>
+                    <select
+                      value={assessment.goal}
+                      onChange={(e) => setAssessment((prev) => ({ ...prev, goal: e.target.value }))}
+                      className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 text-sm font-semibold text-slate-900 dark:text-white outline-none"
+                    >
+                      <option>Balanced Nutrition</option>
+                      <option>Weight Management</option>
+                      <option>Heart-Healthy Nutrition</option>
+                      <option>Diabetes-Friendly Nutrition</option>
+                    </select>
                   </div>
                   <div>
                     <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">Diet Type</label>
-                    <select className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 text-sm font-semibold text-slate-900 dark:text-white outline-none" defaultValue="South Indian"><option>South Indian</option><option>North Indian</option></select>
+                    <select
+                      value={assessment.foodPreference}
+                      onChange={(e) => setAssessment((prev) => ({ ...prev, foodPreference: e.target.value }))}
+                      className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 text-sm font-semibold text-slate-900 dark:text-white outline-none"
+                    >
+                      <option>South Indian</option>
+                      <option>North Indian</option>
+                      <option>Indian</option>
+                      <option>Mixed</option>
+                    </select>
                   </div>
                 </div>
                 <div className="grid grid-cols-3 gap-4">
                   <div>
                     <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">Target Cal</label>
-                    <input type="number" defaultValue={2000} className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 text-sm font-bold text-slate-900 dark:text-white outline-none" />
+                    <input
+                      type="number"
+                      value={assessment.targetCalories}
+                      onChange={(e) => setAssessment((prev) => ({ ...prev, targetCalories: Number(e.target.value) || 0 }))}
+                      className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 text-sm font-bold text-slate-900 dark:text-white outline-none"
+                    />
                   </div>
                   <div>
                     <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">Target Pro</label>
-                    <input type="number" defaultValue={75} className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 text-sm font-bold text-slate-900 dark:text-white outline-none" />
+                    <input
+                      type="number"
+                      value={assessment.targetProtein}
+                      onChange={(e) => setAssessment((prev) => ({ ...prev, targetProtein: Number(e.target.value) || 0 }))}
+                      className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 text-sm font-bold text-slate-900 dark:text-white outline-none"
+                    />
                   </div>
                   <div>
                     <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">Frequency</label>
-                    <select className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 text-sm font-semibold text-slate-900 dark:text-white outline-none"><option>3 Meals</option><option>4 Meals</option><option>5 Meals</option></select>
+                    <select
+                      value={assessment.mealFrequency}
+                      onChange={(e) => setAssessment((prev) => ({ ...prev, mealFrequency: e.target.value }))}
+                      className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 text-sm font-semibold text-slate-900 dark:text-white outline-none"
+                    >
+                      <option>3 meals</option>
+                      <option>4 meals</option>
+                      <option>5+ meals</option>
+                    </select>
                   </div>
                 </div>
                 <div>
                    <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">Dietary Restrictions applied</label>
-                   <div className="flex gap-2">
-                     <span className="px-3 py-1 bg-rose-100 dark:bg-rose-900/30 text-rose-700 dark:text-rose-400 rounded-lg text-xs font-bold border border-rose-200 dark:border-rose-800/50">Peanuts</span>
-                     <span className="px-3 py-1 bg-rose-100 dark:bg-rose-900/30 text-rose-700 dark:text-rose-400 rounded-lg text-xs font-bold border border-rose-200 dark:border-rose-800/50">Shellfish</span>
+                   <div className="flex flex-wrap gap-2">
+                     {allergiesArray.length > 0 ? (
+                       allergiesArray.map((al) => (
+                         <span key={al} className="px-3 py-1 bg-rose-100 dark:bg-rose-900/30 text-rose-700 dark:text-rose-400 rounded-lg text-xs font-bold border border-rose-200 dark:border-rose-800/50">
+                           {al}
+                         </span>
+                       ))
+                     ) : (
+                       <span className="text-xs text-slate-500 font-medium">No recorded allergies</span>
+                     )}
                    </div>
                 </div>
               </div>
 
               <div className="p-6 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/50 flex gap-3">
-                <button onClick={() => setShowAIModal(false)} className="flex-1 py-3 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 font-bold rounded-xl transition-colors">Cancel</button>
-                <button onClick={() => { setShowAIModal(false); showToast("AI Draft Generated Successfully!"); }} className="flex-1 py-3 bg-cyan-600 hover:bg-cyan-700 text-white font-black rounded-xl transition-colors shadow-md flex justify-center items-center gap-2"><Sparkles className="w-4 h-4"/> Generate Draft</button>
+                <button onClick={() => setShowAIModal(false)} className="flex-1 py-3 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 font-bold rounded-xl transition-colors">Cancel</button>
+                <button
+                  onClick={async () => {
+                    const ok = await saveAssessmentToDb({}, 'Generated');
+                    setShowAIModal(false);
+                    showToast(ok ? '✓ Nutrition targets saved to database!' : 'Failed to save nutrition targets');
+                  }}
+                  className="flex-1 py-3 bg-cyan-600 hover:bg-cyan-700 text-white font-black rounded-xl transition-colors shadow-md flex justify-center items-center gap-2"
+                >
+                  <Sparkles className="w-4 h-4"/> Save Targets
+                </button>
               </div>
             </motion.div>
           </div>
@@ -1022,7 +1280,7 @@ export function DietPlanView({ patientName, user }: DietPlanViewProps = {}) {
                         <span className="text-blue-600 dark:text-blue-400">{alt.pro}g pro</span>
                       </div>
                     </div>
-                    <button onClick={() => { setShowSwapDrawer(false); showToast("Meal Replaced!"); }} className="px-4 py-2 bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-300 text-xs font-bold rounded-lg group-hover:bg-cyan-500 group-hover:text-white transition-colors">
+                    <button onClick={() => handleSwapMeal(alt)} className="px-4 py-2 bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-300 text-xs font-bold rounded-lg group-hover:bg-cyan-500 group-hover:text-white transition-colors">
                       Replace
                     </button>
                   </div>
@@ -1144,7 +1402,16 @@ export function DietPlanView({ patientName, user }: DietPlanViewProps = {}) {
               
               <div className="flex gap-3">
                 <button onClick={() => setShowAssignModal(false)} className="flex-1 py-3 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 font-bold rounded-xl transition-colors">Cancel</button>
-                <button onClick={() => { setShowAssignModal(false); showToast("Plan Assigned Successfully!"); }} className="flex-1 py-3 bg-cyan-600 hover:bg-cyan-700 text-white font-black rounded-xl transition-colors shadow-md">Assign Plan</button>
+                <button
+                  onClick={async () => {
+                    const ok = await saveAssessmentToDb({}, 'Assigned');
+                    setShowAssignModal(false);
+                    showToast(ok ? '✓ Nutrition Plan Assigned & Saved to Database!' : 'Failed to assign plan');
+                  }}
+                  className="flex-1 py-3 bg-cyan-600 hover:bg-cyan-700 text-white font-black rounded-xl transition-colors shadow-md"
+                >
+                  Assign Plan
+                </button>
               </div>
             </motion.div>
           </div>

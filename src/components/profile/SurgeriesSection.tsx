@@ -1,8 +1,9 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { ShieldCheck, Plus, Trash2 } from 'lucide-react';
 import type { SurgeryItem } from './AddSurgeryModal';
 import { AddSurgeryModal } from './AddSurgeryModal';
 import { useLanguage } from '../../context/LanguageContext';
+import { patientClinicalApi } from '../../services/dhrApis';
 
 interface SurgeriesSectionProps {
   onToast: (msg: string) => void;
@@ -10,20 +11,63 @@ interface SurgeriesSectionProps {
 
 export const SurgeriesSection: React.FC<SurgeriesSectionProps> = ({ onToast }) => {
   const { t } = useLanguage();
-  const [surgeries, setSurgeries] = useState<SurgeryItem[]>([
-    { id: '1', name: 'Appendectomy', year: '2022', hospital: 'Apollo Hospital', doctor: 'Dr. Rajesh Kumar' },
-    { id: '2', name: 'ACL Knee Reconstruction', year: '2020', hospital: 'Fortis Healthcare', doctor: 'Dr. Vikram Sethi' }
-  ]);
+  const [surgeries, setSurgeries] = useState<SurgeryItem[]>([]);
   const [modalOpen, setModalOpen] = useState(false);
 
-  const handleAdd = (item: SurgeryItem) => {
-    setSurgeries((prev) => [...prev, item]);
-    onToast(`Added surgery: ${item.name}`);
+  useEffect(() => {
+    patientClinicalApi
+      .getSurgeries()
+      .then((res) => {
+        if (res?.data && Array.isArray(res.data)) {
+          setSurgeries(
+            res.data.map((s: any) => ({
+              id: s.id,
+              name: s.procedureName,
+              year: s.surgeryDate ? String(new Date(s.surgeryDate).getFullYear()) : 'Recorded',
+              hospital: s.hospital || 'Medical Facility',
+              doctor: s.surgeon || '',
+            }))
+          );
+        }
+      })
+      .catch(() => setSurgeries([]));
+  }, []);
+
+  const handleAdd = async (item: SurgeryItem) => {
+    try {
+      const surgeryDate = item.year && /^\d{4}$/.test(item.year.trim()) ? `${item.year.trim()}-01-01` : undefined;
+      const res = await patientClinicalApi.createSurgery({
+        procedureName: item.name,
+        surgeryDate,
+        hospital: item.hospital,
+        surgeon: item.doctor,
+      });
+      if (res?.data) {
+        setSurgeries((prev) => [
+          {
+            id: res.data.id,
+            name: res.data.procedureName,
+            year: res.data.surgeryDate ? String(new Date(res.data.surgeryDate).getFullYear()) : item.year || 'Recorded',
+            hospital: res.data.hospital || 'Medical Facility',
+            doctor: res.data.surgeon || '',
+          },
+          ...prev,
+        ]);
+        onToast(`Saved surgery to database: ${item.name}`);
+      }
+    } catch (err: any) {
+      onToast(err?.message || 'Failed to save surgery');
+    }
   };
 
-  const handleDelete = (id: string, name: string) => {
-    setSurgeries((prev) => prev.filter((s) => s.id !== id));
-    onToast(`Removed surgery: ${name}`);
+  const handleDelete = async (id: string, name: string) => {
+    try {
+      await patientClinicalApi.deleteSurgery(id);
+      setSurgeries((prev) => prev.filter((s) => s.id !== id));
+      onToast(`Removed surgery: ${name}`);
+    } catch (err: any) {
+      onToast(err?.message || 'Failed to remove surgery');
+    }
   };
 
   return (

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import type { ConsultationAppointment } from '../../consultation/consultationData';
 import { PreCallScreen } from '../../consultation/PreCallScreen';
 import { WaitingRoom } from '../../consultation/WaitingRoom';
@@ -8,7 +8,8 @@ import { DeviceSettingsDrawer } from '../../consultation/DeviceSettingsDrawer';
 import { TechnicalIssueModal } from '../../consultation/TechnicalIssueModal';
 import { ConfirmLeaveModal } from '../../consultation/ConfirmLeaveModal';
 import { teleConsultationService } from '../../../services/teleConsultationService';
-import { videoConsultationApi } from '../../../services/videoConsultationApi';
+import { videoConsultationApi, type VideoConsultationResponse } from '../../../services/videoConsultationApi';
+import { profileApi, recordApi } from '../../../services/dhrApis';
 
 interface DoctorVideoConsultationViewProps {
   user?: { name: string; email: string };
@@ -25,20 +26,24 @@ export const DoctorVideoConsultationView: React.FC<DoctorVideoConsultationViewPr
   const [stage, setStage] = useState<'preCall' | 'waiting' | 'active' | 'ended'>('active');
 
   const [activeCall, setActiveCall] = useState(teleConsultationService.getActiveSession());
+  const [activeConsultation, setActiveConsultation] = useState<VideoConsultationResponse | null>(null);
+  const [doctorProfile, setDoctorProfile] = useState<any>(null);
 
-  // Synchronize latest active consultation session from backend or service
+  // Synchronize latest active consultation session and doctor profile from backend
   useEffect(() => {
     let isMounted = true;
 
+    profileApi
+      .getDoctorProfile()
+      .then((res) => {
+        if (isMounted && res?.data) {
+          setDoctorProfile(res.data);
+        }
+      })
+      .catch(() => {});
+
     const syncActiveConsultation = async () => {
       try {
-        const latest = teleConsultationService.getActiveSession();
-        if (latest?.consultationId) {
-          setActiveCall(latest);
-          return;
-        }
-
-        // Fallback: check if doctor has an active / accepted consultation in database
         const res = await videoConsultationApi.getDoctorRequests();
         if (!isMounted) return;
 
@@ -47,21 +52,29 @@ export const DoctorVideoConsultationView: React.FC<DoctorVideoConsultationViewPr
         );
 
         if (activeItem) {
+          setActiveConsultation(activeItem);
           const session = {
             sessionId: activeItem.id,
             consultationId: activeItem.id,
             roomId: activeItem.roomId || undefined,
             appointmentId: `APT-${activeItem.id.slice(-5).toUpperCase()}`,
             patientId: activeItem.patientId,
-            patientName: activeItem.patient?.fullName || 'Helen Persia',
+            patientName: activeItem.patient?.fullName || 'Patient',
             patientAvatar: activeItem.patient?.avatar || undefined,
             doctorId: activeItem.doctorId,
-            doctorName: user?.name || 'Dr. Jim',
+            doctorName: activeItem.doctor?.fullName || user?.name || 'Doctor',
+            doctorSpeciality: activeItem.doctor?.speciality || undefined,
             status: 'connected' as const,
             startedAt: Date.now(),
           };
           teleConsultationService.initiateCall(session);
           setActiveCall(session);
+          return;
+        }
+
+        const latest = teleConsultationService.getActiveSession();
+        if (latest?.consultationId) {
+          setActiveCall(latest);
         }
       } catch (err) {
         console.warn('Error fetching active consultation for doctor:', err);
@@ -88,26 +101,33 @@ export const DoctorVideoConsultationView: React.FC<DoctorVideoConsultationViewPr
     };
   }, [user?.name]);
 
-  // DOCTOR APPOINTMENT DATA WITH CONNECTED CLINICAL PATIENT HELEN PERSIA
-  const [appointment] = useState<ConsultationAppointment>({
-    id: activeCall?.appointmentId || 'APT-2026-00482',
-    doctor: {
-      id: 'DOC-101',
-      name: user?.name ? (user.name.startsWith('Dr') ? user.name : `Dr. ${user.name}`) : 'Dr. Jim',
-      speciality: 'Senior Consultant Physician & Cardiologist',
-      rating: 4.9,
-      experienceYears: 14,
-      languages: ['English', 'Tamil', 'Hindi'],
-      hospital: 'Medicare Multi-Specialty Hospital',
-      avatarUrl: 'https://images.unsplash.com/photo-1622902046580-2b47f47f5471?auto=format&fit=crop&w=600&q=80',
-      bio: 'Leading tele-health physician specializing in preventive cardiology and digital consultation.'
-    },
-    date: 'Today · Live Session',
-    time: 'In Progress',
-    type: 'Video Consultation',
-    status: 'In Progress',
-    reason: 'Routine tele-consultation, vitals review & digital prescription'
-  });
+  const resolvedDoctorName = useMemo(() => {
+    const raw = doctorProfile?.fullName || activeCall?.doctorName || user?.name || 'Attending Physician';
+    return raw.startsWith('Dr') || raw === 'Attending Physician' ? raw : `Dr. ${raw}`;
+  }, [doctorProfile?.fullName, activeCall?.doctorName, user?.name]);
+
+  const appointment: ConsultationAppointment = useMemo(
+    () => ({
+      id: activeCall?.appointmentId || activeConsultation?.id || 'LIVE-CONSULT',
+      doctor: {
+        id: doctorProfile?.id || activeCall?.doctorId || 'DOCTOR',
+        name: resolvedDoctorName,
+        speciality: doctorProfile?.speciality || activeCall?.doctorSpeciality || 'General Medicine',
+        rating: 0,
+        experienceYears: Number(doctorProfile?.experienceYears || 0),
+        languages: ['English'],
+        hospital: doctorProfile?.hospital || 'Clinical Practice',
+        avatarUrl: doctorProfile?.photoUrl || activeCall?.doctorAvatar || '',
+        bio: doctorProfile?.about || 'Digital Health Tele-Consultation Session',
+      },
+      date: 'Today · Live Session',
+      time: 'In Progress',
+      type: 'Video Consultation',
+      status: 'In Progress',
+      reason: activeConsultation?.reason || 'Tele-consultation, vitals review & digital prescription',
+    }),
+    [activeCall, activeConsultation, doctorProfile, resolvedDoctorName]
+  );
 
   // DEVICE STATES
   const [cameraEnabled, setCameraEnabled] = useState(true);
@@ -124,35 +144,33 @@ export const DoctorVideoConsultationView: React.FC<DoctorVideoConsultationViewPr
   const [confirmLeaveOpen, setConfirmLeaveOpen] = useState(false);
   const [_leaveModalType, setLeaveModalType] = useState<'waiting' | 'active'>('waiting');
 
-  const patientName = activeCall?.patientName || 'Helen Persia';
-  const patientAvatar = activeCall?.patientAvatar || 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?auto=format&fit=crop&w=600&q=80';
+  const patientName = activeConsultation?.patient?.fullName || activeCall?.patientName || 'Patient';
+  const patientAvatar = activeConsultation?.patient?.avatar || activeCall?.patientAvatar || '';
 
-  const handleEndCallConfirmed = (durationSeconds: number, notesText: string) => {
+  const handleEndCallConfirmed = async (durationSeconds: number, notesText: string) => {
     setEndedDurationSeconds(durationSeconds);
     setFinalNotesText(notesText);
 
-    if (activeCall?.consultationId) {
-      videoConsultationApi.endConsultation(activeCall.consultationId).catch(console.error);
+    const consultationId = activeCall?.consultationId || activeConsultation?.id;
+    if (consultationId) {
+      await videoConsultationApi.endConsultation(consultationId).catch(console.error);
     }
     teleConsultationService.endCall();
 
     try {
-      const existing = localStorage.getItem('user_medical_records');
-      const records = existing ? JSON.parse(existing) : [];
-      const newConsultationRecord = {
-        id: `REC-${Date.now().toString().slice(-4)}`,
-        title: `Doctor Tele-Consultation Summary - ${patientName}`,
-        type: 'Consultation',
-        category: 'Consultation',
-        doctor: appointment.doctor.name,
-        hospital: appointment.doctor.hospital,
-        date: new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }),
-        notes: notesText || `Doctor video consultation with ${patientName} successfully completed.`,
-        tags: ['Teleconsultation', 'Doctor Suite', 'Video Call']
-      };
-      localStorage.setItem('user_medical_records', JSON.stringify([newConsultationRecord, ...records]));
+      const targetPatientId = activeConsultation?.patientId || activeCall?.patientId;
+      if (targetPatientId) {
+        await recordApi.createMedicalRecord({
+          patientId: targetPatientId,
+          title: `Doctor Tele-Consultation Summary - ${patientName}`,
+          type: 'CONSULTATION',
+          hospital: appointment.doctor.hospital,
+          status: 'Reviewed',
+          notes: notesText || `Doctor video consultation with ${patientName} (${durationSeconds}s) completed.`,
+        });
+      }
     } catch (e) {
-      console.error(e);
+      console.error('Failed to persist consultation record to database:', e);
     }
 
     setStage('ended');
@@ -197,7 +215,7 @@ export const DoctorVideoConsultationView: React.FC<DoctorVideoConsultationViewPr
         </div>
       )}
 
-      {/* 3. ACTIVE CONSULTATION ROOM STAGE (Doctor view: shows Helen Persia in main stage and Dr. Jim in self video) */}
+      {/* 3. ACTIVE CONSULTATION ROOM STAGE */}
       {stage === 'active' && (
         <ActiveConsultationRoom
           appointment={appointment}
@@ -220,7 +238,7 @@ export const DoctorVideoConsultationView: React.FC<DoctorVideoConsultationViewPr
           currentUserName={appointment.doctor.name}
           remoteUserName={patientName}
           remoteUserAvatar={patientAvatar}
-          remoteUserRoleTitle="Patient · Helen Persia (ABHA Verified)"
+          remoteUserRoleTitle={`Patient · ${patientName}`}
         />
       )}
 
@@ -247,7 +265,7 @@ export const DoctorVideoConsultationView: React.FC<DoctorVideoConsultationViewPr
       <TechnicalIssueModal
         isOpen={technicalIssueOpen}
         onClose={() => setTechnicalIssueOpen(false)}
-        onSubmitted={() => {}}
+        onSubmitted={() => { }}
       />
 
       <ConfirmLeaveModal

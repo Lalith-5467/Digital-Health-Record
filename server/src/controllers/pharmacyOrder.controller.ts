@@ -225,3 +225,26 @@ export const confirmCashPaymentController = async (
     next(error);
   }
 };
+
+export const cancelPharmacyOrderController = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+    const data = await PharmacyOrderService.cancelPharmacyOrderByPatient(
+      id,
+      req.body?.reason,
+      req.user!,
+      req.ip
+    );
+    res.status(200).json({
+      success: true,
+      message: 'Pharmacy order cancelled successfully',
+      data,
+    });
+  } catch (error) {
+    next(error);
+  }
+};

@@ -1,7 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { Pill, Check } from 'lucide-react';
 import { useLanguage } from '../../context/LanguageContext';
+import { medicineApi } from '../../services/dhrApis';
 
 interface MedicationListCardProps {
   onNavigate: (id: string) => void;
@@ -10,22 +11,47 @@ interface MedicationListCardProps {
 
 export const MedicationListCard: React.FC<MedicationListCardProps> = ({ onNavigate, onToast }) => {
   const { t } = useLanguage();
-  const [meds, setMeds] = useState([
-    { id: 1, name: 'Amoxicillin 500mg', dosage: t('meds_card.after_lunch', '1 Capsule after lunch'), time: '12:00 PM', taken: true, takenTime: '11:58 AM' },
-    { id: 2, name: 'Metformin 10mg', dosage: t('meds_card.after_dinner', '1 Tablet after dinner'), time: '06:00 PM', taken: false, takenTime: null },
-    { id: 3, name: 'Atorvastatin 5mg', dosage: t('meds_card.before_sleep', '1 Tablet before sleep'), time: '09:00 PM', taken: false, takenTime: null }
-  ]);
+  const [meds, setMeds] = useState<Array<{ id: string; medicineId: string; name: string; dosage: string; time: string; taken: boolean; takenTime: string | null }>>([]);
 
-  const handleMarkTaken = (id: number, name: string) => {
+  const loadDoses = async () => {
+    try {
+      const res = await medicineApi.getActiveMedications();
+      const todayDoses = res?.data?.todayDoses || [];
+      setMeds(
+        todayDoses.slice(0, 4).map((d: any) => ({
+          id: d.id,
+          medicineId: d.medicineId || d.id,
+          name: d.medicineName || d.name || 'Medication',
+          dosage: d.dosage || 'As prescribed',
+          time: d.scheduledTime || '08:00 AM',
+          taken: d.status === 'Taken' || d.status === 'taken',
+          takenTime: d.actualTime || null,
+        }))
+      );
+    } catch {
+      setMeds([]);
+    }
+  };
+
+  useEffect(() => {
+    loadDoses();
+  }, []);
+
+  const handleMarkTaken = async (id: string, medicineId: string, name: string) => {
     const nowTimeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    setMeds(prev =>
-      prev.map(m => (m.id === id ? { ...m, taken: true, takenTime: nowTimeStr } : m))
-    );
-    onToast(`✓ Marked ${name} as taken at ${nowTimeStr}!`);
+    try {
+      await medicineApi.recordDoseLog({ doseId: id, medicineId, status: 'taken' });
+      setMeds(prev =>
+        prev.map(m => (m.id === id ? { ...m, taken: true, takenTime: nowTimeStr } : m))
+      );
+      onToast(`✓ Marked ${name} as taken at ${nowTimeStr}!`);
+    } catch (err: any) {
+      onToast(err?.message || 'Failed to record dose');
+    }
   };
 
   const takenCount = meds.filter(m => m.taken).length;
-  const adherencePercent = Math.round((takenCount / meds.length) * 100);
+  const adherencePercent = meds.length > 0 ? Math.round((takenCount / meds.length) * 100) : 0;
 
   return (
     <motion.div
@@ -85,7 +111,7 @@ export const MedicationListCard: React.FC<MedicationListCardProps> = ({ onNaviga
               <motion.button
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.95 }}
-                onClick={() => handleMarkTaken(m.id, m.name)}
+                onClick={() => handleMarkTaken(m.id, m.medicineId, m.name)}
                 className="px-3.5 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-black shadow-sm transition-all shrink-0 cursor-pointer"
               >
                 {t('meds_card.mark_taken', 'Mark Taken')}
@@ -103,7 +129,7 @@ export const MedicationListCard: React.FC<MedicationListCardProps> = ({ onNaviga
         >
           {t('meds_card.manage_all', 'Manage All Medicines →')}
         </button>
-        <span className="text-xs text-slate-600 dark:text-slate-300 font-bold">{t('meds_card.doses_scheduled', '3 Doses Scheduled')}</span>
+        <span className="text-xs text-slate-600 dark:text-slate-300 font-bold">{meds.length} Doses Scheduled</span>
       </div>
     </motion.div>
   );

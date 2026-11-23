@@ -18,12 +18,6 @@ import {
   RotateCcw
 } from 'lucide-react';
 import type { MedicineItem, DoseRecord } from './medicinesData';
-import {
-  INITIAL_MEDICINES,
-  INITIAL_TODAY_DOSES,
-  MOCK_HISTORY_LOGS,
-  MOCK_WEEKLY_ADHERENCE
-} from './medicinesData';
 import type { ExtendedMedicineItem } from '../../utils/healthWorkflowStorage';
 import { AddMedicineModal } from './AddMedicineModal';
 import { MedicineDetailsDrawer } from './MedicineDetailsDrawer';
@@ -58,9 +52,10 @@ export const MedicinesView: React.FC<MedicinesViewProps> = ({
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   // MEDICINES & TODAY'S DOSES STATE (Live from MySQL)
-  const [medicines, setMedicines] = useState<ExtendedMedicineItem[]>(INITIAL_MEDICINES as ExtendedMedicineItem[]);
-  const [todayDoses, setTodayDoses] = useState<DoseRecord[]>(INITIAL_TODAY_DOSES);
-  const [historyLogs, setHistoryLogs] = useState<DoseRecord[]>(MOCK_HISTORY_LOGS);
+  const [medicines, setMedicines] = useState<ExtendedMedicineItem[]>([]);
+  const [todayDoses, setTodayDoses] = useState<DoseRecord[]>([]);
+  const [historyLogs, setHistoryLogs] = useState<DoseRecord[]>([]);
+  const [weeklyAdherence, setWeeklyAdherence] = useState<Array<{ day: string; pct: number }>>([]);
 
   // TABS & SEARCH STATES
   const [activeTab, setActiveTab] = useState<'active' | 'completed' | 'paused'>('active');
@@ -82,14 +77,36 @@ export const MedicinesView: React.FC<MedicinesViewProps> = ({
 
   const loadAllData = async () => {
     try {
-      const res = await medicineApi.getActiveMedications();
-      if (res && res.data) {
-        if (res.data.medications) {
-          setMedicines(res.data.medications);
-        }
-        if (res.data.todayDoses) {
-          setTodayDoses(res.data.todayDoses);
-        }
+      const [activeRes, histRes, adhRes] = await Promise.all([
+        medicineApi.getActiveMedications().catch(() => null),
+        medicineApi.getDoseHistory('30d').catch(() => null),
+        medicineApi.getAdherenceTrends().catch(() => null),
+      ]);
+      if (activeRes && activeRes.data) {
+        setMedicines(activeRes.data.medications || []);
+        setTodayDoses(activeRes.data.todayDoses || []);
+      }
+      if (histRes && Array.isArray(histRes.data)) {
+        setHistoryLogs(
+          histRes.data.map((log: any) => ({
+            id: log.id,
+            medicineId: log.patientMedicationId,
+            medicineName: log.patientMedication?.name || 'Medication',
+            dosage: log.patientMedication ? `${log.patientMedication.dosage} ${log.patientMedication.unit}` : '1 Dose',
+            scheduledTime: log.doseTime || '08:00 AM',
+            actualTime: log.takenAt || null,
+            status: (log.status === 'taken' ? 'Taken' : log.status === 'skipped' ? 'Skipped' : log.status === 'missed' ? 'Missed' : 'Upcoming') as DoseRecord['status'],
+            date: new Date(log.logDate || log.createdAt).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }),
+          }))
+        );
+      }
+      if (adhRes?.data?.timeSeries && Array.isArray(adhRes.data.timeSeries)) {
+        setWeeklyAdherence(
+          adhRes.data.timeSeries.slice(-7).map((d: any) => ({
+            day: d.label || d.date,
+            pct: Number(d.adherencePct || 0),
+          }))
+        );
       }
     } catch (err: any) {
       console.error('Failed to load active medications from database:', err?.message);
@@ -164,20 +181,14 @@ export const MedicinesView: React.FC<MedicinesViewProps> = ({
       await medicineApi.recordDoseLog({
         doseId,
         medicineId: medId,
-        status: 'skipped',
+        status: 'upcoming',
         skipReason: 'Reset to upcoming',
       });
-      loadAllData();
+      await loadAllData();
+      showToast(`↩ Reset ${medicineName} to Untaken / Upcoming`);
     } catch (err: any) {
-      console.error('Failed to reset dose status:', err?.message);
+      showToast(err?.message || 'Failed to reset dose status');
     }
-
-    // Clean up corresponding today history log
-    setHistoryLogs((prev) =>
-      prev.filter((log) => log.medicineName.toLowerCase() !== medicineName.toLowerCase() || log.date !== 'Today')
-    );
-
-    showToast(`↩ Reset ${medicineName} to Untaken / Upcoming`);
   };
 
   // SKIP DOSE HANDLER
@@ -221,6 +232,11 @@ export const MedicinesView: React.FC<MedicinesViewProps> = ({
 
   // ADD NEW MEDICINE HANDLER
   const handleSaveAddMedicine = async (newMed: Partial<MedicineItem>) => {
+    const todayFormatted = new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+    const nextMonth = new Date();
+    nextMonth.setDate(nextMonth.getDate() + 30);
+    const nextMonthFormatted = nextMonth.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+
     const created: MedicineItem = {
       id: newMed.id || `MED-${Date.now().toString().slice(-4)}`,
       name: newMed.name || 'Prescribed Medicine',
@@ -229,10 +245,10 @@ export const MedicinesView: React.FC<MedicinesViewProps> = ({
       frequency: newMed.frequency || 'Once daily',
       route: newMed.route || 'Oral',
       times: newMed.times && newMed.times.length > 0 ? newMed.times : ['08:00 AM'],
-      startDate: newMed.startDate || '23 Aug 2026',
-      endDate: newMed.endDate || '23 Sep 2026',
-      prescribedBy: newMed.prescribedBy || 'Dr. Rajesh Kumar',
-      hospital: newMed.hospital || 'Apollo Hospital',
+      startDate: newMed.startDate || todayFormatted,
+      endDate: newMed.endDate || nextMonthFormatted,
+      prescribedBy: newMed.prescribedBy || 'Attending Physician',
+      hospital: newMed.hospital || 'Medical Center',
       purpose: newMed.purpose || 'Therapy',
       instructions: newMed.instructions || 'Take as instructed.',
       foodInstruction: newMed.foodInstruction || 'After Food',
@@ -291,18 +307,20 @@ export const MedicinesView: React.FC<MedicinesViewProps> = ({
     showToast(`Medicine status changed to ${newStatus}`);
   };
 
-  // TOGGLE REMINDER
-  const handleToggleReminder = (medId: string) => {
-    setMedicines((prev) =>
-      prev.map((m) => {
-        if (m.id === medId) {
-          const newRem = !m.reminderEnabled;
-          showToast(newRem ? 'Medication reminder enabled' : 'Medication reminder disabled');
-          return { ...m, reminderEnabled: newRem };
-        }
-        return m;
-      })
-    );
+  // TOGGLE REMINDER (Persisted in MySQL)
+  const handleToggleReminder = async (medId: string) => {
+    const target = medicines.find((m) => m.id === medId);
+    if (!target) return;
+    const newRem = !target.reminderEnabled;
+    try {
+      await medicineApi.updatePatientMedication(medId, { refillReminder: newRem });
+      setMedicines((prev) =>
+        prev.map((m) => (m.id === medId ? { ...m, reminderEnabled: newRem } : m))
+      );
+      showToast(newRem ? 'Medication reminder enabled in database' : 'Medication reminder disabled');
+    } catch (err: any) {
+      showToast(err?.message || 'Failed to update medication reminder');
+    }
   };
 
   // CALCULATE TODAY'S ADHERENCE
@@ -387,7 +405,7 @@ export const MedicinesView: React.FC<MedicinesViewProps> = ({
           <div className="space-y-4 text-center sm:text-left flex-1">
             <div>
               <span className="text-[10px] font-extrabold uppercase tracking-wider text-[#00a896] dark:text-cyan-400 font-mono">
-                Today • Tuesday, 23 August
+                Today • {new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })}
               </span>
               <h2 className="text-xl sm:text-2xl font-extrabold text-slate-900 dark:text-white mt-1">{t('meds.today_meds', "Today's Medication")}</h2>
               <p className="text-xs text-slate-600 dark:text-slate-300 mt-1 font-medium">
@@ -471,8 +489,8 @@ export const MedicinesView: React.FC<MedicinesViewProps> = ({
               </div>
 
               <div className="bg-slate-50 dark:bg-slate-950 p-3 rounded-2xl border border-slate-200 dark:border-slate-800 flex items-center justify-between text-xs font-mono">
-                <span className="text-slate-600 dark:text-slate-400 font-semibold">{t('meds.next_dose_in', 'Next Dose In:')}</span>
-                <span className="font-mono font-extrabold text-[#00a896] dark:text-cyan-400 text-sm">02h 14m</span>
+                <span className="text-slate-600 dark:text-slate-400 font-semibold">{t('meds.next_dose_in', 'Scheduled Slot:')}</span>
+                <span className="font-mono font-extrabold text-[#00a896] dark:text-cyan-400 text-sm">{nextDose.scheduledTime}</span>
               </div>
 
               <button
@@ -516,22 +534,20 @@ export const MedicinesView: React.FC<MedicinesViewProps> = ({
                   <div className="flex flex-col items-center shrink-0 w-4 pt-3.5">
                     {/* DOT */}
                     <div
-                      className={`w-3.5 h-3.5 rounded-full border-2 shrink-0 z-10 ${
-                        isTaken
-                          ? 'bg-emerald-500 border-emerald-400 shadow-xs'
-                          : isSkipped
+                      className={`w-3.5 h-3.5 rounded-full border-2 shrink-0 z-10 ${isTaken
+                        ? 'bg-emerald-500 border-emerald-400 shadow-xs'
+                        : isSkipped
                           ? 'bg-amber-500 border-amber-400 shadow-xs'
                           : 'bg-white dark:bg-slate-900 border-[#00a896] dark:border-cyan-400'
-                      }`}
+                        }`}
                     />
                     {/* CONNECTOR LINE */}
                     {!isLast && (
                       <div
-                        className={`w-0.5 flex-1 min-h-[44px] my-1 ${
-                          isTaken
-                            ? 'bg-emerald-400 dark:bg-emerald-500/40'
-                            : 'bg-slate-200 dark:bg-slate-700'
-                        }`}
+                        className={`w-0.5 flex-1 min-h-[44px] my-1 ${isTaken
+                          ? 'bg-emerald-400 dark:bg-emerald-500/40'
+                          : 'bg-slate-200 dark:bg-slate-700'
+                          }`}
                       />
                     )}
                   </div>
@@ -551,15 +567,14 @@ export const MedicinesView: React.FC<MedicinesViewProps> = ({
 
                       <div className="flex justify-between items-center pt-2 border-t border-slate-200 dark:border-slate-700/60 font-sans">
                         <span
-                          className={`text-[10px] font-bold font-mono px-2 py-0.5 rounded-full ${
-                            isTaken
-                              ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border border-emerald-500/20'
-                              : isSkipped
+                          className={`text-[10px] font-bold font-mono px-2 py-0.5 rounded-full ${isTaken
+                            ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border border-emerald-500/20'
+                            : isSkipped
                               ? 'bg-amber-500/10 text-amber-700 dark:text-amber-300 border border-amber-500/20'
                               : 'bg-teal-500/10 text-[#00a896] dark:text-cyan-300 border border-teal-500/20'
-                          }`}
+                            }`}
                         >
-                          {isTaken ? `✓ Taken at ${dose.actualTime || '08:02 AM'}` : isSkipped ? 'Skipped' : 'Upcoming'}
+                          {isTaken ? `✓ Taken at ${dose.actualTime || dose.scheduledTime}` : isSkipped ? 'Skipped' : 'Upcoming'}
                         </span>
 
                         <div className="flex items-center gap-1.5 font-sans">
@@ -643,16 +658,14 @@ export const MedicinesView: React.FC<MedicinesViewProps> = ({
                 <button
                   key={tab.id}
                   onClick={() => setActiveTab(tab.id as any)}
-                  className={`flex-1 sm:flex-none px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center justify-center gap-2 ${
-                    activeTab === tab.id
-                      ? 'bg-[#00a896] text-white shadow-md'
-                      : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-                  }`}
+                  className={`flex-1 sm:flex-none px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center justify-center gap-2 ${activeTab === tab.id
+                    ? 'bg-[#00a896] text-white shadow-md'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                    }`}
                 >
                   <span>{tab.label}</span>
-                  <span className={`px-2 py-0.2 rounded-full text-[10px] font-mono ${
-                    activeTab === tab.id ? 'bg-white/20 text-white' : 'bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-400'
-                  }`}>
+                  <span className={`px-2 py-0.2 rounded-full text-[10px] font-mono ${activeTab === tab.id ? 'bg-white/20 text-white' : 'bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-400'
+                    }`}>
                     {tab.count}
                   </span>
                 </button>
@@ -701,13 +714,12 @@ export const MedicinesView: React.FC<MedicinesViewProps> = ({
                     </div>
                   </div>
 
-                  <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-extrabold ${
-                    med.status === 'Active'
-                      ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30'
-                      : med.status === 'Completed'
+                  <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-extrabold ${med.status === 'Active'
+                    ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30'
+                    : med.status === 'Completed'
                       ? 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 border border-slate-200 dark:border-slate-700'
                       : 'bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/30'
-                  }`}>
+                    }`}>
                     {t(`status.${med.status.toLowerCase()}`, med.status)}
                   </span>
                 </div>
@@ -777,18 +789,21 @@ export const MedicinesView: React.FC<MedicinesViewProps> = ({
               </div>
             </div>
             <span className="text-xs font-mono font-black text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2.5 py-1 rounded-full">
-              Avg 88%
+              Avg {weeklyAdherence.length > 0 ? Math.round(weeklyAdherence.reduce((s, d) => s + d.pct, 0) / weeklyAdherence.length) : 0}%
             </span>
           </div>
 
           {/* BAR CHART */}
           <div className="flex items-end justify-between gap-2 h-36 pt-2 px-1 font-mono">
-            {MOCK_WEEKLY_ADHERENCE.map((item) => (
+            {(weeklyAdherence.length > 0
+              ? weeklyAdherence
+              : ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((day) => ({ day, pct: 0 }))
+            ).map((item) => (
               <div key={item.day} className="flex-1 flex flex-col items-center gap-1.5 h-full justify-end">
-                <span className="text-[10px] font-bold text-slate-500">{item.percent}%</span>
+                <span className="text-[10px] font-bold text-slate-500">{item.pct}%</span>
                 <motion.div
                   initial={{ height: 0 }}
-                  animate={{ height: `${item.percent}%` }}
+                  animate={{ height: `${item.pct}%` }}
                   transition={{ duration: 0.8 }}
                   className="w-full bg-gradient-to-t from-[#00a896] to-cyan-500 rounded-t-xl min-h-[8px]"
                 />
@@ -828,7 +843,7 @@ export const MedicinesView: React.FC<MedicinesViewProps> = ({
                 >
                   <span className="font-bold text-slate-900 dark:text-white truncate">{log.medicineName}</span>
                   <span className="text-[10px] font-extrabold text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-md shrink-0 font-mono">
-                    ✓ Taken at {log.actualTime || '08:02 AM'}
+                    ✓ Taken at {log.actualTime || log.scheduledTime}
                   </span>
                 </div>
               ))}

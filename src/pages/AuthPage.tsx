@@ -38,7 +38,8 @@ import {
   Scale,
   Ruler,
   Thermometer,
-  Check
+  Check,
+  X
 } from 'lucide-react';
 import { Logo } from '../components/ui/Logo';
 import { authApi } from '../services/dhrApis';
@@ -73,7 +74,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({
   onNavigate,
   onSuccessLogin
 }) => {
-  const [mode, setMode] = useState<'login' | 'register'>(initialMode);
+  const [mode, setMode] = useState<'login' | 'register' | 'forgot_password'>(initialMode);
 
   useEffect(() => {
     setMode(initialMode);
@@ -136,6 +137,41 @@ export const AuthPage: React.FC<AuthPageProps> = ({
     }
     return () => clearInterval(timer);
   }, [otpCountdown]);
+
+  // Forgot / Reset Password Workflow States (Dedicated Multi-Step Experience)
+  const [recoveryStep, setRecoveryStep] = useState<1 | 2 | 3 | 4>(1);
+  const [recoveryEmail, setRecoveryEmail] = useState('');
+  const [recoveryOtp, setRecoveryOtp] = useState('');
+  const [recoveryNewPassword, setRecoveryNewPassword] = useState('');
+  const [recoveryConfirmPassword, setRecoveryConfirmPassword] = useState('');
+  const [showRecoveryNewPassword, setShowRecoveryNewPassword] = useState(false);
+  const [showRecoveryConfirmPassword, setShowRecoveryConfirmPassword] = useState(false);
+  const [recoveryLoading, setRecoveryLoading] = useState(false);
+  const [recoveryError, setRecoveryError] = useState<string | null>(null);
+  const [resendCooldown, setResendCooldown] = useState(0);
+
+  const recoveryOtpInputRefs = React.useRef<(HTMLInputElement | null)[]>([]);
+
+  useEffect(() => {
+    let timer: any;
+    if (resendCooldown > 0) {
+      timer = setInterval(() => {
+        setResendCooldown((c) => Math.max(0, c - 1));
+      }, 1000);
+    }
+    return () => clearInterval(timer);
+  }, [resendCooldown]);
+
+  const maskEmail = (rawEmail: string): string => {
+    if (!rawEmail || !rawEmail.includes('@')) return rawEmail || '';
+    const [localPart, domain] = rawEmail.split('@');
+    if (localPart.length <= 2) {
+      return `${localPart[0]}*@${domain}`;
+    }
+    const first = localPart[0];
+    const last = localPart[localPart.length - 1];
+    return `${first}******${last}@${domain}`;
+  };
 
   // Caregiver Specific States
   const [caregiverType, setCaregiverType] = useState('');
@@ -599,6 +635,167 @@ export const AuthPage: React.FC<AuthPageProps> = ({
     }
   };
 
+  // STEP 1 -> Dedicated Forgot Password Screen Transition
+  const handleStartForgotPassword = () => {
+    // DO NOT call any API
+    // DO NOT send an OTP
+    setRecoveryEmail(email.trim());
+    setRecoveryOtp('');
+    setRecoveryNewPassword('');
+    setRecoveryConfirmPassword('');
+    setRecoveryError(null);
+    setRecoveryStep(1);
+    setMode('forgot_password');
+    clearError();
+  };
+
+  // STEP 2 -> Send Reset Code
+  const handleSendResetCode = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    const trimmed = recoveryEmail.trim();
+    if (!trimmed || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)) {
+      setRecoveryError('Please enter a valid registered email address.');
+      return;
+    }
+    setRecoveryLoading(true);
+    setRecoveryError(null);
+    try {
+      const res = await authApi.forgotPassword(trimmed);
+      setResendCooldown(60);
+      setRecoveryOtp('');
+      setRecoveryStep(2);
+      showGlobalToast(res?.message || 'Verification code sent to your email.', 'success');
+      setTimeout(() => {
+        recoveryOtpInputRefs.current[0]?.focus();
+      }, 150);
+    } catch (err: any) {
+      setRecoveryError(err?.message || 'Unable to request password reset code. Please check your email.');
+    } finally {
+      setRecoveryLoading(false);
+    }
+  };
+
+  // STEP 3 -> 6-Digit OTP Box Handlers
+  const handleRecoveryOtpBoxChange = (index: number, val: string) => {
+    const digit = val.replace(/[^0-9]/g, '').slice(-1);
+    const current = (recoveryOtp || '').padEnd(6, ' ').split('').slice(0, 6);
+    current[index] = digit || ' ';
+    const combined = current.join('').trimEnd();
+    setRecoveryOtp(combined);
+    setRecoveryError(null);
+
+    // auto-focus next input if digit entered
+    if (digit && index < 5) {
+      recoveryOtpInputRefs.current[index + 1]?.focus();
+    }
+  };
+
+  const handleRecoveryOtpKeyDown = (index: number, e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Backspace') {
+      if ((!recoveryOtp[index] || recoveryOtp[index] === ' ') && index > 0) {
+        recoveryOtpInputRefs.current[index - 1]?.focus();
+      }
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      if (recoveryOtp && recoveryOtp.trim().length === 6) {
+        handleVerifyRecoveryOtp();
+      } else {
+        setRecoveryError('Please enter all 6 digits of the verification code.');
+      }
+    }
+  };
+
+  const handleRecoveryOtpPaste = (e: React.ClipboardEvent<HTMLInputElement>) => {
+    e.preventDefault();
+    const pasted = e.clipboardData.getData('text').replace(/\D/g, '').slice(0, 6);
+    if (pasted) {
+      setRecoveryOtp(pasted);
+      setRecoveryError(null);
+      const nextIndex = Math.min(pasted.length, 5);
+      recoveryOtpInputRefs.current[nextIndex]?.focus();
+    }
+  };
+
+  const handleVerifyRecoveryOtp = async () => {
+    const cleanOtp = recoveryOtp.trim();
+    if (cleanOtp.length !== 6) {
+      setRecoveryError('Please enter the full 6-digit verification code.');
+      return;
+    }
+    setRecoveryLoading(true);
+    setRecoveryError(null);
+    try {
+      const res = await authApi.verifyResetCode(recoveryEmail.trim(), cleanOtp);
+      if (res?.success) {
+        setRecoveryStep(3);
+      } else {
+        setRecoveryError(res?.message || 'Invalid or expired verification code.');
+      }
+    } catch (err: any) {
+      setRecoveryError(err?.message || 'Invalid or expired verification code. Please request a new one.');
+    } finally {
+      setRecoveryLoading(false);
+    }
+  };
+
+  const handleResendRecoveryCode = async () => {
+    if (resendCooldown > 0 || recoveryLoading || !recoveryEmail.trim()) return;
+    setRecoveryLoading(true);
+    setRecoveryError(null);
+    try {
+      const res = await authApi.forgotPassword(recoveryEmail.trim());
+      setResendCooldown(60);
+      showGlobalToast(res?.message || 'A new verification code has been sent.', 'success');
+    } catch (err: any) {
+      setRecoveryError(err?.message || 'Failed to resend code. Please try again.');
+    } finally {
+      setRecoveryLoading(false);
+    }
+  };
+
+  // STEP 4 -> Create New Password Submit
+  const handleResetPasswordSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setRecoveryError(null);
+
+    if (recoveryNewPassword.length < 8) {
+      setRecoveryError('Password must be at least 8 characters long.');
+      return;
+    }
+    if (!/[A-Z]/.test(recoveryNewPassword) || !/[0-9]/.test(recoveryNewPassword)) {
+      setRecoveryError('Password must contain at least one uppercase letter and one number.');
+      return;
+    }
+    if (recoveryNewPassword !== recoveryConfirmPassword) {
+      setRecoveryError('Passwords do not match. Please verify.');
+      return;
+    }
+
+    setRecoveryLoading(true);
+    try {
+      const res = await authApi.resetPassword(recoveryEmail.trim(), recoveryOtp.trim(), recoveryNewPassword);
+      setRecoveryStep(4);
+      showGlobalToast(res?.message || 'Password reset successfully! Previous sessions revoked.', 'success');
+    } catch (err: any) {
+      setRecoveryError(err?.message || 'Failed to reset password. Please check your verification code.');
+    } finally {
+      setRecoveryLoading(false);
+    }
+  };
+
+  // STEP 5 -> Transition to Login
+  const handleFinishRecoveryAndLogin = () => {
+    setEmail(recoveryEmail);
+    setPassword('');
+    setRecoveryOtp('');
+    setRecoveryNewPassword('');
+    setRecoveryConfirmPassword('');
+    setRecoveryError(null);
+    setRecoveryStep(1);
+    setMode('login');
+    clearError();
+  };
+
   const handleVerifyOtp = async () => {
     if (!otpCode || otpCode.trim().length !== 6) {
       showError('Please enter the full 6-digit verification code.');
@@ -740,6 +937,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({
   };
 
   const strength = getPasswordStrength(password);
+  const recoveryStrength = getPasswordStrength(recoveryNewPassword);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -832,9 +1030,33 @@ export const AuthPage: React.FC<AuthPageProps> = ({
           diastolicBp: diastolicBp ? parseInt(diastolicBp, 10) : undefined,
           heartRate: heartRate ? parseInt(heartRate, 10) : undefined,
           temperature: temperature ? parseFloat(temperature) : undefined,
+          allergies: allergies.trim() || undefined,
           speciality: specialization || (role === 'nurse' ? nurseSpecialty : undefined),
+          department: role === 'nurse' ? nurseSpecialty || undefined : specialization || undefined,
+          qualifications: qualifications.trim() || undefined,
+          experienceYears: experienceYears ? parseInt(experienceYears, 10) : undefined,
+          medicalCouncilRegNo: medicalCouncilRegNo.trim() || undefined,
+          hprAddress: hprAddress.trim() || undefined,
+          teleConsultReady,
+          nursingCouncilRegNo: nursingCouncilRegNo.trim() || undefined,
+          nursingQualification: nursingQualification.trim() || undefined,
+          homeVisitAvailable,
+          pharmacyName: pharmacyName.trim() || undefined,
+          drugLicenseNo: drugLicenseNo.trim() || undefined,
+          pharmacyRegNo: pharmacyRegNo.trim() || undefined,
+          pharmacyAddress: pharmacyAddress.trim() || undefined,
+          pincode: pincode.trim() || undefined,
+          digitalDispenseReady,
+          patientRelation: patientRelation.trim() || undefined,
+          caregiverType: caregiverType.trim() || undefined,
+          caregiverGovId: caregiverGovId.trim() || undefined,
+          patientAbhaId: patientAbhaId.trim() || undefined,
           hospital: hospitalAffiliation || (role === 'nurse' ? nurseHospital : (role === 'pharmacist' ? pharmacyName : undefined)),
           providerName: insuranceOrgName || undefined,
+          irdaiRegNo: irdaiRegNo.trim() || undefined,
+          officerEmpId: officerEmpId.trim() || undefined,
+          officerDesignation: officerDesignation.trim() || undefined,
+          claimsClearanceLevel: claimsClearanceLevel.trim() || undefined,
         };
 
         const authResponse = await authApi.register(registerPayload);
@@ -981,17 +1203,48 @@ export const AuthPage: React.FC<AuthPageProps> = ({
       </div>
 
       {/* MAIN AUTHENTICATION CARD */}
-      <div className={`mx-auto w-full relative z-10 pt-4 sm:pt-6 transition-all duration-300 ${mode === 'login' ? 'max-w-md sm:max-w-lg' : 'max-w-3xl lg:max-w-4xl xl:max-w-5xl'}`}>
-        <div className="rounded-3xl bg-white border border-slate-200/90 shadow-2xl overflow-hidden transition-all">
-          <div className={`flex flex-col justify-between bg-white text-slate-900 transition-all ${mode === 'login' ? 'p-7 sm:p-10' : 'p-6 sm:p-8 lg:p-10'}`}>
+      <div className={`mx-auto w-full relative z-10 pt-4 sm:pt-6 transition-all duration-300 ${mode === 'register' ? 'max-w-3xl lg:max-w-4xl xl:max-w-5xl' : 'max-w-md sm:max-w-lg'}`}>
+        <div className="rounded-3xl bg-white border border-slate-200/90 shadow-2xl overflow-hidden transition-all relative">
+          <div className={`flex flex-col justify-between bg-white text-slate-900 transition-all ${mode === 'register' ? 'p-6 sm:p-8 lg:p-10' : 'p-7 sm:p-10'}`}>
             <div>
               {/* FORM HEADING */}
               <div className="text-center mb-6">
-                <h3 className="text-2xl font-bold text-slate-900 tracking-tight">
+                {/* BRAND SECURITY BADGE FOR FORGOT PASSWORD */}
+                {mode === 'forgot_password' && (
+                  <div className="flex flex-col items-center mb-3 pt-1">
+                    <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-teal-50 via-[#00a896]/15 to-emerald-50 border border-teal-200/90 text-[#00a896] flex items-center justify-center shadow-md shadow-teal-500/10 mb-2.5">
+                      {recoveryStep === 4 ? (
+                        <CheckCircle2 className="w-7 h-7 text-emerald-600 stroke-[2.5]" />
+                      ) : recoveryStep === 3 ? (
+                        <Lock className="w-6 h-6 stroke-[2.3]" />
+                      ) : recoveryStep === 2 ? (
+                        <ShieldCheck className="w-6 h-6 stroke-[2.3]" />
+                      ) : (
+                        <KeyRound className="w-6 h-6 stroke-[2.3]" />
+                      )}
+                    </div>
+                    <div className="inline-flex items-center gap-1.5 px-3 py-0.5 rounded-full bg-teal-50/90 border border-teal-200/80 text-[10px] font-black uppercase tracking-wider text-[#00a896]">
+                      <Shield className="w-3 h-3 text-[#00a896]" />
+                      <span>MediCare Account Security</span>
+                    </div>
+                  </div>
+                )}
+
+                <h3 className="text-2xl font-black text-slate-900 tracking-tight">
                   {mode === 'login' ? (
                     <span>
                       Welcome back to <span className="text-slate-900">Medi</span><span className="text-[#00a896]">Care</span>
                     </span>
+                  ) : mode === 'forgot_password' ? (
+                    recoveryStep === 4 ? (
+                      'Password Reset Complete'
+                    ) : recoveryStep === 3 ? (
+                      'Create New Password'
+                    ) : recoveryStep === 2 ? (
+                      'Verify Your Email'
+                    ) : (
+                      'Forgot Password?'
+                    )
                   ) : (
                     role === 'pharmacist'
                       ? 'Pharmacist Registration'
@@ -1006,9 +1259,19 @@ export const AuthPage: React.FC<AuthPageProps> = ({
                       : 'Patient Registration'
                   )}
                 </h3>
-                <p className="text-xs text-slate-500 mt-1.5 font-normal max-w-sm mx-auto">
+                <p className="text-xs text-slate-500 mt-1.5 font-normal max-w-sm mx-auto leading-relaxed">
                   {mode === 'login'
                     ? 'Enter your credentials to securely access your medical records and care circle.'
+                    : mode === 'forgot_password'
+                    ? (
+                      recoveryStep === 4
+                        ? 'Your password has been changed securely and active sessions revoked.'
+                        : recoveryStep === 3
+                        ? 'Choose a strong, unique password to protect your health account.'
+                        : recoveryStep === 2
+                        ? `Enter the 6-digit verification code sent to ${maskEmail(recoveryEmail)}.`
+                        : 'Enter your registered email address. We will send you a verification code to reset your password.'
+                    )
                     : (
                       role === 'pharmacist'
                         ? 'Enter your pharmacy store, drug license (DL No.), and PCI details.'
@@ -1059,6 +1322,434 @@ export const AuthPage: React.FC<AuthPageProps> = ({
                     <div className="bg-[#00a896] h-full animate-pulse w-full" />
                   </div>
                 </motion.div>
+              ) : mode === 'forgot_password' ? (
+                <div className="space-y-5">
+                  {/* -------------------------------------------------------------
+                      STEP 1: FORGOT PASSWORD SCREEN (EMAIL INPUT & SEND CODE)
+                      ------------------------------------------------------------- */}
+                  {recoveryStep === 1 && (
+                    <form onSubmit={handleSendResetCode} className="space-y-4 pt-1">
+                      <div>
+                        <label className={labelClass}>
+                          Registered Email Address <span className="text-rose-500">*</span>
+                        </label>
+                        <div className="relative group">
+                          <Mail className="w-4 h-4 text-slate-400 group-focus-within:text-[#00a896] absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none transition-colors" />
+                          <input
+                            type="email"
+                            required
+                            autoFocus
+                            placeholder="e.g. user@medicare.health"
+                            value={recoveryEmail}
+                            onChange={(e) => {
+                              setRecoveryEmail(e.target.value);
+                              setRecoveryError(null);
+                            }}
+                            className={inputWithIconClass}
+                          />
+                        </div>
+                        <p className="text-[11px] text-slate-500 mt-1.5 font-normal">
+                          We will send a 6-digit verification code to this address if it exists in our system.
+                        </p>
+                      </div>
+
+                      {recoveryError && (
+                        <motion.div
+                          initial={{ opacity: 0, y: -6 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          className="p-3.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-semibold flex items-center gap-2"
+                        >
+                          <AlertCircle className="w-4 h-4 shrink-0 text-rose-500" />
+                          <span>{recoveryError}</span>
+                        </motion.div>
+                      )}
+
+                      <motion.button
+                        whileHover={{ scale: 1.01 }}
+                        whileTap={{ scale: 0.99 }}
+                        type="submit"
+                        disabled={recoveryLoading || !recoveryEmail.trim()}
+                        className="w-full h-12 rounded-xl font-bold text-sm text-white bg-gradient-to-r from-[#00a896] via-teal-600 to-cyan-600 hover:from-teal-600 hover:to-cyan-700 shadow-lg shadow-teal-500/20 hover:shadow-teal-500/30 transition-all flex items-center justify-center gap-2 cursor-pointer border border-teal-400/30 disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        {recoveryLoading ? (
+                          <div className="flex items-center gap-2.5">
+                            <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                            <span>Sending Verification Code...</span>
+                          </div>
+                        ) : (
+                          <>
+                            <span>Send Reset Code</span>
+                            <ArrowRight className="w-4 h-4 stroke-[2.5]" />
+                          </>
+                        )}
+                      </motion.button>
+                    </form>
+                  )}
+
+                  {/* -------------------------------------------------------------
+                      STEP 2: EMAIL OTP VERIFICATION (6 DIGIT BOXES & COOLDOWN)
+                      ------------------------------------------------------------- */}
+                  {recoveryStep === 2 && (
+                    <div className="space-y-5 pt-1">
+                      {/* IDENTITY VERIFICATION CARD */}
+                      <div className="p-4 rounded-2xl bg-gradient-to-br from-teal-50/80 via-emerald-50/50 to-cyan-50/60 border border-teal-200/80 text-center space-y-1.5 shadow-xs">
+                        <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-white/90 border border-teal-200 text-[10px] font-black uppercase tracking-wider text-[#00a896] shadow-2xs">
+                          <ShieldCheck className="w-3 h-3 text-[#00a896]" />
+                          <span>Code Dispatched</span>
+                        </div>
+                        <p className="text-xs font-medium text-slate-600">
+                          We sent a 6-digit security code to:
+                        </p>
+                        <div className="font-mono text-sm font-extrabold text-slate-900 bg-white/90 border border-teal-100 rounded-lg py-1 px-3 inline-block shadow-2xs">
+                          {maskEmail(recoveryEmail)}
+                        </div>
+                        <div className="flex items-center justify-center gap-2 pt-1">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setRecoveryStep(1);
+                              setRecoveryError(null);
+                            }}
+                            className="text-[11px] font-bold text-[#00a896] hover:underline cursor-pointer inline-flex items-center gap-1"
+                          >
+                            <span>Wrong email? Edit address</span>
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* 6 SEPARATE OTP INPUT BOXES */}
+                      <div>
+                        <div className="flex items-center justify-between mb-2">
+                          <label className="text-[13px] font-bold text-slate-800">
+                            Enter 6-Digit Code
+                          </label>
+                          <span className="text-[10px] font-bold text-slate-400 bg-slate-100 border border-slate-200 px-2 py-0.5 rounded-full">
+                            Expires in 15m
+                          </span>
+                        </div>
+                        <div className="flex justify-center gap-2 sm:gap-2.5">
+                          {[0, 1, 2, 3, 4, 5].map((index) => {
+                            const char = (recoveryOtp || '')[index] || '';
+                            const isFilled = char !== '' && char !== ' ';
+                            return (
+                              <input
+                                key={index}
+                                ref={(el) => { recoveryOtpInputRefs.current[index] = el; }}
+                                type="text"
+                                inputMode="numeric"
+                                maxLength={1}
+                                value={char}
+                                onChange={(e) => handleRecoveryOtpBoxChange(index, e.target.value)}
+                                onKeyDown={(e) => handleRecoveryOtpKeyDown(index, e)}
+                                onPaste={handleRecoveryOtpPaste}
+                                className={`w-11 sm:w-12 h-13 sm:h-14 text-center text-xl font-extrabold text-slate-900 rounded-xl transition-all font-mono shadow-xs focus:outline-none ${
+                                  isFilled 
+                                    ? 'bg-teal-50/50 border-2 border-[#00a896] ring-2 ring-[#00a896]/15' 
+                                    : 'bg-slate-50/90 border border-slate-300 focus:bg-white focus:border-[#00a896] focus:ring-4 focus:ring-[#00a896]/15'
+                                }`}
+                              />
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      {recoveryError && (
+                        <motion.div
+                          initial={{ opacity: 0, y: -6 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          className="p-3.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-semibold flex items-center gap-2"
+                        >
+                          <AlertCircle className="w-4 h-4 shrink-0 text-rose-500" />
+                          <span>{recoveryError}</span>
+                        </motion.div>
+                      )}
+
+                      {/* RESEND ROW WITH 60s COOLDOWN */}
+                      <div className="flex items-center justify-between text-xs px-1">
+                        <span className="text-slate-500 font-medium">Didn't receive the email?</span>
+                        {resendCooldown > 0 ? (
+                          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-slate-100 border border-slate-200 text-slate-600 font-mono text-[11px] font-bold">
+                            <RotateCw className="w-3 h-3 animate-spin text-[#00a896]" />
+                            <span>Resend in {resendCooldown}s</span>
+                          </span>
+                        ) : (
+                          <button
+                            type="button"
+                            disabled={recoveryLoading}
+                            onClick={handleResendRecoveryCode}
+                            className="font-bold text-[#00a896] hover:underline cursor-pointer disabled:opacity-50 inline-flex items-center gap-1.5"
+                          >
+                            <RotateCw className="w-3.5 h-3.5" />
+                            <span>Resend Code</span>
+                          </button>
+                        )}
+                      </div>
+
+                      <motion.button
+                        whileHover={{ scale: 1.01 }}
+                        whileTap={{ scale: 0.99 }}
+                        type="button"
+                        onClick={handleVerifyRecoveryOtp}
+                        disabled={recoveryLoading || recoveryOtp.trim().length !== 6}
+                        className="w-full h-12 rounded-xl font-bold text-sm text-white bg-gradient-to-r from-[#00a896] via-teal-600 to-cyan-600 hover:from-teal-600 hover:to-cyan-700 shadow-lg shadow-teal-500/20 hover:shadow-teal-500/30 transition-all flex items-center justify-center gap-2 cursor-pointer border border-teal-400/30 disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        {recoveryLoading ? (
+                          <div className="flex items-center gap-2.5">
+                            <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                            <span>Verifying Security Code...</span>
+                          </div>
+                        ) : (
+                          <>
+                            <span>Verify Code</span>
+                            <ArrowRight className="w-4 h-4 stroke-[2.5]" />
+                          </>
+                        )}
+                      </motion.button>
+                    </div>
+                  )}
+
+                  {/* -------------------------------------------------------------
+                      STEP 3: CREATE NEW PASSWORD (STRENGTH METER & REQUIREMENTS)
+                      ------------------------------------------------------------- */}
+                  {recoveryStep === 3 && (
+                    <form onSubmit={handleResetPasswordSubmit} className="space-y-4 pt-1">
+                      {/* NEW PASSWORD */}
+                      <div>
+                        <div className="flex items-center justify-between mb-1.5">
+                          <label className="text-[13px] font-bold text-slate-800 flex items-center gap-1">
+                            <span>New Password</span>
+                            <span className="text-rose-500">*</span>
+                          </label>
+                          <span className="text-[10px] font-bold text-slate-500 bg-slate-100 border border-slate-200 px-2 py-0.5 rounded-full">
+                            Min. 8 characters
+                          </span>
+                        </div>
+                        <div className="relative group">
+                          <Lock className="w-4 h-4 text-slate-400 group-focus-within:text-[#00a896] absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none transition-colors" />
+                          <input
+                            type={showRecoveryNewPassword ? 'text' : 'password'}
+                            required
+                            autoFocus
+                            placeholder="Enter your new secure password"
+                            value={recoveryNewPassword}
+                            onChange={(e) => {
+                              setRecoveryNewPassword(e.target.value);
+                              setRecoveryError(null);
+                            }}
+                            className="w-full h-12 pl-11 pr-11 rounded-xl bg-slate-50/90 border border-slate-200 text-sm font-semibold text-slate-900 placeholder:text-slate-400 focus:outline-none focus:bg-white focus:border-[#00a896] focus:ring-4 focus:ring-[#00a896]/15 transition-all shadow-xs"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setShowRecoveryNewPassword(!showRecoveryNewPassword)}
+                            className="absolute inset-y-0 right-0 pr-3.5 flex items-center text-slate-400 hover:text-slate-700 cursor-pointer"
+                          >
+                            {showRecoveryNewPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                          </button>
+                        </div>
+
+                        {/* PASSWORD STRENGTH METER */}
+                        {recoveryNewPassword && (
+                          <div className="mt-2.5 p-2.5 rounded-xl bg-slate-50 border border-slate-200/80 space-y-1.5">
+                            <div className="flex items-center justify-between text-[11px] font-bold">
+                              <span className="text-slate-600">Password Strength:</span>
+                              <span
+                                className={
+                                  recoveryStrength.score <= 25
+                                    ? 'text-rose-600'
+                                    : recoveryStrength.score <= 50
+                                    ? 'text-amber-600'
+                                    : recoveryStrength.score <= 75
+                                    ? 'text-teal-700'
+                                    : 'text-emerald-700'
+                                }
+                              >
+                                {recoveryStrength.label}
+                              </span>
+                            </div>
+                            <div className="w-full h-1.5 bg-slate-200 rounded-full overflow-hidden flex gap-1">
+                              <div
+                                className={`h-full transition-all duration-300 rounded-full ${
+                                  recoveryStrength.score >= 25 ? recoveryStrength.color : 'bg-transparent'
+                                }`}
+                                style={{ width: '25%' }}
+                              />
+                              <div
+                                className={`h-full transition-all duration-300 rounded-full ${
+                                  recoveryStrength.score >= 50 ? recoveryStrength.color : 'bg-transparent'
+                                }`}
+                                style={{ width: '25%' }}
+                              />
+                              <div
+                                className={`h-full transition-all duration-300 rounded-full ${
+                                  recoveryStrength.score >= 75 ? recoveryStrength.color : 'bg-transparent'
+                                }`}
+                                style={{ width: '25%' }}
+                              />
+                              <div
+                                className={`h-full transition-all duration-300 rounded-full ${
+                                  recoveryStrength.score === 100 ? recoveryStrength.color : 'bg-transparent'
+                                }`}
+                                style={{ width: '25%' }}
+                              />
+                            </div>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* CONFIRM NEW PASSWORD */}
+                      <div>
+                        <label className="text-[13px] font-bold text-slate-800 flex items-center gap-1 mb-1.5">
+                          <span>Confirm New Password</span>
+                          <span className="text-rose-500">*</span>
+                        </label>
+                        <div className="relative group">
+                          <Lock className="w-4 h-4 text-slate-400 group-focus-within:text-[#00a896] absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none transition-colors" />
+                          <input
+                            type={showRecoveryConfirmPassword ? 'text' : 'password'}
+                            required
+                            placeholder="Re-enter your new password"
+                            value={recoveryConfirmPassword}
+                            onChange={(e) => {
+                              setRecoveryConfirmPassword(e.target.value);
+                              setRecoveryError(null);
+                            }}
+                            className="w-full h-12 pl-11 pr-11 rounded-xl bg-slate-50/90 border border-slate-200 text-sm font-semibold text-slate-900 placeholder:text-slate-400 focus:outline-none focus:bg-white focus:border-[#00a896] focus:ring-4 focus:ring-[#00a896]/15 transition-all shadow-xs"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setShowRecoveryConfirmPassword(!showRecoveryConfirmPassword)}
+                            className="absolute inset-y-0 right-0 pr-3.5 flex items-center text-slate-400 hover:text-slate-700 cursor-pointer"
+                          >
+                            {showRecoveryConfirmPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* REQUIREMENTS CHECKLIST */}
+                      <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 space-y-2 text-[11px]">
+                        <p className="font-bold text-slate-800 mb-1 flex items-center gap-1.5">
+                          <ShieldCheck className="w-3.5 h-3.5 text-[#00a896]" />
+                          <span>Security Policy Standards:</span>
+                        </p>
+                        <div className="grid grid-cols-2 gap-2">
+                          <div
+                            className={`flex items-center gap-1.5 px-2 py-1 rounded-lg border transition-all ${
+                              recoveryNewPassword.length >= 8 
+                                ? 'bg-emerald-50/80 border-emerald-200 text-emerald-800 font-bold' 
+                                : 'bg-white border-slate-200 text-slate-400'
+                            }`}
+                          >
+                            <Check className="w-3.5 h-3.5 shrink-0 stroke-[2.5]" />
+                            <span>8+ characters</span>
+                          </div>
+                          <div
+                            className={`flex items-center gap-1.5 px-2 py-1 rounded-lg border transition-all ${
+                              /[A-Z]/.test(recoveryNewPassword) 
+                                ? 'bg-emerald-50/80 border-emerald-200 text-emerald-800 font-bold' 
+                                : 'bg-white border-slate-200 text-slate-400'
+                            }`}
+                          >
+                            <Check className="w-3.5 h-3.5 shrink-0 stroke-[2.5]" />
+                            <span>Uppercase letter</span>
+                          </div>
+                          <div
+                            className={`flex items-center gap-1.5 px-2 py-1 rounded-lg border transition-all ${
+                              /[0-9]/.test(recoveryNewPassword) 
+                                ? 'bg-emerald-50/80 border-emerald-200 text-emerald-800 font-bold' 
+                                : 'bg-white border-slate-200 text-slate-400'
+                            }`}
+                          >
+                            <Check className="w-3.5 h-3.5 shrink-0 stroke-[2.5]" />
+                            <span>Number (0-9)</span>
+                          </div>
+                          <div
+                            className={`flex items-center gap-1.5 px-2 py-1 rounded-lg border transition-all ${
+                              recoveryNewPassword && recoveryNewPassword === recoveryConfirmPassword
+                                ? 'bg-emerald-50/80 border-emerald-200 text-emerald-800 font-bold' 
+                                : 'bg-white border-slate-200 text-slate-400'
+                            }`}
+                          >
+                            <Check className="w-3.5 h-3.5 shrink-0 stroke-[2.5]" />
+                            <span>Passwords match</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      {recoveryError && (
+                        <motion.div
+                          initial={{ opacity: 0, y: -6 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          className="p-3.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-semibold flex items-center gap-2"
+                        >
+                          <AlertCircle className="w-4 h-4 shrink-0 text-rose-500" />
+                          <span>{recoveryError}</span>
+                        </motion.div>
+                      )}
+
+                      <motion.button
+                        whileHover={{ scale: 1.01 }}
+                        whileTap={{ scale: 0.99 }}
+                        type="submit"
+                        disabled={
+                          recoveryLoading ||
+                          recoveryNewPassword.length < 8 ||
+                          recoveryNewPassword !== recoveryConfirmPassword
+                        }
+                        className="w-full h-12 rounded-xl font-bold text-sm text-white bg-gradient-to-r from-[#00a896] via-teal-600 to-cyan-600 hover:from-teal-600 hover:to-cyan-700 shadow-lg shadow-teal-500/20 hover:shadow-teal-500/30 transition-all flex items-center justify-center gap-2 cursor-pointer border border-teal-400/30 disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        {recoveryLoading ? (
+                          <div className="flex items-center gap-2.5">
+                            <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                            <span>Updating Credentials...</span>
+                          </div>
+                        ) : (
+                          <>
+                            <span>Update Password</span>
+                            <ArrowRight className="w-4 h-4 stroke-[2.5]" />
+                          </>
+                        )}
+                      </motion.button>
+                    </form>
+                  )}
+
+                  {/* -------------------------------------------------------------
+                      STEP 4: SUCCESS CONFIRMATION SCREEN
+                      ------------------------------------------------------------- */}
+                  {recoveryStep === 4 && (
+                    <div className="text-center py-4 space-y-5">
+                      <div className="relative mx-auto w-20 h-20 flex items-center justify-center">
+                        <div className="absolute inset-0 rounded-full bg-emerald-100 animate-ping opacity-25" />
+                        <div className="w-18 h-18 rounded-full bg-gradient-to-tr from-emerald-500 to-teal-500 text-white flex items-center justify-center shadow-lg shadow-emerald-500/30 ring-8 ring-emerald-50">
+                          <CheckCircle2 className="w-10 h-10 stroke-[2.5]" />
+                        </div>
+                      </div>
+
+                      <div className="space-y-1.5">
+                        <h4 className="text-xl font-black text-slate-900 tracking-tight">
+                          Password Reset Complete!
+                        </h4>
+                        <p className="text-xs text-slate-600 max-w-xs mx-auto leading-relaxed">
+                          Your MediCare account credentials have been updated securely. All previous active sessions were terminated for your protection.
+                        </p>
+                      </div>
+
+                      <div className="p-3.5 rounded-2xl bg-slate-50 border border-slate-200 text-xs font-medium text-slate-600 text-center">
+                        Account: <span className="font-extrabold text-slate-900 font-mono">{recoveryEmail}</span>
+                      </div>
+
+                      <motion.button
+                        whileHover={{ scale: 1.01 }}
+                        whileTap={{ scale: 0.99 }}
+                        type="button"
+                        onClick={handleFinishRecoveryAndLogin}
+                        className="w-full h-12 rounded-xl font-bold text-sm text-white bg-gradient-to-r from-[#00a896] via-teal-600 to-cyan-600 hover:from-teal-600 hover:to-cyan-700 shadow-lg shadow-teal-500/25 transition-all flex items-center justify-center gap-2 cursor-pointer border border-teal-400/30"
+                      >
+                        <span>Sign In With New Password</span>
+                        <ArrowRight className="w-4 h-4 stroke-[2.5]" />
+                      </motion.button>
+                    </div>
+                  )}
+                </div>
               ) : (
                 <form onSubmit={handleSubmit} className="space-y-4">
                   {/* =========================================================================
@@ -2875,10 +3566,10 @@ export const AuthPage: React.FC<AuthPageProps> = ({
                             </label>
                             <button
                               type="button"
-                              onClick={() => setErrorMsg('Password reset link has been dispatched to your registered email.')}
-                              className="text-xs font-bold text-[#00a896] hover:underline cursor-pointer"
+                              onClick={handleStartForgotPassword}
+                              className="text-xs font-bold text-[#00a896] hover:underline cursor-pointer inline-flex items-center gap-1.5"
                             >
-                              Forgot Password?
+                              <span>Forgot Password?</span>
                             </button>
                           </>
                         ) : (
@@ -2930,20 +3621,68 @@ export const AuthPage: React.FC<AuthPageProps> = ({
             {/* SWITCH MODE FOOTER PROMPT */}
             <div className="pt-5 border-t border-slate-200 text-center mt-5">
               <p className="text-xs text-slate-600 font-medium">
-                {mode === 'login' ? "Don't have a MediCare account yet? " : "Already registered with MediCare? "}
+                {mode === 'forgot_password' ? (
+                  <>
+                    <span>Remember your password? </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMode('login');
+                        clearError();
+                        setRecoveryError(null);
+                        setRecoveryStep(1);
+                      }}
+                      className="font-black text-[#00a896] hover:underline cursor-pointer ml-1"
+                    >
+                      Back to Sign In
+                    </button>
+                  </>
+                ) : mode === 'login' ? (
+                  <>
+                    {"Don't have a MediCare account yet? "}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMode('register');
+                        clearError();
+                        if (onNavigate) onNavigate('register');
+                      }}
+                      className="font-black text-[#00a896] hover:underline cursor-pointer ml-1"
+                    >
+                      Register Now
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    {"Already registered with MediCare? "}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMode('login');
+                        clearError();
+                        if (onNavigate) onNavigate('login');
+                      }}
+                      className="font-black text-[#00a896] hover:underline cursor-pointer ml-1"
+                    >
+                      Sign In
+                    </button>
+                  </>
+                )}
+              </p>
+
+              {/* HOSPITAL MANAGEMENT PORTAL LINK */}
+              <div className="pt-3 mt-2 border-t border-slate-100 flex items-center justify-center gap-1.5 text-xs text-slate-500">
+                <span>Managing a Hospital or Medical Center?</span>
                 <button
                   type="button"
                   onClick={() => {
-                    const newMode = mode === 'login' ? 'register' : 'login';
-                    setMode(newMode);
-                    clearError();
-                    if (onNavigate) onNavigate(newMode);
+                    if (onNavigate) onNavigate('hospital/login');
                   }}
-                  className="font-black text-[#00a896] hover:underline cursor-pointer ml-1"
+                  className="font-bold text-[#00a896] hover:underline cursor-pointer"
                 >
-                  {mode === 'login' ? 'Register Now' : 'Sign In'}
+                  Hospital Portal →
                 </button>
-              </p>
+              </div>
             </div>
           </div>
 

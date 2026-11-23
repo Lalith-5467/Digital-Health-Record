@@ -4,6 +4,7 @@ import path from 'path';
 import { config } from './config/env';
 import apiRouter from './routes';
 import { errorHandler } from './middleware/errorHandler';
+import { authenticateUpload } from './middleware/auth.middleware';
 
 const app: Application = express();
 
@@ -19,10 +20,15 @@ const allowedOrigins = [
 app.use(
   cors({
     origin: (origin, callback) => {
-      if (!origin || allowedOrigins.includes(origin) || origin.startsWith('http://localhost:') || origin.startsWith('http://127.0.0.1:')) {
+      if (
+        !origin ||
+        allowedOrigins.includes(origin) ||
+        origin.startsWith('http://localhost:') ||
+        origin.startsWith('http://127.0.0.1:')
+      ) {
         callback(null, true);
       } else {
-        callback(null, true);
+        callback(null, false);
       }
     },
     credentials: true,
@@ -33,8 +39,8 @@ app.use(
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Serve uploaded files statically
-app.use('/uploads', express.static(path.resolve(__dirname, '../uploads')));
+// Serve uploaded files only to authenticated users
+app.use('/uploads', authenticateUpload, express.static(path.resolve(__dirname, '../uploads')));
 
 // Root Gateway Route Handler
 app.get('/', (req: Request, res: Response) => {

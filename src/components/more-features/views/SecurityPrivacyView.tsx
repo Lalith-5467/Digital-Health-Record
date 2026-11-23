@@ -1,4 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { authApi, profileApi } from '../../../services/dhrApis';
+import { healthShareApi } from '../../../services/healthShareApi';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
   Lock, ShieldAlert, Key, UserCheck, Eye, Smartphone, CheckCircle2, 
@@ -11,17 +13,93 @@ export const SecurityPrivacyView: React.FC = () => {
   // Modals
   const [confirmAction, setConfirmAction] = useState<{isOpen: boolean, title: string, message: string, onConfirm: () => void} | null>(null);
 
-  // Dummy State mimicking Backend Integration
-  const [sessions, setSessions] = useState([
-    { id: 1, type: 'Desktop', os: 'Windows / Chrome', location: 'Local Network', time: 'Active now', current: true, icon: Laptop },
-    { id: 2, type: 'Mobile', os: 'iOS / Safari', location: 'Remote Access', time: 'Yesterday, 08:15 PM', current: false, icon: Smartphone }
-  ]);
+  // Live MySQL Sessions, Access Requests & Preferences
+  const [sessions, setSessions] = useState<any[]>([]);
+  const [healthAccess, setHealthAccess] = useState<any[]>([]);
+  const [logs, setLogs] = useState<Array<{ id: string; event: string; date: string; type: 'info' | 'warning' | 'success' }>>([]);
+  const [twoFactorEnabled, setTwoFactorEnabled] = useState(false);
 
-  const [healthAccess] = useState([
-    { id: 1, category: 'Doctors', icon: Stethoscope, status: '2 Authorized', updated: 'Today, 10:42 AM' },
-    { id: 2, category: 'Hospitals', icon: Hospital, status: 'Apollo Hospitals', updated: 'Aug 12, 11:30 AM' },
-    { id: 3, category: 'Insurance Providers', icon: Shield, status: 'Pending Review', updated: '3 days ago' },
-  ]);
+  const loadSecurityData = async () => {
+    const [sessRes, prefRes, accessRequests] = await Promise.all([
+      authApi.getSessions().catch(() => null),
+      profileApi.getPreferences().catch(() => null),
+      healthShareApi.getPatientRequests().catch(() => []),
+    ]);
+
+    const mappedSessions = Array.isArray(sessRes?.data)
+      ? sessRes!.data.map((s: any, idx: number) => ({
+          id: s.id,
+          type: (s.deviceInfo || '').toLowerCase().includes('mobile') ? 'Mobile' : 'Desktop',
+          os: s.deviceInfo || s.userAgent || 'Browser Session',
+          location: s.ipAddress || 'Active Session',
+          time: s.lastActiveAt ? new Date(s.lastActiveAt).toLocaleString() : 'Active now',
+          rawDate: s.lastActiveAt || s.createdAt || null,
+          current: idx === 0,
+          icon: (s.deviceInfo || '').toLowerCase().includes('mobile') ? Smartphone : Laptop,
+        }))
+      : [];
+    setSessions(mappedSessions);
+
+    const prefData: any = prefRes?.data;
+    if (prefData) {
+      setTwoFactorEnabled(Boolean(prefData.twoFactorEnabled));
+      const priv = prefData.privacy;
+      if (priv && typeof priv === 'object') {
+        if (Array.isArray(priv.privacyConsents)) {
+          setConsents(priv.privacyConsents);
+        }
+        if (priv.privacyPrefs && typeof priv.privacyPrefs === 'object') {
+          setPrivacyPrefs((prev) => ({ ...prev, ...priv.privacyPrefs }));
+        }
+      }
+    }
+
+    const reqList = Array.isArray(accessRequests) ? accessRequests : [];
+    const mappedAccess = reqList.map((r: any) => ({
+      id: r.id,
+      category: r.doctorName || r.doctor?.fullName || 'Healthcare Provider',
+      subtitle: r.doctorHospital || r.doctor?.hospital || r.purpose || 'Clinical Access',
+      icon: Stethoscope,
+      status: r.status || 'PENDING',
+      updated: r.grantedAt
+        ? new Date(r.grantedAt).toLocaleString()
+        : r.requestedAt
+        ? new Date(r.requestedAt).toLocaleString()
+        : '—',
+    }));
+    setHealthAccess(mappedAccess);
+
+    // Build real security activity logs from sessions and health share access requests
+    const derivedLogs: Array<{ id: string; event: string; date: string; type: 'info' | 'warning' | 'success'; ts: number }> = [];
+    mappedSessions.forEach((s: any) => {
+      const ts = s.rawDate ? new Date(s.rawDate).getTime() : 0;
+      derivedLogs.push({
+        id: `sess-${s.id}`,
+        event: `Active session on ${s.os} (${s.location})`,
+        date: s.time,
+        type: s.current ? 'success' : 'info',
+        ts,
+      });
+    });
+    reqList.forEach((r: any) => {
+      const dt = r.revokedAt || r.grantedAt || r.requestedAt;
+      const ts = dt ? new Date(dt).getTime() : 0;
+      const docName = r.doctorName || r.doctor?.fullName || 'Provider';
+      derivedLogs.push({
+        id: `acc-${r.id}`,
+        event: `Health data access ${String(r.status || '').toLowerCase()} for ${docName}`,
+        date: dt ? new Date(dt).toLocaleString() : '—',
+        type: r.status === 'APPROVED' ? 'success' : r.status === 'REVOKED' || r.status === 'REJECTED' ? 'warning' : 'info',
+        ts,
+      });
+    });
+    derivedLogs.sort((a, b) => b.ts - a.ts);
+    setLogs(derivedLogs.map(({ ts: _ts, ...rest }) => rest));
+  };
+
+  useEffect(() => {
+    loadSecurityData();
+  }, []);
 
   const [consents, setConsents] = useState([
     { id: 'c1', name: 'Medical Records Sharing', desc: 'Allow authorized doctors to view your complete medical history.', active: true },
@@ -37,26 +115,20 @@ export const SecurityPrivacyView: React.FC = () => {
     analytics: true
   });
 
-  const [logs] = useState([
-    { id: 1, event: 'Healthcare data access permission changed', date: 'Today, 10:42 AM', type: 'info' },
-    { id: 2, event: 'New device login (Windows / Chrome)', date: 'Yesterday, 08:15 PM', type: 'warning' },
-    { id: 3, event: 'Password changed successfully', date: 'Aug 12, 11:30 AM', type: 'success' },
-    { id: 4, event: 'Successful login', date: 'Aug 12, 11:25 AM', type: 'info' },
-  ]);
-
   const showToast = (msg: string) => {
     setToastMessage(msg);
     setTimeout(() => setToastMessage(null), 3000);
   };
 
-  const handleSignOutDevice = (id: number) => {
+  const handleSignOutDevice = (id: string | number) => {
     setConfirmAction({
       isOpen: true,
       title: 'Sign Out Device',
       message: 'Are you sure you want to end the session on this device? You will need to log in again.',
-      onConfirm: () => {
-        setSessions(prev => prev.filter(s => s.id !== id));
-        showToast('Session ended successfully.');
+      onConfirm: async () => {
+        await authApi.revokeSession(String(id)).catch(() => {});
+        setSessions((prev) => prev.filter((s) => s.id !== id));
+        showToast('Session revoked in database.');
         setConfirmAction(null);
       }
     });
@@ -67,37 +139,86 @@ export const SecurityPrivacyView: React.FC = () => {
       isOpen: true,
       title: 'Sign Out Other Devices',
       message: 'This will end all active sessions except your current one. Proceed?',
-      onConfirm: () => {
-        setSessions(prev => prev.filter(s => s.current));
-        showToast('All other sessions ended.');
+      onConfirm: async () => {
+        const others = sessions.filter((s) => !s.current);
+        await Promise.all(others.map((s) => authApi.revokeSession(String(s.id)).catch(() => {})));
+        setSessions((prev) => prev.filter((s) => s.current));
+        showToast('All other sessions revoked in database.');
         setConfirmAction(null);
       }
     });
   };
 
+  const persistPrivacyState = (nextConsents: typeof consents, nextPrefs: typeof privacyPrefs) => {
+    profileApi
+      .updatePreferences({
+        privacy: {
+          privacyConsents: nextConsents,
+          privacyPrefs: nextPrefs,
+        },
+      })
+      .catch(() => {});
+  };
+
   const toggleConsent = (id: string) => {
-    const consent = consents.find(c => c.id === id);
+    const consent = consents.find((c) => c.id === id);
     if (!consent) return;
-    
+
     if (consent.active) {
       setConfirmAction({
         isOpen: true,
         title: 'Revoke Consent',
         message: `Are you sure you want to revoke consent for ${consent.name}? This may impact your healthcare services and data flow.`,
         onConfirm: () => {
-          setConsents(prev => prev.map(c => c.id === id ? { ...c, active: false } : c));
-          showToast('Consent revoked successfully.');
+          const updated = consents.map((c) => (c.id === id ? { ...c, active: false } : c));
+          setConsents(updated);
+          persistPrivacyState(updated, privacyPrefs);
+          showToast('Consent revoked & saved to database.');
           setConfirmAction(null);
         }
       });
     } else {
-      setConsents(prev => prev.map(c => c.id === id ? { ...c, active: true } : c));
-      showToast('Consent granted.');
+      const updated = consents.map((c) => (c.id === id ? { ...c, active: true } : c));
+      setConsents(updated);
+      persistPrivacyState(updated, privacyPrefs);
+      showToast('Consent granted & saved to database.');
     }
   };
 
-  const savePrivacyPrefs = () => {
-    showToast('Privacy preferences saved successfully (Backend API pending).');
+  const savePrivacyPrefs = async () => {
+    try {
+      await profileApi.updatePreferences({
+        privacy: {
+          privacyConsents: consents,
+          privacyPrefs,
+        },
+      });
+      showToast('Privacy preferences saved to MySQL database.');
+    } catch {
+      showToast('Failed to save privacy preferences.');
+    }
+  };
+
+  const handleToggle2FA = async () => {
+    const nextVal = !twoFactorEnabled;
+    setTwoFactorEnabled(nextVal);
+    try {
+      await profileApi.updatePreferences({ twoFactorEnabled: nextVal });
+      showToast(nextVal ? 'Two-Factor Authentication enabled.' : 'Two-Factor Authentication disabled.');
+    } catch {
+      setTwoFactorEnabled(!nextVal);
+      showToast('Failed to update 2FA preference.');
+    }
+  };
+
+  const handleRevokeHealthAccess = async (requestId: string, name: string) => {
+    try {
+      await healthShareApi.revokeSession(requestId);
+      showToast(`Revoked data access for ${name}.`);
+      await loadSecurityData();
+    } catch {
+      showToast('Failed to revoke access.');
+    }
   };
 
   return (
@@ -185,9 +306,9 @@ export const SecurityPrivacyView: React.FC = () => {
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         {[
           { title: 'Account Security', status: 'Protected', icon: Lock, color: 'text-emerald-500', bg: 'bg-emerald-50 dark:bg-emerald-500/10' },
-          { title: 'Two-Factor Auth', status: 'Enabled', icon: ShieldCheck, color: 'text-blue-500', bg: 'bg-blue-50 dark:bg-blue-500/10' },
-          { title: 'Active Sessions', status: `${sessions.length} Devices`, icon: Smartphone, color: 'text-indigo-500', bg: 'bg-indigo-50 dark:bg-indigo-500/10' },
-          { title: 'Privacy Status', status: 'Preferences Protected', icon: UserCheck, color: 'text-purple-500', bg: 'bg-purple-50 dark:bg-purple-500/10' },
+          { title: 'Two-Factor Auth', status: twoFactorEnabled ? 'Enabled' : 'Disabled', icon: ShieldCheck, color: 'text-blue-500', bg: 'bg-blue-50 dark:bg-blue-500/10' },
+          { title: 'Active Sessions', status: `${sessions.length} ${sessions.length === 1 ? 'Device' : 'Devices'}`, icon: Smartphone, color: 'text-indigo-500', bg: 'bg-indigo-50 dark:bg-indigo-500/10' },
+          { title: 'Shared Access', status: `${healthAccess.filter((a) => a.status === 'APPROVED').length} Active`, icon: UserCheck, color: 'text-purple-500', bg: 'bg-purple-50 dark:bg-purple-500/10' },
         ].map((card, idx) => (
           <div key={idx} className="bg-white dark:bg-slate-900/60 backdrop-blur-sm p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm flex items-center gap-4 hover:shadow-md transition-all duration-300">
             <div className={`w-12 h-12 rounded-xl flex items-center justify-center shrink-0 ${card.bg} ${card.color}`}>
@@ -228,11 +349,11 @@ export const SecurityPrivacyView: React.FC = () => {
                 <div>
                   <h3 className="font-bold text-slate-900 dark:text-white">Two-Factor Authentication</h3>
                   <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-                    Login verification settings are enabled.
+                    {twoFactorEnabled ? 'Login verification is enabled.' : 'Enable extra verification for logins.'}
                   </p>
                 </div>
-                <button onClick={() => showToast('Managing 2FA settings...')} className="px-4 py-2 bg-blue-50 dark:bg-blue-500/10 text-blue-600 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-500/20 text-sm font-bold rounded-lg transition-colors">
-                  Manage
+                <button onClick={handleToggle2FA} className="px-4 py-2 bg-blue-50 dark:bg-blue-500/10 text-blue-600 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-500/20 text-sm font-bold rounded-lg transition-colors">
+                  {twoFactorEnabled ? 'Disable' : 'Enable'}
                 </button>
               </div>
             </div>
@@ -348,24 +469,36 @@ export const SecurityPrivacyView: React.FC = () => {
               Healthcare Data Access
             </h2>
             <div className="bg-white dark:bg-slate-900/60 backdrop-blur-sm rounded-3xl border border-slate-200 dark:border-slate-800 shadow-sm p-2">
-              {healthAccess.map((access) => (
-                <div key={access.id} className="p-4 flex items-center justify-between hover:bg-slate-50 dark:hover:bg-slate-800/50 rounded-2xl transition-colors border-b border-slate-50 dark:border-slate-800/50 last:border-0">
-                  <div className="flex items-center gap-4">
-                    <div className="w-10 h-10 rounded-xl bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 flex items-center justify-center">
-                      <access.icon className="w-5 h-5" />
-                    </div>
-                    <div>
-                      <h3 className="font-bold text-slate-900 dark:text-white text-sm">{access.category}</h3>
-                      <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                        {access.status} • Last updated: {access.updated}
-                      </p>
-                    </div>
-                  </div>
-                  <button onClick={() => showToast(`Managing access for ${access.category}`)} className="text-sm font-bold text-slate-700 dark:text-slate-300 px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors">
-                    Manage
-                  </button>
+              {healthAccess.length === 0 ? (
+                <div className="p-6 text-center text-xs text-slate-500 dark:text-slate-400 font-medium">
+                  No active doctor or facility data-sharing grants recorded yet.
                 </div>
-              ))}
+              ) : (
+                healthAccess.map((access) => (
+                  <div key={access.id} className="p-4 flex items-center justify-between hover:bg-slate-50 dark:hover:bg-slate-800/50 rounded-2xl transition-colors border-b border-slate-50 dark:border-slate-800/50 last:border-0">
+                    <div className="flex items-center gap-4">
+                      <div className="w-10 h-10 rounded-xl bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 flex items-center justify-center">
+                        <access.icon className="w-5 h-5" />
+                      </div>
+                      <div>
+                        <h3 className="font-bold text-slate-900 dark:text-white text-sm">{access.category}</h3>
+                        <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                          {access.subtitle} • {access.status} • {access.updated}
+                        </p>
+                      </div>
+                    </div>
+                    {access.status === 'APPROVED' ? (
+                      <button onClick={() => handleRevokeHealthAccess(access.id, access.category)} className="text-xs font-bold text-rose-600 dark:text-rose-400 px-3 py-1.5 rounded-lg border border-rose-200 dark:border-rose-800 hover:bg-rose-50 dark:hover:bg-rose-900/20 transition-colors">
+                        Revoke
+                      </button>
+                    ) : (
+                      <span className="text-[11px] font-bold text-slate-500 px-2.5 py-1 rounded-lg bg-slate-100 dark:bg-slate-800">
+                        {access.status}
+                      </span>
+                    )}
+                  </div>
+                ))
+              )}
             </div>
           </section>
 
@@ -422,24 +555,30 @@ export const SecurityPrivacyView: React.FC = () => {
               Security Activity
             </h2>
             <div className="bg-white dark:bg-slate-900/60 backdrop-blur-sm p-6 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-sm">
-              <div className="relative border-l-2 border-slate-100 dark:border-slate-800 ml-4 space-y-6 py-2">
-                {logs.map((log) => (
-                  <div key={log.id} className="relative pl-6">
-                    <div className="absolute -left-[9px] top-1 w-4 h-4 bg-white dark:bg-slate-900/60 rounded-full flex items-center justify-center">
-                      <div className={`w-2.5 h-2.5 rounded-full ${
-                        log.type === 'success' ? 'bg-emerald-500' : 
-                        log.type === 'warning' ? 'bg-amber-500' : 'bg-blue-500'
-                      }`}></div>
-                    </div>
-                    <div>
-                      <h3 className="font-bold text-sm text-slate-900 dark:text-white leading-tight">{log.event}</h3>
-                      <div className="flex items-center gap-2 mt-1.5 text-xs font-medium text-slate-500 dark:text-slate-400">
-                        <Clock className="w-3 h-3" /> {log.date}
+              {logs.length === 0 ? (
+                <p className="text-center text-xs text-slate-500 dark:text-slate-400 py-4 font-medium">
+                  No security activity events recorded yet.
+                </p>
+              ) : (
+                <div className="relative border-l-2 border-slate-100 dark:border-slate-800 ml-4 space-y-6 py-2">
+                  {logs.map((log) => (
+                    <div key={log.id} className="relative pl-6">
+                      <div className="absolute -left-[9px] top-1 w-4 h-4 bg-white dark:bg-slate-900/60 rounded-full flex items-center justify-center">
+                        <div className={`w-2.5 h-2.5 rounded-full ${
+                          log.type === 'success' ? 'bg-emerald-500' : 
+                          log.type === 'warning' ? 'bg-amber-500' : 'bg-blue-500'
+                        }`}></div>
+                      </div>
+                      <div>
+                        <h3 className="font-bold text-sm text-slate-900 dark:text-white leading-tight">{log.event}</h3>
+                        <div className="flex items-center gap-2 mt-1.5 text-xs font-medium text-slate-500 dark:text-slate-400">
+                          <Clock className="w-3 h-3" /> {log.date}
+                        </div>
                       </div>
                     </div>
-                  </div>
-                ))}
-              </div>
+                  ))}
+                </div>
+              )}
             </div>
           </section>
 

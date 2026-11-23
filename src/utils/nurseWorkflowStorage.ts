@@ -1,14 +1,15 @@
 import { useState, useEffect } from 'react';
+import { clinicalApi, nurseOpsApi, vitalApi } from '../services/dhrApis';
 
-export type BookingStatus = 
-  | 'Pending' // Initial request
-  | 'Accepted' // Nurse accepts
-  | 'Scheduled' // Time confirmed
-  | 'On the Way' // Nurse travels
-  | 'Arrived' // Nurse at location
-  | 'Care in Progress' // Visit active
-  | 'Completed' // Visit done
-  | 'Rejected' // Nurse rejected
+export type BookingStatus =
+  | 'Pending'
+  | 'Accepted'
+  | 'Scheduled'
+  | 'On the Way'
+  | 'Arrived'
+  | 'Care in Progress'
+  | 'Completed'
+  | 'Rejected'
   | 'Cancelled';
 
 export interface CareRequest {
@@ -66,6 +67,7 @@ export interface CareRequest {
     bs: string;
   };
   notes?: string;
+  nurseClinicalNotes?: string;
   metadata?: any;
   checklist?: {
     id: string;
@@ -82,149 +84,30 @@ export interface NurseNotification {
   type: 'info' | 'success' | 'warning' | 'error';
 }
 
-const STORAGE_KEY_BOOKINGS = 'medicare_nurse_bookings_v2';
-
-const INITIAL_BOOKINGS: CareRequest[] = [
-  {
-    id: 'NR-2026-8491',
-    patientName: 'Ragul Kumar',
-    patientAge: '34 Years',
-    patientPhone: '+91 98765 43210',
-    serviceType: 'Post-Op Wound Dressing & IV Cannula',
-    prefDate: 'Today',
-    time: '10:00 AM',
-    location: 'Anna Nagar, Chennai (Flat 4B, Green Towers)',
-    distanceKm: '2.4 km',
-    instructions: 'Post-discharge suture dressing & antibiotic IV infusion as prescribed by Dr. Sarah Jenkins. Clean wound margins and check incision drain.',
-    status: 'Accepted',
-    createdAt: Date.now() - 3600000,
-    nurseId: 'RN-7701',
-    nurseName: 'Nurse Sarah, Senior RN',
-    otpPin: '5928',
-    etaMinutes: 12,
-    vitals: {
-      bp: '120/80 mmHg',
-      hr: '74 bpm',
-      temp: '98.6 °F',
-      spo2: '99%',
-      bs: '105 mg/dL'
-    },
-    checklist: [
-      { id: 'c1', label: 'Sterile surgical field & PPE setup', done: true },
-      { id: 'c2', label: 'Incision site inspection & redness check', done: true },
-      { id: 'c3', label: 'Antiseptic swab & sterile dressing change', done: false },
-      { id: 'c4', label: 'IV Cannula patency check & flush', done: false },
-      { id: 'c5', label: 'Record post-procedure telemetry vitals', done: false }
-    ],
-    notes: 'Patient is comfortable. Suture incision is healing well with minimal exudate.'
-  },
-  {
-    id: 'NR-2026-8492',
-    patientName: 'Mrs. Meenakshi Sundaram',
-    patientAge: '68 Years',
-    patientPhone: '+91 94441 82910',
-    serviceType: 'Elderly ICU Vitals & Catheter Care',
-    prefDate: 'Today',
-    time: '02:00 PM',
-    location: 'T. Nagar, Chennai (12/4 Habibullah Road)',
-    distanceKm: '3.8 km',
-    instructions: 'Elderly patient requiring Foley catheter bag replacement, continuous SpO2 monitoring, and blood glucose check before afternoon meal.',
-    status: 'Pending',
-    createdAt: Date.now() - 1800000,
-    otpPin: '4192'
-  },
-  {
-    id: 'NR-2026-8493',
-    patientName: 'Abinesh Kumar',
-    patientAge: '29 Years',
-    patientPhone: '+91 98402 11928',
-    serviceType: 'IV Infusion & Antibiotic Drip Setup',
-    prefDate: 'Today',
-    time: '04:30 PM',
-    location: 'Velachery, Chennai (Plot 89, 100ft Bypass Road)',
-    distanceKm: '5.1 km',
-    instructions: 'Administer Ceftriaxone 1g in 100ml NS over 30 minutes as advised for chest infection recovery.',
-    status: 'Pending',
-    createdAt: Date.now() - 900000,
-    otpPin: '8834'
-  },
-  {
-    id: 'NR-2026-8488',
-    patientName: 'Suresh Menon',
-    patientAge: '52 Years',
-    patientPhone: '+91 97909 33211',
-    serviceType: 'Post-Cardiology Suture Removal',
-    prefDate: 'Yesterday',
-    time: '11:30 AM',
-    location: 'Adyar, Chennai (3rd Cross Street)',
-    distanceKm: '4.2 km',
-    instructions: 'Post-stent surgical access dressing completed.',
-    status: 'Completed',
-    createdAt: Date.now() - 86400000,
-    nurseName: 'Nurse Sarah, Senior RN',
-    notes: 'Completed successfully without any bleeding. Patient advised on normal mobility.'
-  }
-];
-
-
-
-import { safeLocalStorageSet } from './safeStorage';
-
-// Helper to get from local storage
-const getBookings = (): CareRequest[] => {
-  const data = localStorage.getItem(STORAGE_KEY_BOOKINGS);
-  if (!data) return [];
-  try {
-    const parsed = JSON.parse(data);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-};
-
-
-
-import { clinicalApi } from '../services/dhrApis';
-
 export const useNurseWorkflow = () => {
-  const [bookings, setBookings] = useState<CareRequest[]>(() => getBookings());
+  const [bookings, setBookings] = useState<CareRequest[]>([]);
 
   const refreshBookings = async () => {
     try {
       const res = await clinicalApi.getNurseCareRequests();
       if (res && res.data && Array.isArray(res.data)) {
         setBookings(res.data);
-        safeLocalStorageSet(STORAGE_KEY_BOOKINGS, JSON.stringify(res.data));
       }
     } catch (err) {
-      console.error('Failed to load nurse care requests from server:', err);
+      console.error('Failed to load nurse care requests from MySQL:', err);
     }
   };
 
-  // Load initial data and set up storage & window focus listeners
   useEffect(() => {
     refreshBookings();
 
-    const handleStorageChange = (e: StorageEvent) => {
-      if (e.key === STORAGE_KEY_BOOKINGS) {
-        setBookings(getBookings());
-      }
-    };
+    const handleCustomEvent = () => refreshBookings();
+    const handleWindowFocus = () => refreshBookings();
 
-    const handleCustomEvent = () => {
-      refreshBookings();
-    };
-
-    const handleWindowFocus = () => {
-      refreshBookings();
-    };
-
-    window.addEventListener('storage', handleStorageChange);
     window.addEventListener('medicare_sync_nurse', handleCustomEvent);
     window.addEventListener('focus', handleWindowFocus);
 
     return () => {
-      window.removeEventListener('storage', handleStorageChange);
       window.removeEventListener('medicare_sync_nurse', handleCustomEvent);
       window.removeEventListener('focus', handleWindowFocus);
     };
@@ -235,122 +118,107 @@ export const useNurseWorkflow = () => {
   };
 
   const createBooking = async (request: Omit<CareRequest, 'id' | 'status' | 'createdAt'>) => {
-    try {
-      const res = await clinicalApi.createNurseCareRequest({
-        serviceType: request.serviceType,
-        careCategory: request.careCategory,
-        scheduledDate: request.scheduledDate || request.prefDate || new Date().toISOString(),
-        scheduledTime: request.time || '10:00 AM',
-        duration: request.duration,
-        bookingType: request.bookingType,
-        repeatFrequency: request.repeatFrequency,
-        endDate: request.endDate,
-        location: request.location,
-        landmark: request.landmark,
-        city: request.city,
-        pincode: request.pincode,
-        locationType: request.locationType,
-        conditionReason: request.conditionReason,
-        mobilityStatus: request.mobilityStatus,
-        currentMedications: request.currentMedications,
-        allergies: request.allergies,
-        medicalEquipment: request.medicalEquipment,
-        specialCareRequirements: request.specialCareRequirements,
-        nurseGenderPreference: request.nurseGenderPreference,
-        preferredExperience: request.preferredExperience,
-        preferredLanguage: request.preferredLanguage,
-        emergencyContactName: request.emergencyContactName,
-        emergencyContactPhone: request.emergencyContactPhone,
-        emergencyInstructions: request.emergencyInstructions,
-        instructions: request.instructions,
-        patientPhone: request.patientPhone,
-        notes: request.notes,
-      });
-      if (res && res.data) {
-        await refreshBookings();
-        triggerSync();
-        return res.data;
-      }
-    } catch (err) {
-      console.error('Failed to create care request via API, falling back to local storage:', err);
-    }
-    const newBooking: CareRequest = {
-      ...request,
-      id: `NR-2026-${Math.floor(1000 + Math.random() * 9000)}`,
-      status: 'Pending',
-      createdAt: Date.now(),
-      otpPin: Math.floor(1000 + Math.random() * 9000).toString(),
-      checklist: [
-        { id: 'c1', label: 'Sterile field preparation & PPE', done: false },
-        { id: 'c2', label: 'Patient vitals baseline audit', done: false },
-        { id: 'c3', label: 'Clinical procedure administration', done: false },
-        { id: 'c4', label: 'Post-procedure telemetry sync', done: false }
-      ]
-    };
-    const current = getBookings();
-    const updated = [newBooking, ...current];
-    safeLocalStorageSet(STORAGE_KEY_BOOKINGS, JSON.stringify(updated));
-    setBookings(updated);
-    
+    const res = await clinicalApi.createNurseCareRequest({
+      serviceType: request.serviceType,
+      careCategory: request.careCategory,
+      scheduledDate: request.scheduledDate || request.prefDate || new Date().toISOString(),
+      scheduledTime: request.time || '10:00 AM',
+      duration: request.duration,
+      bookingType: request.bookingType,
+      repeatFrequency: request.repeatFrequency,
+      endDate: request.endDate,
+      location: request.location,
+      landmark: request.landmark,
+      city: request.city,
+      pincode: request.pincode,
+      locationType: request.locationType,
+      conditionReason: request.conditionReason,
+      mobilityStatus: request.mobilityStatus,
+      currentMedications: request.currentMedications,
+      allergies: request.allergies,
+      medicalEquipment: request.medicalEquipment,
+      specialCareRequirements: request.specialCareRequirements,
+      nurseGenderPreference: request.nurseGenderPreference,
+      preferredExperience: request.preferredExperience,
+      preferredLanguage: request.preferredLanguage,
+      emergencyContactName: request.emergencyContactName,
+      emergencyContactPhone: request.emergencyContactPhone,
+      emergencyInstructions: request.emergencyInstructions,
+      instructions: request.instructions,
+      patientPhone: request.patientPhone,
+      notes: request.notes,
+    });
+    await refreshBookings();
     triggerSync();
-    return newBooking;
+    return res?.data;
   };
 
   const updateBookingStatus = async (id: string, status: BookingStatus, extra?: Partial<CareRequest>) => {
-    try {
-      await clinicalApi.updateCareRequest(id, { 
-        status, 
-        ...(extra?.notes ? { notes: extra.notes } : {}), 
-        ...(extra?.etaMinutes ? { etaMinutes: extra.etaMinutes } : {}) 
+    if (status === 'Cancelled') {
+      await nurseOpsApi.cancelCareRequest(id, extra?.declineReason || extra?.notes);
+    } else {
+      await clinicalApi.updateCareRequest(id, {
+        status,
+        ...(extra?.notes ? { notes: extra.notes } : {}),
+        ...(extra?.etaMinutes ? { etaMinutes: extra.etaMinutes } : {}),
       });
-      await refreshBookings();
-    } catch (err) {
-      console.error('Failed to update care request status on server:', err);
-      const current = getBookings();
-      const updated = current.map(b => {
-        if (b.id === id) {
-          return {
-            ...b,
-            status,
-            ...extra
-          };
-        }
-        return b;
-      });
-      safeLocalStorageSet(STORAGE_KEY_BOOKINGS, JSON.stringify(updated));
-      setBookings(updated);
     }
-    triggerSync();
-  };
-  
-  const updateBookingData = (id: string, updates: Partial<CareRequest>) => {
-    const current = getBookings();
-    const updated = current.map(b => b.id === id ? { ...b, ...updates } : b);
-    safeLocalStorageSet(STORAGE_KEY_BOOKINGS, JSON.stringify(updated));
-    setBookings(updated);
+    await refreshBookings();
     triggerSync();
   };
 
-  const toggleChecklistItem = (bookingId: string, itemId: string) => {
-    const current = getBookings();
-    const updated = current.map(b => {
-      if (b.id === bookingId && b.checklist) {
-        const updatedList = b.checklist.map(c => c.id === itemId ? { ...c, done: !c.done } : c);
-        return { ...b, checklist: updatedList };
-      }
-      return b;
-    });
-    safeLocalStorageSet(STORAGE_KEY_BOOKINGS, JSON.stringify(updated));
-    setBookings(updated);
+  const updateBookingData = async (id: string, updates: Partial<CareRequest>) => {
+    const target = bookings.find((b) => b.id === id);
+
+    // Persist vitals into MySQL Vital table when nurse logs biometrics
+    if (updates.vitals && target?.patientId) {
+      const bpParts = String(updates.vitals.bp || '').replace(/[^\d/]/g, '').split('/');
+      const systolicBp = bpParts[0] ? parseInt(bpParts[0], 10) : undefined;
+      const diastolicBp = bpParts[1] ? parseInt(bpParts[1], 10) : undefined;
+      const heartRate = updates.vitals.hr ? parseInt(String(updates.vitals.hr).replace(/[^\d]/g, ''), 10) : undefined;
+      const temperature = updates.vitals.temp ? parseFloat(String(updates.vitals.temp).replace(/[^\d.]/g, '')) : undefined;
+      const oxygenSaturation = updates.vitals.spo2 ? parseFloat(String(updates.vitals.spo2).replace(/[^\d.]/g, '')) : undefined;
+      const bloodSugar = updates.vitals.bs ? parseFloat(String(updates.vitals.bs).replace(/[^\d.]/g, '')) : undefined;
+
+      await vitalApi.createVital({
+        patientId: target.patientId,
+        systolicBp: Number.isFinite(systolicBp) ? systolicBp : undefined,
+        diastolicBp: Number.isFinite(diastolicBp) ? diastolicBp : undefined,
+        heartRate: Number.isFinite(heartRate) ? heartRate : undefined,
+        temperature: Number.isFinite(temperature) ? temperature : undefined,
+        oxygenSaturation: Number.isFinite(oxygenSaturation) ? oxygenSaturation : undefined,
+        bloodSugar: Number.isFinite(bloodSugar) ? bloodSugar : undefined,
+        notes: updates.notes || 'Logged during nurse home visit',
+      });
+    }
+
+    if (updates.notes !== undefined || updates.checklist !== undefined) {
+      await nurseOpsApi.saveCareRequestNotes(id, {
+        ...(updates.notes !== undefined ? { nurseClinicalNotes: updates.notes } : {}),
+        ...(updates.checklist !== undefined ? { checklist: updates.checklist } : {}),
+      });
+    }
+
+    await refreshBookings();
     triggerSync();
   };
 
-
+  const toggleChecklistItem = async (bookingId: string, itemId: string) => {
+    const target = bookings.find((b) => b.id === bookingId);
+    if (!target || !target.checklist) return;
+    const updatedList = target.checklist.map((c) => (c.id === itemId ? { ...c, done: !c.done } : c));
+    setBookings((prev) => prev.map((b) => (b.id === bookingId ? { ...b, checklist: updatedList } : b)));
+    try {
+      await nurseOpsApi.saveCareRequestNotes(bookingId, { checklist: updatedList });
+      triggerSync();
+    } catch (err) {
+      console.error('Failed to persist checklist item to MySQL:', err);
+      await refreshBookings();
+    }
+  };
 
   const clearBookings = () => {
-    localStorage.removeItem(STORAGE_KEY_BOOKINGS);
-    setBookings(INITIAL_BOOKINGS);
-    triggerSync();
+    refreshBookings();
   };
 
   return {
@@ -360,7 +228,7 @@ export const useNurseWorkflow = () => {
     updateBookingStatus,
     updateBookingData,
     toggleChecklistItem,
-    addNotification: (_title?: string, _message?: string) => {},
-    clearBookings
+    addNotification: (_title?: string, _message?: string) => { },
+    clearBookings,
   };
 };

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Pill, Search } from 'lucide-react';
-import { getPharmacyStock, type StockItem } from '../pharmacy/pharmacyData';
+import type { StockItem } from '../pharmacy/pharmacyData';
+import { pharmacyOpsApi } from '../../services/dhrApis';
 
 interface PharmacistMedicinesTabProps {
   user?: {
@@ -13,21 +14,47 @@ interface PharmacistMedicinesTabProps {
 }
 
 export const PharmacistMedicinesTab: React.FC<PharmacistMedicinesTabProps> = ({ user }) => {
-  const pharmacyId = user?.pharmacyId || localStorage.getItem('pharmacist_pharmacy_id') || undefined;
-  const pharmacyName = user?.hospitalAffiliation || localStorage.getItem('pharmacist_pharmacy_name') || 'Dispensary Stock';
+  const pharmacyName = user?.hospitalAffiliation || 'Dispensary Stock';
 
-  const [stockList, setStockList] = useState<StockItem[]>(() => getPharmacyStock(pharmacyId));
+  const [stockList, setStockList] = useState<StockItem[]>([]);
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<'All' | 'Low Stock' | 'Good Stock'>('All');
 
+  const loadInventory = async () => {
+    try {
+      const res = await pharmacyOpsApi.getInventory();
+      if (res?.data && Array.isArray(res.data)) {
+        const mapped: StockItem[] = res.data.map((item: any) => {
+          const qty = Number(item.stockQuantity ?? 0);
+          const reorder = Number(item.reorderLevel ?? 15);
+          const stockLevel: StockItem['stockLevel'] =
+            qty <= 0 ? 'Out of Stock' : qty <= reorder ? 'Low Stock' : qty <= reorder * 2 ? 'Medium Stock' : 'Good Stock';
+          return {
+            id: item.id,
+            medicineName: item.medicineName,
+            dosage: item.dosage || item.category || 'Standard',
+            currentQuantity: qty,
+            totalQuantity: Math.max(qty, reorder * 4, 100),
+            unit: 'Units',
+            stockLevel,
+            supplyDays: Math.max(1, Math.floor(qty / 2)),
+            lastRefilled: item.updatedAt ? new Date(item.updatedAt).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : 'Updated',
+            nextExpectedRefill: item.expiryDate ? new Date(item.expiryDate).toLocaleDateString('en-GB', { month: 'short', year: 'numeric' }) : '—',
+          };
+        });
+        setStockList(mapped);
+      }
+    } catch {
+      setStockList([]);
+    }
+  };
+
   useEffect(() => {
-    const handleUpdate = () => {
-      setStockList(getPharmacyStock(pharmacyId));
-    };
-    handleUpdate();
+    loadInventory();
+    const handleUpdate = () => loadInventory();
     window.addEventListener('health_workflow_updated', handleUpdate);
     return () => window.removeEventListener('health_workflow_updated', handleUpdate);
-  }, [pharmacyId]);
+  }, []);
 
   const filtered = stockList.filter((item) => {
     if (filter === 'Low Stock' && item.stockLevel !== 'Low Stock' && item.stockLevel !== 'Out of Stock') return false;
@@ -73,11 +100,10 @@ export const PharmacistMedicinesTab: React.FC<PharmacistMedicinesTabProps> = ({ 
               <button
                 key={f}
                 onClick={() => setFilter(f)}
-                className={`px-3 py-1.5 rounded-xl font-bold text-xs transition-all cursor-pointer ${
-                  filter === f
-                    ? 'bg-[#00a896] text-white shadow-xs'
-                    : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400'
-                }`}
+                className={`px-3 py-1.5 rounded-xl font-bold text-xs transition-all cursor-pointer ${filter === f
+                  ? 'bg-[#00a896] text-white shadow-xs'
+                  : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400'
+                  }`}
               >
                 {f}
               </button>
@@ -127,13 +153,12 @@ export const PharmacistMedicinesTab: React.FC<PharmacistMedicinesTabProps> = ({ 
                       {item.currentQuantity} / {item.totalQuantity} {item.unit}
                     </td>
                     <td className="p-4">
-                      <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-extrabold font-mono border ${
-                        item.stockLevel === 'Low Stock' || item.stockLevel === 'Out of Stock'
-                          ? 'bg-rose-500/15 text-rose-700 dark:text-rose-300 border-rose-500/30'
-                          : item.stockLevel === 'Medium Stock'
+                      <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-extrabold font-mono border ${item.stockLevel === 'Low Stock' || item.stockLevel === 'Out of Stock'
+                        ? 'bg-rose-500/15 text-rose-700 dark:text-rose-300 border-rose-500/30'
+                        : item.stockLevel === 'Medium Stock'
                           ? 'bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/30'
                           : 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/30'
-                      }`}>
+                        }`}>
                         {item.stockLevel}
                       </span>
                     </td>

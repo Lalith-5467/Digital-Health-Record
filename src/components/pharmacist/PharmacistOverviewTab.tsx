@@ -15,15 +15,10 @@ import {
   Sparkles,
   Loader2
 } from 'lucide-react';
-import {
-  getPharmacyOrders,
-  updatePharmacyOrderStatus
-} from '../../utils/healthWorkflowStorage';
-import type { ExtendedPharmacyOrder } from '../../utils/healthWorkflowStorage';
-import { INITIAL_MEDICINE_STOCK, getPharmacyStock } from '../pharmacy/pharmacyData';
 import { PharmacistPrescriptionModal } from './PharmacistPrescriptionModal';
 import { DeclineOrderModal } from './DeclineOrderModal';
 import { acceptPharmacyOrder, declinePharmacyOrder } from '../../services/pharmacyOrderApi';
+import { pharmacyOpsApi } from '../../services/dhrApis';
 
 interface PharmacistOverviewTabProps {
   user?: {
@@ -48,8 +43,32 @@ export const PharmacistOverviewTab: React.FC<PharmacistOverviewTabProps> = ({
   const [selectedRxOrder, setSelectedRxOrder] = useState<any | null>(null);
   const [declineTargetOrder, setDeclineTargetOrder] = useState<any | null>(null);
   const [acceptingOrderId, setAcceptingOrderId] = useState<string | null>(null);
-  const pharmacyId = (user as any)?.pharmacyId || localStorage.getItem('pharmacist_pharmacy_id') || undefined;
-  const [stockItems, setStockItems] = useState<any[]>(() => getPharmacyStock(pharmacyId));
+  const pharmacyId = (user as any)?.pharmacyId || undefined;
+  const [stockItems, setStockItems] = useState<any[]>([]);
+
+  const loadStock = async () => {
+    try {
+      const res = await pharmacyOpsApi.getInventory();
+      if (res?.data && Array.isArray(res.data)) {
+        setStockItems(
+          res.data.map((item: any) => {
+            const qty = Number(item.stockQuantity ?? 0);
+            const reorder = Number(item.reorderLevel ?? 15);
+            return {
+              id: item.id,
+              medicineName: item.medicineName,
+              dosage: item.dosage || 'Standard',
+              currentQuantity: qty,
+              totalQuantity: Math.max(qty, reorder * 4, 100),
+              stockLevel: qty <= 0 ? 'Out of Stock' : qty <= reorder ? 'Low Stock' : 'Good Stock',
+            };
+          })
+        );
+      }
+    } catch {
+      setStockItems([]);
+    }
+  };
 
   const loadData = async () => {
     try {
@@ -81,6 +100,7 @@ export const PharmacistOverviewTab: React.FC<PharmacistOverviewTabProps> = ({
 
   useEffect(() => {
     loadData();
+    loadStock();
 
     const pollInterval = setInterval(() => {
       loadData();
@@ -88,7 +108,7 @@ export const PharmacistOverviewTab: React.FC<PharmacistOverviewTabProps> = ({
 
     const handleUpdate = () => {
       loadData();
-      setStockItems(getPharmacyStock(pharmacyId));
+      loadStock();
     };
     window.addEventListener('health_workflow_updated', handleUpdate);
 
@@ -149,25 +169,6 @@ export const PharmacistOverviewTab: React.FC<PharmacistOverviewTabProps> = ({
       }
     } catch (err: any) {
       console.error('Accept order error:', err);
-      try {
-        const res = updatePharmacyOrderStatus(
-          orderId,
-          'Processing',
-          'Prescription reviewed and verified. Medicines dispensed and undergoing packaging.',
-          undefined,
-          `${pharmacistName} (Reg. Pharmacist)`
-        );
-        if (res.success) {
-          await loadData();
-          window.dispatchEvent(new Event('health_workflow_updated'));
-          const eventKey = `order-${orderId.toLowerCase()}-accepted`;
-          onToast(`Order #${orderId.slice(-6)} was accepted successfully.`, 'success', 'Order Accepted', eventKey);
-          if (selectedRxOrder && selectedRxOrder.id === orderId) {
-            setSelectedRxOrder(null);
-          }
-          return;
-        }
-      } catch {}
       onToast(err?.message || 'Failed to accept order.', 'error', 'Action Failed');
     } finally {
       setAcceptingOrderId(null);
@@ -187,23 +188,6 @@ export const PharmacistOverviewTab: React.FC<PharmacistOverviewTabProps> = ({
       }
     } catch (err: any) {
       console.error('Decline order error:', err);
-      try {
-        const res = updatePharmacyOrderStatus(
-          orderId,
-          'Declined by Pharmacist',
-          notes,
-          reason,
-          `${pharmacistName} (Reg. Pharmacist)`
-        );
-        if (res.success) {
-          await loadData();
-          window.dispatchEvent(new Event('health_workflow_updated'));
-          const eventKey = `order-${orderId.toLowerCase()}-declined`;
-          onToast(`Order #${orderId.slice(-6)} was declined.`, 'info', 'Order Declined', eventKey);
-          setDeclineTargetOrder(null);
-          return;
-        }
-      } catch {}
       onToast(err?.message || 'Failed to decline order.', 'error', 'Action Failed');
     }
   };

@@ -19,7 +19,8 @@ import {
 import { Logo } from '../components/ui/Logo';
 import { ThemeToggle } from '../components/ui/ThemeToggle';
 import { adminApi, hospitalAuthApi } from '../services/dhrApis';
-import { type HospitalAdminRecord } from '../utils/adminMockStorage';
+import { setAuthToken } from '../services/apiClient';
+import { type HospitalAdminRecord } from '../types/hospital';
 
 interface HospitalAuthPageProps {
   initialMode?: 'login' | 'register';
@@ -82,14 +83,16 @@ export const HospitalAuthPage: React.FC<HospitalAuthPageProps> = ({
         // Store session tokens and active portal
         try {
           if (res.data.token) {
+            setAuthToken(res.data.token);
+            localStorage.setItem('token', res.data.token);
             localStorage.setItem('auth_token', res.data.token);
+            localStorage.setItem('admin_token', res.data.token);
           }
-          localStorage.setItem('active_hospital_portal', JSON.stringify(foundHospital));
           localStorage.setItem('app_is_logged_in', 'true');
           localStorage.setItem('app_user', JSON.stringify({
             name: foundHospital.adminName,
             email: foundHospital.adminEmail,
-            role: 'Hospital Admin',
+            role: 'Admin',
             hospital: foundHospital.name
           }));
         } catch {}
@@ -141,6 +144,7 @@ export const HospitalAuthPage: React.FC<HospitalAuthPageProps> = ({
       email: adminEmail.trim().toLowerCase(),
       adminName: adminName.trim() || 'Medical Director',
       adminEmail: adminEmail.trim().toLowerCase(),
+      adminPassword: adminPassword.trim() || undefined,
       bedCapacity: Number(bedCapacity) || 0,
       accreditation: accreditation.trim() || 'NABH Accredited',
     };
@@ -274,6 +278,17 @@ export const HospitalAuthPage: React.FC<HospitalAuthPageProps> = ({
                     className="text-xs font-bold text-teal-600 dark:text-teal-400 hover:underline cursor-pointer"
                   >
                     Register Facility
+                  </button>
+                </div>
+
+                <div className="pt-2 text-center">
+                  <span className="text-xs text-slate-500">Are you a Doctor, Nurse, or Patient? </span>
+                  <button
+                    type="button"
+                    onClick={() => onNavigate('login')}
+                    className="text-xs font-bold text-teal-600 dark:text-teal-400 hover:underline cursor-pointer"
+                  >
+                    Go to MediCare Sign In
                   </button>
                 </div>
               </form>
@@ -448,6 +463,17 @@ export const HospitalAuthPage: React.FC<HospitalAuthPageProps> = ({
                     className="text-xs font-bold text-teal-600 dark:text-teal-400 hover:underline cursor-pointer"
                   >
                     Sign In
+                  </button>
+                </div>
+
+                <div className="pt-2 text-center">
+                  <span className="text-xs text-slate-500">Are you a Doctor, Nurse, or Patient? </span>
+                  <button
+                    type="button"
+                    onClick={() => onNavigate('login')}
+                    className="text-xs font-bold text-teal-600 dark:text-teal-400 hover:underline cursor-pointer"
+                  >
+                    Go to MediCare Sign In
                   </button>
                 </div>
               </form>

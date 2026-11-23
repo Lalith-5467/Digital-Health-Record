@@ -25,6 +25,7 @@ import { HealthTopicDrawer } from './HealthTopicDrawer';
 import { ChatHistoryDrawer } from './ChatHistoryDrawer';
 import { SavedHealthNotesModal } from './SavedHealthNotesModal';
 import { AIChatSettingsDrawer } from './AIChatSettingsDrawer';
+import { patientExtendedApi, profileApi } from '../../services/dhrApis';
 
 interface UserProfile {
   name: string;
@@ -62,14 +63,53 @@ export const AIAssistantView: React.FC<AIAssistantViewProps> = ({
   const [savedNotesModalOpen, setSavedNotesModalOpen] = useState(false);
   const [settingsDrawerOpen, setSettingsDrawerOpen] = useState(false);
 
-  // Load from localStorage on mount
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+  const [cachedHealthPrefs, setCachedHealthPrefs] = useState<Record<string, any>>({});
+
+  const loadAiData = async () => {
+    try {
+      const [convRes, notesRes, prefRes] = await Promise.all([
+        patientExtendedApi.getAiConversations().catch(() => null),
+        patientExtendedApi.getSavedHealthNotes().catch(() => null),
+        profileApi.getPreferences().catch(() => null),
+      ]);
+      if (convRes?.data && Array.isArray(convRes.data)) {
+        setChatHistory(
+          convRes.data.map((c: any) => ({
+            id: c.id,
+            title: c.title || 'Health Consultation',
+            date: c.updatedAt ? new Date(c.updatedAt).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }) : 'Recent',
+            messages: (c.messages || []).map((m: any) => ({
+              id: m.id,
+              sender: m.sender === 'assistant' ? 'ai' : 'user',
+              content: m.text,
+              timestamp: m.createdAt ? new Date(m.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '',
+            })),
+          }))
+        );
+      }
+      if (notesRes?.data && Array.isArray(notesRes.data)) {
+        setSavedNotes(
+          notesRes.data.map((n: any) => ({
+            id: n.id,
+            title: n.title,
+            content: n.content,
+            date: n.createdAt ? new Date(n.createdAt).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }) : 'Recent',
+          }))
+        );
+      }
+      const healthPrefs = prefRes?.data?.health;
+      if (healthPrefs && typeof healthPrefs === 'object') {
+        setCachedHealthPrefs(healthPrefs);
+        if (healthPrefs.aiSettings) {
+          setSettings((prev) => ({ ...prev, ...healthPrefs.aiSettings }));
+        }
+      }
+    } catch {}
+  };
+
   useEffect(() => {
-    const savedHist = localStorage.getItem('user_ai_chat_history');
-    if (savedHist) { try { setChatHistory(JSON.parse(savedHist)); } catch (e) { console.error(e); } }
-    const savedN = localStorage.getItem('user_ai_saved_notes');
-    if (savedN) { try { setSavedNotes(JSON.parse(savedN)); } catch (e) { console.error(e); } }
-    const savedS = localStorage.getItem('user_ai_settings');
-    if (savedS) { try { setSettings(JSON.parse(savedS)); } catch (e) { console.error(e); } }
+    loadAiData();
   }, []);
 
   const showToast = (msg: string) => {
@@ -77,7 +117,7 @@ export const AIAssistantView: React.FC<AIAssistantViewProps> = ({
     setTimeout(() => setToastMessage(null), 3000);
   };
 
-  const handleSendMessage = (userText: string) => {
+  const handleSendMessage = async (userText: string) => {
     const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     const userMsg: ChatMessage = {
       id: `MSG-${Date.now()}-USER`,
@@ -90,7 +130,19 @@ export const AIAssistantView: React.FC<AIAssistantViewProps> = ({
     setMessages(newMessages);
     setIsTyping(true);
 
-    setTimeout(() => {
+    let convId = activeConversationId;
+    try {
+      if (!convId) {
+        const created = await patientExtendedApi.createAiConversation({ title: userText.slice(0, 45) });
+        convId = created?.data?.id || null;
+        if (convId) setActiveConversationId(convId);
+      }
+      if (convId) {
+        await patientExtendedApi.postAiMessage(convId, 'user', userText);
+      }
+    } catch {}
+
+    setTimeout(async () => {
       setIsTyping(false);
       const generated = generateDemoAIResponse(userText, settings.responseStyle, settings.language);
       const aiMsg: ChatMessage = {
@@ -105,23 +157,17 @@ export const AIAssistantView: React.FC<AIAssistantViewProps> = ({
       const finalMessages = [...newMessages, aiMsg];
       setMessages(finalMessages);
 
-      // Save to chat history
-      const convId = `CONV-${Date.now().toString().slice(-4)}`;
-      const newConv: ChatConversation = {
-        id: convId,
-        title: userText.slice(0, 30) + '...',
-        date: new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }),
-        messages: finalMessages
-      };
-      const updatedHist = [newConv, ...chatHistory.slice(0, 10)];
-      setChatHistory(updatedHist);
-      localStorage.setItem('user_ai_chat_history', JSON.stringify(updatedHist));
-    }, 1000);
+      if (convId) {
+        await patientExtendedApi.postAiMessage(convId, 'assistant', generated.content).catch(() => {});
+        await loadAiData();
+      }
+    }, 600);
   };
 
   const handleNewChat = () => {
     if (messages.length > 0) {
       setMessages([]);
+      setActiveConversationId(null);
       showToast('✓ Started new conversation');
     }
   };
@@ -131,46 +177,43 @@ export const AIAssistantView: React.FC<AIAssistantViewProps> = ({
     showToast('✓ Copied to clipboard');
   };
 
-  const handleSaveToNotes = (msg: ChatMessage) => {
-    const newNote: SavedHealthNote = {
-      id: `NOTE-${Date.now().toString().slice(-4)}`,
-      title: msg.content.slice(0, 35) + '...',
-      content: msg.content,
-      date: new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })
-    };
-    const updated = [newNote, ...savedNotes];
-    setSavedNotes(updated);
-    localStorage.setItem('user_ai_saved_notes', JSON.stringify(updated));
-
-    // Update message state
-    setMessages(messages.map((m) => (m.id === msg.id ? { ...m, savedToNotes: true } : m)));
-    showToast('✓ Saved to Health Notes');
+  const handleSaveToNotes = async (msg: ChatMessage) => {
+    try {
+      await patientExtendedApi.createSavedHealthNote({
+        title: msg.content.slice(0, 40) + '...',
+        content: msg.content,
+        category: 'AI Insight',
+      });
+      await loadAiData();
+      setMessages(messages.map((m) => (m.id === msg.id ? { ...m, savedToNotes: true } : m)));
+      showToast('✓ Saved to Health Notes in MySQL');
+    } catch {
+      showToast('Failed to save health note');
+    }
   };
 
-  const handleSaveDoctorQuestions = (title: string, questions: string[]) => {
-    const newNote: SavedHealthNote = {
-      id: `NOTE-${Date.now().toString().slice(-4)}`,
-      title,
-      content: questions.map((q, i) => `${i + 1}. ${q}`).join('\n'),
-      date: new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })
-    };
-    const updated = [newNote, ...savedNotes];
-    setSavedNotes(updated);
-    localStorage.setItem('user_ai_saved_notes', JSON.stringify(updated));
-    showToast('✓ Saved doctor question checklist');
+  const handleSaveDoctorQuestions = async (title: string, questions: string[]) => {
+    try {
+      await patientExtendedApi.createSavedHealthNote({
+        title,
+        content: questions.map((q, i) => `${i + 1}. ${q}`).join('\n'),
+        category: 'Doctor Prep',
+      });
+      await loadAiData();
+      showToast('✓ Saved doctor question checklist to MySQL');
+    } catch {}
   };
 
-  const handleSaveTip = (tip: HealthTipItem) => {
-    const newNote: SavedHealthNote = {
-      id: `NOTE-${Date.now().toString().slice(-4)}`,
-      title: `Tip: ${tip.category}`,
-      content: tip.tip,
-      date: new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })
-    };
-    const updated = [newNote, ...savedNotes];
-    setSavedNotes(updated);
-    localStorage.setItem('user_ai_saved_notes', JSON.stringify(updated));
-    showToast('✓ Saved health tip to notes');
+  const handleSaveTip = async (tip: HealthTipItem) => {
+    try {
+      await patientExtendedApi.createSavedHealthNote({
+        title: `Tip: ${tip.category}`,
+        content: tip.tip,
+        category: tip.category,
+      });
+      await loadAiData();
+      showToast('✓ Saved health tip to MySQL');
+    } catch {}
   };
 
   const handleFeedback = (msgId: string, isHelpful: boolean) => {
@@ -199,15 +242,25 @@ export const AIAssistantView: React.FC<AIAssistantViewProps> = ({
     showToast(`✓ Exported chat conversation (${format.toUpperCase()})`);
   };
 
-  const handleClearAIData = () => {
-    setMessages([]);
-    setChatHistory([]);
-    setSavedNotes([]);
-    setSettings(DEFAULT_AI_SETTINGS);
-    localStorage.removeItem('user_ai_chat_history');
-    localStorage.removeItem('user_ai_saved_notes');
-    localStorage.removeItem('user_ai_settings');
-    showToast('✓ Cleared AI Assistant data cache');
+  const handleClearAIData = async () => {
+    try {
+      await Promise.all([
+        ...chatHistory.map((c) => patientExtendedApi.deleteAiConversation(c.id).catch(() => {})),
+        ...savedNotes.map((n) => patientExtendedApi.deleteSavedHealthNote(n.id).catch(() => {})),
+        profileApi.updatePreferences({
+          health: { ...cachedHealthPrefs, aiSettings: DEFAULT_AI_SETTINGS },
+        }).catch(() => {}),
+      ]);
+      setMessages([]);
+      setActiveConversationId(null);
+      setChatHistory([]);
+      setSavedNotes([]);
+      setSettings(DEFAULT_AI_SETTINGS);
+      setCachedHealthPrefs((prev) => ({ ...prev, aiSettings: DEFAULT_AI_SETTINGS }));
+      showToast('✓ Cleared AI Assistant conversations & notes from database');
+    } catch {
+      showToast('Failed to clear AI Assistant data');
+    }
   };
 
   return (
@@ -320,12 +373,22 @@ export const AIAssistantView: React.FC<AIAssistantViewProps> = ({
         history={chatHistory}
         isOpen={historyDrawerOpen}
         onClose={() => setHistoryDrawerOpen(false)}
-        onSelectConversation={(conv) => setMessages(conv.messages)}
-        onDeleteConversation={(id) => {
-          const updated = chatHistory.filter((c) => c.id !== id);
-          setChatHistory(updated);
-          localStorage.setItem('user_ai_chat_history', JSON.stringify(updated));
-          showToast('✓ Conversation deleted');
+        onSelectConversation={(conv) => {
+          setActiveConversationId(conv.id);
+          setMessages(conv.messages);
+        }}
+        onDeleteConversation={async (id) => {
+          try {
+            await patientExtendedApi.deleteAiConversation(id);
+            setChatHistory((prev) => prev.filter((c) => c.id !== id));
+            if (activeConversationId === id) {
+              setActiveConversationId(null);
+              setMessages([]);
+            }
+            showToast('✓ Conversation deleted from database');
+          } catch {
+            showToast('Failed to delete conversation');
+          }
         }}
       />
 
@@ -333,11 +396,14 @@ export const AIAssistantView: React.FC<AIAssistantViewProps> = ({
         notes={savedNotes}
         isOpen={savedNotesModalOpen}
         onClose={() => setSavedNotesModalOpen(false)}
-        onDeleteNote={(id) => {
-          const updated = savedNotes.filter((n) => n.id !== id);
-          setSavedNotes(updated);
-          localStorage.setItem('user_ai_saved_notes', JSON.stringify(updated));
-          showToast('✓ Saved note deleted');
+        onDeleteNote={async (id) => {
+          try {
+            await patientExtendedApi.deleteSavedHealthNote(id);
+            setSavedNotes((prev) => prev.filter((n) => n.id !== id));
+            showToast('✓ Saved note deleted from database');
+          } catch {
+            showToast('Failed to delete saved note');
+          }
         }}
         onCopyNote={handleCopyText}
       />
@@ -346,10 +412,16 @@ export const AIAssistantView: React.FC<AIAssistantViewProps> = ({
         settings={settings}
         isOpen={settingsDrawerOpen}
         onClose={() => setSettingsDrawerOpen(false)}
-        onUpdateSettings={(newS) => {
+        onUpdateSettings={async (newS) => {
           setSettings(newS);
-          localStorage.setItem('user_ai_settings', JSON.stringify(newS));
-          showToast(`✓ Active Mode: ${newS.responseStyle} (${newS.language})`);
+          const nextHealth = { ...cachedHealthPrefs, aiSettings: newS };
+          setCachedHealthPrefs(nextHealth);
+          try {
+            await profileApi.updatePreferences({ health: nextHealth });
+            showToast(`✓ AI Settings saved: ${newS.responseStyle} (${newS.language})`);
+          } catch {
+            showToast('Failed to save AI settings');
+          }
 
           // Instantly update current AI message in newly selected style
           if (messages.length > 0) {

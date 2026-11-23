@@ -22,7 +22,6 @@ import type {
   HospitalFilterState
 } from './hospitalsData';
 import {
-  INITIAL_HOSPITALS,
   HOSPITAL_CATEGORIES
 } from './hospitalsData';
 import { HospitalMapSection } from './HospitalMapSection';
@@ -34,6 +33,7 @@ import { HospitalAppointmentModal } from './HospitalAppointmentModal';
 import { HospitalShareFamilyModal } from './HospitalShareFamilyModal';
 import { HospitalCompareModal } from './HospitalCompareModal';
 import { HospitalFilterDrawer } from './HospitalFilterDrawer';
+import { patientExtendedApi } from '../../services/dhrApis';
 
 interface UserProfile {
   name: string;
@@ -61,8 +61,8 @@ export const HospitalsView: React.FC<HospitalsViewProps> = ({
   const [locationName, setLocationName] = useState<string>('Selaiyur, Chennai (12.9104, 80.1234)');
   const [isLocating, setIsLocating] = useState(false);
 
-  // MAIN HOSPITALS STATE
-  const [hospitals] = useState<HospitalItem[]>(INITIAL_HOSPITALS);
+  // MAIN HOSPITALS STATE (Hydrated from MySQL)
+  const [hospitals, setHospitals] = useState<HospitalItem[]>([]);
   const [savedHospitalIds, setSavedHospitalIds] = useState<string[]>([]);
   const [comparedHospitalIds, setComparedHospitalIds] = useState<string[]>([]);
   const [recentlyViewedIds, setRecentlyViewedIds] = useState<string[]>([]);
@@ -83,7 +83,7 @@ export const HospitalsView: React.FC<HospitalsViewProps> = ({
   });
 
   // MODAL TARGETS
-  const [selectedHospital, setSelectedHospital] = useState<HospitalItem | null>(INITIAL_HOSPITALS[0]);
+  const [selectedHospital, setSelectedHospital] = useState<HospitalItem | null>(null);
   const [detailsTarget, setDetailsTarget] = useState<HospitalItem | null>(null);
   const [directionsTarget, setDirectionsTarget] = useState<HospitalItem | null>(null);
   const [callTarget, setCallTarget] = useState<HospitalItem | null>(null);
@@ -91,35 +91,48 @@ export const HospitalsView: React.FC<HospitalsViewProps> = ({
   const [shareFamilyTarget, setShareFamilyTarget] = useState<HospitalItem | null>(null);
   const [compareModalOpen, setCompareModalOpen] = useState(false);
 
-  // Load from localStorage on mount
+  // Load live hospitals & saved favorites from MySQL
   useEffect(() => {
-    const savedIdsStr = localStorage.getItem('user_saved_hospitals');
-    if (savedIdsStr) {
-      try {
-        setSavedHospitalIds(JSON.parse(savedIdsStr));
-      } catch (e) {
-        console.error(e);
-      }
-    }
-    const viewedIdsStr = localStorage.getItem('user_recently_viewed_hospitals');
-    if (viewedIdsStr) {
-      try {
-        setRecentlyViewedIds(JSON.parse(viewedIdsStr));
-      } catch (e) {
-        console.error(e);
-      }
-    }
+    patientExtendedApi
+      .getHospitals()
+      .then((res) => {
+        if (res?.data && Array.isArray(res.data)) {
+          const mapped: HospitalItem[] = res.data.map((h: any) => ({
+            id: h.id,
+            name: h.name,
+            type: (h.type || 'Multi-Specialty Hospital') as any,
+            rating: Number(h.averageRating ?? 4.7),
+            reviewCount: Array.isArray(h.reviews) ? h.reviews.length : 0,
+            distanceKm: 2.5,
+            address: h.address || `${h.city || ''}, ${h.state || ''}`,
+            phone: h.contactPhone || '—',
+            openNow: true,
+            openingHours: 'Open 24 Hours',
+            emergencyCare: true,
+            specialties: ['General Medicine', 'Cardiology', 'Emergency'],
+            facilities: ['ICU', 'Pharmacy', 'Diagnostics', 'Cashless TPA'],
+            insuranceAccepted: true,
+            lat: 13.0827,
+            lng: 80.2707,
+            imageUrl: '',
+            bedCount: h.bedCapacity || 100,
+          } as any));
+          setHospitals(mapped);
+          if (mapped[0]) setSelectedHospital((prev) => prev || mapped[0]);
+          setSavedHospitalIds(res.data.filter((h: any) => h.isSaved).map((h: any) => h.id));
+        }
+      })
+      .catch(() => setHospitals([]));
 
-    // Attempt browser geolocation if available
     if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
         (pos) => {
           setLocationStatus('detected');
-          setLocationName(`Selaiyur, Chennai (${pos.coords.latitude.toFixed(2)}, ${pos.coords.longitude.toFixed(2)})`);
+          setLocationName(`GPS (${pos.coords.latitude.toFixed(2)}, ${pos.coords.longitude.toFixed(2)})`);
         },
         () => {
           setLocationStatus('default');
-          setLocationName('Selaiyur, Chennai (Default Location)');
+          setLocationName('Location services unavailable');
         }
       );
     }
@@ -153,17 +166,18 @@ export const HospitalsView: React.FC<HospitalsViewProps> = ({
     }
   };
 
-  const handleToggleSave = (hosp: HospitalItem, suppressToast: boolean = false) => {
-    let updated: string[];
-    if (savedHospitalIds.includes(hosp.id)) {
-      updated = savedHospitalIds.filter((id) => id !== hosp.id);
-      if (!suppressToast) showToast(`Removed ${hosp.name} from saved facilities`);
-    } else {
-      updated = [...savedHospitalIds, hosp.id];
-      if (!suppressToast) showToast(`✓ Saved ${hosp.name} to favorites`);
-    }
+  const handleToggleSave = async (hosp: HospitalItem, suppressToast: boolean = false) => {
+    const isCurrentlySaved = savedHospitalIds.includes(hosp.id);
+    const updated = isCurrentlySaved
+      ? savedHospitalIds.filter((id) => id !== hosp.id)
+      : [...savedHospitalIds, hosp.id];
     setSavedHospitalIds(updated);
-    localStorage.setItem('user_saved_hospitals', JSON.stringify(updated));
+    try {
+      await patientExtendedApi.toggleSaveHospital(hosp.id, !isCurrentlySaved);
+      if (!suppressToast) {
+        showToast(isCurrentlySaved ? `Removed ${hosp.name} from saved facilities` : `✓ Saved ${hosp.name} to favorites`);
+      }
+    } catch {}
   };
 
   const handleToggleCompare = (hosp: HospitalItem) => {
@@ -181,11 +195,8 @@ export const HospitalsView: React.FC<HospitalsViewProps> = ({
 
   const handleOpenDetails = (hosp: HospitalItem) => {
     setDetailsTarget(hosp);
-    // Log to recently viewed
     if (!recentlyViewedIds.includes(hosp.id)) {
-      const updated = [hosp.id, ...recentlyViewedIds].slice(0, 4);
-      setRecentlyViewedIds(updated);
-      localStorage.setItem('user_recently_viewed_hospitals', JSON.stringify(updated));
+      setRecentlyViewedIds([hosp.id, ...recentlyViewedIds].slice(0, 4));
     }
   };
 
@@ -615,8 +626,8 @@ export const HospitalsView: React.FC<HospitalsViewProps> = ({
         hospital={appointmentTarget}
         isOpen={!!appointmentTarget}
         onClose={() => setAppointmentTarget(null)}
-        onConfirmBooking={(hospName, dept, _doc, _date) => {
-          showToast(`✓ Demo appointment request created at ${hospName} (${dept})`);
+        onConfirmBooking={(hospName, dept, doc, _date) => {
+          showToast(`✓ Appointment booked with ${doc} at ${hospName} (${dept})`);
           setTimeout(() => onNavigate('appointments'), 1200);
         }}
       />

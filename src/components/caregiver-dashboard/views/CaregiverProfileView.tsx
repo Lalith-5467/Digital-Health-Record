@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { profileApi } from '../../../services/dhrApis';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
   UserCheck, 
@@ -38,11 +39,51 @@ export const CaregiverProfileView: React.FC<CaregiverProfileViewProps> = ({ user
   const [emergPhone, setEmergPhone] = useState('+91 99887 77665');
   const [emergAltPhone, setEmergAltPhone] = useState('+91 99887 77666');
 
-  const handleSave = (e: React.FormEvent) => {
+  useEffect(() => {
+    profileApi
+      .getProfile()
+      .then((res) => {
+        const d: any = res?.data;
+        const cg = d?.profile || d?.caregiver || d;
+        if (!cg) return;
+        if (cg.fullName || d?.fullName) setName(cg.fullName || d.fullName);
+        if (cg.preferredName) setPreferredName(cg.preferredName);
+        if (cg.dateOfBirth) setDob(String(cg.dateOfBirth).slice(0, 10));
+        if (cg.phone || d?.phoneNumber) setPhone(cg.phone || d.phoneNumber);
+        if (d?.email) setEmail(d.email);
+        if (cg.address) setAddress(cg.address);
+        if (cg.city) setCity(cg.city);
+        if (cg.state) setState(cg.state);
+        if (cg.emergencyContactName) setEmergName(cg.emergencyContactName);
+        if (cg.emergencyContactRelation) setEmergRel(cg.emergencyContactRelation);
+        if (cg.emergencyContactPhone) setEmergPhone(cg.emergencyContactPhone);
+        if (cg.emergencyContactAltPhone) setEmergAltPhone(cg.emergencyContactAltPhone);
+      })
+      .catch(() => {});
+  }, []);
+
+  const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
-    setIsEditing(false);
-    setToastMsg('Profile updated successfully');
-    setTimeout(() => setToastMsg(null), 3000);
+    try {
+      await profileApi.updateCaregiverProfile({
+        fullName: name,
+        preferredName,
+        dateOfBirth: dob,
+        phone,
+        address,
+        city,
+        state,
+        emergencyContactName: emergName,
+        emergencyContactRelation: emergRel,
+        emergencyContactPhone: emergPhone,
+        emergencyContactAltPhone: emergAltPhone,
+      });
+      setIsEditing(false);
+      setToastMsg('Profile saved to MySQL database');
+      setTimeout(() => setToastMsg(null), 3000);
+    } catch (err) {
+      console.error('Failed to save caregiver profile:', err);
+    }
   };
 
   const handleCancel = () => {

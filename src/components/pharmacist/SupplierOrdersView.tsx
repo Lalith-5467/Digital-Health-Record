@@ -16,42 +16,67 @@ import {
 
 export const SupplierOrdersView: React.FC = () => {
   const [searchTerm, setSearchTerm] = useState('');
+  const [supplierOrders, setSupplierOrders] = useState<any[]>([]);
 
-  const SUPPLIER_ORDERS = [
-    {
-      poNumber: 'PO-2026-8941',
-      supplier: 'MedLife Wholesale Pharma Distributors',
-      itemCount: 42,
-      orderDate: '01 Sep 2026',
-      expectedDate: '02 Sep 2026',
-      totalAmount: 184500,
-      status: 'In Transit',
-      statusColor: 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20',
-      category: 'Antibiotics & Injectables'
-    },
-    {
-      poNumber: 'PO-2026-8938',
-      supplier: 'Sun Pharma Logistics Hub',
-      itemCount: 18,
-      orderDate: '30 Aug 2026',
-      expectedDate: '31 Aug 2026',
-      totalAmount: 92400,
-      status: 'Received & Verified',
-      statusColor: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20',
-      category: 'Cardiac & Anti-hypertensives'
-    },
-    {
-      poNumber: 'PO-2026-8924',
-      supplier: 'Cipla Central Warehouse Hub',
-      itemCount: 65,
-      orderDate: '28 Aug 2026',
-      expectedDate: '29 Aug 2026',
-      totalAmount: 245000,
-      status: 'Batch Inward Completed',
-      statusColor: 'bg-teal-500/10 text-teal-600 dark:text-teal-400 border-teal-500/20',
-      category: 'Respiratory & Inhalers'
+  const loadOrders = async () => {
+    try {
+      const { pharmacyOpsApi } = await import('../../services/dhrApis');
+      const res = await pharmacyOpsApi.getSupplierOrders();
+      if (res?.data && Array.isArray(res.data)) {
+        setSupplierOrders(
+          res.data.map((po: any) => ({
+            id: po.id,
+            poNumber: po.poNumber,
+            supplier: po.supplierName,
+            itemCount: Array.isArray(po.items) ? po.items.reduce((s: number, it: any) => s + Number(it.quantity || 0), 0) : 0,
+            orderDate: new Date(po.createdAt).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }),
+            expectedDate: po.expectedDate ? new Date(po.expectedDate).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : '—',
+            totalAmount: Number(po.totalAmount || 0),
+            status: po.status,
+            statusColor:
+              po.status === 'Received'
+                ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20'
+                : 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20',
+            category: po.notes || 'Pharmaceutical Supply',
+          }))
+        );
+      }
+    } catch {
+      setSupplierOrders([]);
     }
-  ];
+  };
+
+  React.useEffect(() => {
+    loadOrders();
+  }, []);
+
+  const handleCreateQuickPO = async () => {
+    const supplierName = prompt('Enter Authorized Supplier / Distributor Name:');
+    if (!supplierName || !supplierName.trim()) return;
+    const medName = prompt('Enter Primary Medicine Name for Purchase Order:');
+    if (!medName || !medName.trim()) return;
+    const qty = Number(prompt('Enter Quantity (units):', '50') || '50');
+    const unitCost = Number(prompt('Enter Unit Cost (₹):', '25') || '25');
+    try {
+      const { pharmacyOpsApi } = await import('../../services/dhrApis');
+      await pharmacyOpsApi.createSupplierOrder({
+        supplierName: supplierName.trim(),
+        items: [{ medicineName: medName.trim(), quantity: qty, unitCost }],
+      });
+      await loadOrders();
+    } catch (err) {
+      console.error('Failed to create supplier PO:', err);
+    }
+  };
+
+  const SUPPLIER_ORDERS = supplierOrders.filter((po) =>
+    !searchTerm.trim() ||
+    po.poNumber.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    po.supplier.toLowerCase().includes(searchTerm.toLowerCase())
+  );
+
+  const pendingCount = supplierOrders.filter((p) => p.status !== 'Received' && p.status !== 'Cancelled').length;
+  const totalInward = supplierOrders.reduce((s, p) => s + Number(p.totalAmount || 0), 0);
 
   return (
     <div className="space-y-6 pb-16 font-sans select-none max-w-7xl mx-auto">
@@ -71,7 +96,7 @@ export const SupplierOrdersView: React.FC = () => {
         </div>
 
         <div className="flex items-center gap-3 relative z-10 shrink-0">
-          <button className="px-5 py-3 rounded-2xl bg-gradient-to-r from-teal-500 to-cyan-500 hover:from-teal-400 hover:to-cyan-400 text-slate-950 font-black text-xs shadow-lg shadow-teal-500/20 flex items-center gap-2 cursor-pointer transition-all hover:scale-102">
+          <button onClick={handleCreateQuickPO} className="px-5 py-3 rounded-2xl bg-gradient-to-r from-teal-500 to-cyan-500 hover:from-teal-400 hover:to-cyan-400 text-slate-950 font-black text-xs shadow-lg shadow-teal-500/20 flex items-center gap-2 cursor-pointer transition-all hover:scale-102">
             <Plus className="w-4 h-4" />
             <span>Generate New Purchase Order</span>
           </button>
@@ -81,9 +106,9 @@ export const SupplierOrdersView: React.FC = () => {
       {/* STATS OVERVIEW */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3.5 sm:gap-4">
         {[
-          { label: 'Active POs', value: '3 Pending', icon: Clock, color: 'text-amber-500', bg: 'bg-amber-500/10' },
-          { label: 'Suppliers On-Record', value: '14 Licensed', icon: Building2, color: 'text-blue-500', bg: 'bg-blue-500/10' },
-          { label: 'Monthly Inward Total', value: '₹5,21,900', icon: IndianRupee, color: 'text-emerald-500', bg: 'bg-emerald-500/10' },
+          { label: 'Active POs', value: `${pendingCount} Pending`, icon: Clock, color: 'text-amber-500', bg: 'bg-amber-500/10' },
+          { label: 'Total Orders', value: `${supplierOrders.length} Recorded`, icon: Building2, color: 'text-blue-500', bg: 'bg-blue-500/10' },
+          { label: 'Inward Total', value: `₹${totalInward.toLocaleString('en-IN')}`, icon: IndianRupee, color: 'text-emerald-500', bg: 'bg-emerald-500/10' },
           { label: 'Discrepancy Flags', value: '0 Disputed', icon: AlertCircle, color: 'text-teal-500', bg: 'bg-teal-500/10' }
         ].map((s, i) => (
           <div key={i} className="p-5 rounded-2xl bg-white dark:bg-slate-900/90 border border-slate-200 dark:border-slate-800 shadow-xs flex items-center justify-between">

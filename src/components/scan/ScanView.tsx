@@ -19,11 +19,9 @@ import {
   Maximize2
 } from 'lucide-react';
 import type { MedicalRecordItem } from '../records/recordsData';
-import { INITIAL_RECORDS } from '../records/recordsData';
 import { ScannerModal } from './ScannerModal';
 import { DocumentEditorModal } from './DocumentEditorModal';
 import { DocumentInfoForm } from './DocumentInfoForm';
-import { safeLocalStorageSet } from '../../utils/safeStorage';
 import { MultiScanModal } from './MultiScanModal';
 import { CancelConfirmModal } from './CancelConfirmModal';
 import { RecentUploadsSection } from './RecentUploadsSection';
@@ -78,30 +76,43 @@ export const ScanView: React.FC<ScanViewProps> = ({
 
   // SAVING & RECORDS STATE
   const [isSaving, setIsSaving] = useState(false);
-  const [savedRecordTitle, setSavedRecordTitle] = useState('CBC Blood Test Report');
-  const [records, setRecords] = useState<MedicalRecordItem[]>(INITIAL_RECORDS);
+  const [savedRecordTitle, setSavedRecordTitle] = useState('Medical Document');
+  const [records, setRecords] = useState<MedicalRecordItem[]>([]);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  // Load records from localStorage on mount
-  useEffect(() => {
-    const saved = localStorage.getItem('user_medical_records');
-    if (saved) {
-      try {
-        setRecords(JSON.parse(saved));
-      } catch (e) {
-        console.error(e);
+  const loadDbRecords = async () => {
+    try {
+      const { recordApi } = await import('../../services/dhrApis');
+      const res = await recordApi.getMedicalRecords();
+      if (res && Array.isArray(res.data)) {
+        setRecords(
+          res.data.map((r: any) => ({
+            id: r.id,
+            title: r.title,
+            type: (r.type === 'LAB_REPORT' ? 'Lab Report' : r.type === 'PRESCRIPTION' ? 'Prescription' : r.type === 'IMAGING' ? 'Imaging' : r.type === 'DISCHARGE' ? 'Discharge' : r.type === 'VACCINATION' ? 'Vaccination' : 'Other') as MedicalRecordItem['type'],
+            hospital: r.hospital || 'Medical Center',
+            doctor: r.doctor?.fullName || 'Attending Physician',
+            date: r.recordDate ? new Date(r.recordDate).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : new Date(r.createdAt).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }),
+            timestamp: new Date(r.recordDate || r.createdAt).getTime(),
+            status: (r.status || 'Normal') as MedicalRecordItem['status'],
+            fileSize: r.fileSize || '—',
+            fileName: r.fileName || `${r.title.replace(/\s+/g, '_')}.pdf`,
+            isImportant: Boolean(r.isImportant),
+            notes: r.notes || '',
+          }))
+        );
       }
+    } catch {
+      setRecords([]);
     }
+  };
+
+  useEffect(() => {
+    loadDbRecords();
   }, []);
 
   // Scanner modal only opens when explicitly requested by user (e.g. Start Scan button)
-
-  // Helper to persist records
-  const updateRecords = (newRecords: MedicalRecordItem[]) => {
-    setRecords(newRecords);
-    safeLocalStorageSet('user_medical_records', JSON.stringify(newRecords));
-  };
 
   // FILE VALIDATION HANDLER
   const validateAndProcessFile = (file: File) => {
@@ -206,55 +217,73 @@ export const ScanView: React.FC<ScanViewProps> = ({
     setFlowStep('info');
   };
 
-  // SAVE SINGLE RECORD TO LOCAL STORAGE & STATE
-  const handleSaveDocument = (formData: Partial<MedicalRecordItem>) => {
+  // SAVE SINGLE RECORD TO MYSQL DATABASE
+  const handleSaveDocument = async (formData: Partial<MedicalRecordItem>) => {
     setIsSaving(true);
+    try {
+      const { recordApi, uploadApi } = await import('../../services/dhrApis');
+      let fileUrl: string | undefined;
+      let resolvedFileName = selectedFile ? selectedFile.name : `${(formData.title || 'Scanned_Doc').replace(/\s+/g, '_')}.pdf`;
+      const resolvedFileSize = selectedFile ? `${(selectedFile.size / (1024 * 1024)).toFixed(2)} MB` : '0.5 MB';
 
-    const newRecord: MedicalRecordItem = {
-      id: `REC-${Date.now().toString().slice(-6)}`,
-      title: formData.title || 'CBC Blood Test Report',
-      type: formData.type || 'Lab Report',
-      hospital: formData.hospital || 'Apollo Hospital',
-      doctor: formData.doctor || 'Dr. Rajesh Kumar',
-      date: formData.date || '23 Aug 2026',
-      timestamp: Date.now(),
-      status: 'Normal',
-      fileSize: selectedFile ? `${(selectedFile.size / (1024 * 1024)).toFixed(1)} MB` : '2.4 MB',
-      fileName: selectedFile ? selectedFile.name : `${(formData.title || 'Scanned_Doc').replace(/\s+/g, '_')}.pdf`,
-      isImportant: true,
-      notes: formData.notes
-    };
+      if (selectedFile) {
+        const upRes = await uploadApi.uploadImage(selectedFile, 'SCANNED_RECORD');
+        if (upRes?.data?.url) {
+          fileUrl = upRes.data.url;
+          resolvedFileName = upRes.data.originalName || resolvedFileName;
+        }
+      }
 
-    setTimeout(() => {
-      const updated = [newRecord, ...records];
-      updateRecords(updated);
-      setSavedRecordTitle(newRecord.title);
-      setIsSaving(false);
+      const title = formData.title || 'Scanned Medical Document';
+      await recordApi.createMedicalRecord({
+        title,
+        type: (formData.type || 'OTHER').toUpperCase().replace(/ /g, '_'),
+        hospital: formData.hospital || 'Medical Center',
+        status: 'Normal',
+        fileUrl,
+        fileName: resolvedFileName,
+        fileSize: resolvedFileSize,
+        isImportant: true,
+        notes: formData.notes || undefined,
+      });
+
+      await loadDbRecords();
+      window.dispatchEvent(new Event('health_workflow_updated'));
+      setSavedRecordTitle(title);
       setFlowStep('success');
-    }, 800);
+    } catch (err: any) {
+      showToast(err?.message || 'Failed to save document to database');
+    } finally {
+      setIsSaving(false);
+    }
   };
 
-  // BATCH SAVE FROM MULTI SCAN
-  const handleSaveMultiBatch = (batchItems: Partial<MedicalRecordItem>[]) => {
-    const newItems: MedicalRecordItem[] = batchItems.map((item, idx) => ({
-      id: `REC-${(Date.now() + idx).toString().slice(-6)}`,
-      title: item.title || `Scanned Document #${idx + 1}`,
-      type: item.type || 'Lab Report',
-      hospital: item.hospital || 'Apollo Hospital',
-      doctor: item.doctor || 'Dr. Rajesh Kumar',
-      date: item.date || '23 Aug 2026',
-      timestamp: Date.now() - idx * 1000,
-      status: 'Normal',
-      fileSize: item.fileSize || '1.8 MB',
-      fileName: item.fileName || `Doc_Batch_${idx + 1}.pdf`,
-      isImportant: true,
-      notes: item.notes
-    }));
-
-    const updated = [...newItems, ...records];
-    updateRecords(updated);
-    setSavedRecordTitle(`${newItems.length} Batch Documents`);
-    setFlowStep('success');
+  // BATCH SAVE FROM MULTI SCAN TO MYSQL DATABASE
+  const handleSaveMultiBatch = async (batchItems: Partial<MedicalRecordItem>[]) => {
+    setIsSaving(true);
+    try {
+      const { recordApi } = await import('../../services/dhrApis');
+      for (const [idx, item] of batchItems.entries()) {
+        await recordApi.createMedicalRecord({
+          title: item.title || `Scanned Document #${idx + 1}`,
+          type: (item.type || 'OTHER').toUpperCase().replace(/ /g, '_'),
+          hospital: item.hospital || 'Medical Center',
+          status: 'Normal',
+          fileSize: item.fileSize || '1.0 MB',
+          fileName: item.fileName || `Doc_Batch_${idx + 1}.pdf`,
+          isImportant: true,
+          notes: item.notes,
+        });
+      }
+      await loadDbRecords();
+      window.dispatchEvent(new Event('health_workflow_updated'));
+      setSavedRecordTitle(`${batchItems.length} Batch Documents`);
+      setFlowStep('success');
+    } catch (err: any) {
+      showToast(err?.message || 'Failed to save batch documents to database');
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   // RESET SCAN FLOW
@@ -412,8 +441,8 @@ export const ScanView: React.FC<ScanViewProps> = ({
         /* DOCUMENT INFORMATION FORM */
         <DocumentInfoForm
           imageSrc={capturedImage || (selectedFile ? URL.createObjectURL(selectedFile) : null)}
-          fileName={selectedFile?.name || 'Scanned_Document_Aug2026.pdf'}
-          fileSize={selectedFile ? `${(selectedFile.size / (1024 * 1024)).toFixed(1)} MB` : '2.4 MB'}
+          fileName={selectedFile?.name || 'Scanned_Document.pdf'}
+          fileSize={selectedFile ? `${(selectedFile.size / (1024 * 1024)).toFixed(1)} MB` : '0.5 MB'}
           onBack={handleBackPrompt}
           onSave={handleSaveDocument}
           isSaving={isSaving}

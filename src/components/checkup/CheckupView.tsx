@@ -34,6 +34,7 @@ import { CheckupSummaryModal } from './CheckupSummaryModal';
 import { CheckupHistoryDrawer } from './CheckupHistoryDrawer';
 import { CheckupFilterDrawer } from './CheckupFilterDrawer';
 import type { CheckupFilterState } from './CheckupFilterDrawer';
+import { patientClinicalApi } from '../../services/dhrApis';
 
 interface UserProfile {
   name: string;
@@ -56,9 +57,10 @@ export const CheckupView: React.FC<CheckupViewProps> = ({
   const { t } = useLanguage();
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
-  // MAIN STATE
+  // MAIN STATE (Hydrated from MySQL)
   const [categories] = useState<CheckupCategory[]>(INITIAL_CATEGORIES);
-  const [history, setHistory] = useState<CheckupHistoryItem[]>(INITIAL_CHECKUP_HISTORY);
+  const [history, setHistory] = useState<CheckupHistoryItem[]>([]);
+  const [draftId, setDraftId] = useState<string | null>(null);
   const [savedDraftStep, setSavedDraftStep] = useState<number | null>(null);
   const [_savedDraftAnswers, setSavedDraftAnswers] = useState<CheckupAnswers | null>(null);
 
@@ -77,27 +79,50 @@ export const CheckupView: React.FC<CheckupViewProps> = ({
   const [summaryTarget, setSummaryTarget] = useState<CheckupHistoryItem | null>(null);
   const [historyDrawerTarget, setHistoryDrawerTarget] = useState<CheckupHistoryItem | null>(null);
 
-  // Load from localStorage on mount
-  useEffect(() => {
-    const savedHistoryStr = localStorage.getItem('user_checkup_history');
-    if (savedHistoryStr) {
-      try {
-        setHistory(JSON.parse(savedHistoryStr));
-      } catch (e) {
-        console.error(e);
+  const loadCheckups = async () => {
+    try {
+      const res = await patientClinicalApi.getCheckups();
+      if (res?.data && Array.isArray(res.data)) {
+        const completed = res.data.filter((c: any) => c.status !== 'DRAFT');
+        const draft = res.data.find((c: any) => c.status === 'DRAFT');
+        setHistory(
+          completed.map((c: any) => {
+            let parsedAns: any = {};
+            if (c.answersJson) {
+              try { parsedAns = JSON.parse(c.answersJson); } catch { }
+            }
+            return {
+              id: c.id,
+              type: c.type || 'Comprehensive Health Check-Up',
+              date: c.completedAt || c.createdAt
+                ? new Date(c.completedAt || c.createdAt).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
+                : '—',
+              status: 'Completed',
+              score: Number(c.completionScore ?? 85),
+              summary: c.summaryNotes || 'Health check-up completed and saved to MySQL.',
+              answers: parsedAns,
+            } as any;
+          })
+        );
+        if (draft) {
+          setDraftId(draft.id);
+          setSavedDraftStep(draft.draftStep || 1);
+          if (draft.answersJson) {
+            try { setSavedDraftAnswers(JSON.parse(draft.answersJson)); } catch { }
+          }
+        } else {
+          setDraftId(null);
+          setSavedDraftStep(null);
+          setSavedDraftAnswers(null);
+        }
       }
+    } catch {
+      setHistory([]);
     }
+  };
 
-    const savedDraftStr = localStorage.getItem('user_checkup_draft');
-    if (savedDraftStr) {
-      try {
-        const parsed = JSON.parse(savedDraftStr);
-        setSavedDraftStep(parsed.step);
-        setSavedDraftAnswers(parsed.answers);
-      } catch (e) {
-        console.error(e);
-      }
-    }
+  useEffect(() => {
+    loadCheckups();
   }, []);
 
   const showToast = (msg: string) => {
@@ -105,42 +130,61 @@ export const CheckupView: React.FC<CheckupViewProps> = ({
     setTimeout(() => setToastMessage(null), 3000);
   };
 
-  const saveHistoryState = (updated: CheckupHistoryItem[]) => {
-    setHistory(updated);
-    localStorage.setItem('user_checkup_history', JSON.stringify(updated));
+  const handleSaveDraft = async (step: number, answers: CheckupAnswers) => {
+    try {
+      const res = await patientClinicalApi.saveCheckup({
+        id: draftId || undefined,
+        type: 'Health Check-Up',
+        status: 'DRAFT',
+        draftStep: step,
+        answers,
+      });
+      if (res?.data?.id) setDraftId(res.data.id);
+      setSavedDraftStep(step);
+      setSavedDraftAnswers(answers);
+      showToast(`Draft saved at Step ${step} in database`);
+    } catch {
+      showToast('Failed to save check-up draft');
+    }
   };
 
-  const handleSaveDraft = (step: number, answers: CheckupAnswers) => {
-    setSavedDraftStep(step);
-    setSavedDraftAnswers(answers);
-    localStorage.setItem('user_checkup_draft', JSON.stringify({ step, answers }));
-    showToast(`Draft saved at Step ${step}`);
-  };
-
-  const handleDiscardDraft = () => {
+  const handleDiscardDraft = async () => {
+    if (draftId) {
+      await patientClinicalApi.deleteCheckup(draftId).catch(() => { });
+    }
+    setDraftId(null);
     setSavedDraftStep(null);
     setSavedDraftAnswers(null);
-    localStorage.removeItem('user_checkup_draft');
     showToast('Check-up draft discarded');
   };
 
-  const handleSubmitCompleted = (newRecord: CheckupHistoryItem) => {
-    const updatedHistory = [newRecord, ...history];
-    saveHistoryState(updatedHistory);
-    // Clear draft if any
-    setSavedDraftStep(null);
-    setSavedDraftAnswers(null);
-    localStorage.removeItem('user_checkup_draft');
-
-    setWizardOpen(false);
-    setSummaryTarget(newRecord);
-    showToast('✓ Health Check-Up completed successfully!');
+  const handleSubmitCompleted = async (newRecord: CheckupHistoryItem) => {
+    try {
+      await patientClinicalApi.saveCheckup({
+        id: draftId || undefined,
+        type: newRecord.type,
+        status: 'COMPLETED',
+        completionScore: (newRecord as any).score ?? 90,
+        answers: (newRecord as any).answers || {},
+        summaryNotes: (newRecord as any).summary || 'Completed guided health check-up',
+      });
+      await loadCheckups();
+      setWizardOpen(false);
+      setSummaryTarget(newRecord);
+      showToast('✓ Health Check-Up saved to MySQL!');
+    } catch {
+      showToast('Failed to save completed check-up');
+    }
   };
 
-  const handleDeleteRecord = (id: string) => {
-    const updated = history.filter((h) => h.id !== id);
-    saveHistoryState(updated);
-    showToast('Check-up record deleted');
+  const handleDeleteRecord = async (id: string) => {
+    try {
+      await patientClinicalApi.deleteCheckup(id);
+      await loadCheckups();
+      showToast('Check-up record deleted from database');
+    } catch {
+      showToast('Failed to delete check-up record');
+    }
   };
 
   // FILTERED HISTORY
@@ -287,13 +331,13 @@ export const CheckupView: React.FC<CheckupViewProps> = ({
             <p className="text-xs text-slate-500 dark:text-slate-400 font-medium mt-0.5">Overview of your current check-up completion status</p>
           </div>
           <div className="flex items-center gap-3">
-             <div className="flex items-center gap-2 bg-teal-50 dark:bg-teal-500/10 px-4 py-2.5 rounded-xl border border-teal-100 dark:border-teal-500/20 shadow-sm">
-               <Activity className="w-4 h-4 text-teal-600 dark:text-teal-400" />
-               <span className="text-xs font-bold text-teal-800 dark:text-teal-300">Overall Progress:</span>
-               <span className="text-sm font-extrabold text-teal-600 dark:text-teal-400 font-mono">
-                 {Math.round(categories.reduce((acc, cat) => acc + cat.progressPercentage, 0) / (categories.length || 1))}%
-               </span>
-             </div>
+            <div className="flex items-center gap-2 bg-teal-50 dark:bg-teal-500/10 px-4 py-2.5 rounded-xl border border-teal-100 dark:border-teal-500/20 shadow-sm">
+              <Activity className="w-4 h-4 text-teal-600 dark:text-teal-400" />
+              <span className="text-xs font-bold text-teal-800 dark:text-teal-300">Overall Progress:</span>
+              <span className="text-sm font-extrabold text-teal-600 dark:text-teal-400 font-mono">
+                {Math.round(categories.reduce((acc, cat) => acc + cat.progressPercentage, 0) / (categories.length || 1))}%
+              </span>
+            </div>
           </div>
         </div>
 
@@ -302,26 +346,26 @@ export const CheckupView: React.FC<CheckupViewProps> = ({
             <div key={cat.id} className="bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm border border-slate-200/60 dark:border-slate-800/60 p-5 rounded-3xl flex flex-col items-center text-center space-y-4 shadow-lg shadow-slate-200/40 dark:shadow-none hover:shadow-xl hover:-translate-y-1 transition-all group relative overflow-hidden">
               <div className="relative w-20 h-20 flex items-center justify-center group-hover:scale-105 transition-transform">
                 <svg className="w-full h-full -rotate-90" viewBox="0 0 80 80">
-                  <circle 
-                    cx="40" 
-                    cy="40" 
-                    r="32" 
-                    stroke="currentColor" 
-                    strokeWidth="6" 
-                    fill="transparent" 
-                    className="text-slate-100 dark:text-slate-800" 
+                  <circle
+                    cx="40"
+                    cy="40"
+                    r="32"
+                    stroke="currentColor"
+                    strokeWidth="6"
+                    fill="transparent"
+                    className="text-slate-100 dark:text-slate-800"
                   />
-                  <circle 
-                    cx="40" 
-                    cy="40" 
-                    r="32" 
-                    stroke="currentColor" 
-                    strokeWidth="6" 
-                    fill="transparent" 
-                    strokeDasharray={201.06} 
-                    strokeDashoffset={201.06 - (cat.progressPercentage / 100) * 201.06} 
-                    strokeLinecap="round" 
-                    className={`transition-all duration-1000 ease-out ${cat.status === 'Completed' ? 'text-emerald-400' : cat.status === 'In Progress' ? 'text-teal-400' : 'text-slate-200'}`} 
+                  <circle
+                    cx="40"
+                    cy="40"
+                    r="32"
+                    stroke="currentColor"
+                    strokeWidth="6"
+                    fill="transparent"
+                    strokeDasharray={201.06}
+                    strokeDashoffset={201.06 - (cat.progressPercentage / 100) * 201.06}
+                    strokeLinecap="round"
+                    className={`transition-all duration-1000 ease-out ${cat.status === 'Completed' ? 'text-emerald-400' : cat.status === 'In Progress' ? 'text-teal-400' : 'text-slate-200'}`}
                   />
                 </svg>
                 <div className="absolute inset-0 flex items-center justify-center text-slate-500 dark:text-slate-400 group-hover:text-teal-500 transition-colors drop-shadow-sm pointer-events-none">
@@ -341,13 +385,12 @@ export const CheckupView: React.FC<CheckupViewProps> = ({
                 <h4 className="font-bold text-slate-700 dark:text-slate-300 text-xs mt-1 leading-tight">{cat.title}</h4>
               </div>
 
-              <span className={`text-[10px] font-extrabold font-mono px-3 py-1 rounded-full border shadow-sm w-full mt-auto ${
-                cat.status === 'Completed'
-                  ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                  : cat.status === 'In Progress'
+              <span className={`text-[10px] font-extrabold font-mono px-3 py-1 rounded-full border shadow-sm w-full mt-auto ${cat.status === 'Completed'
+                ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                : cat.status === 'In Progress'
                   ? 'bg-teal-50 text-teal-700 border-teal-200'
                   : 'bg-slate-50 dark:bg-slate-950 text-slate-600 dark:text-slate-400 border-slate-200 dark:border-slate-800'
-              }`}>
+                }`}>
                 {cat.status}
               </span>
             </div>

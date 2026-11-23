@@ -29,14 +29,16 @@ export const AddMedicineModal: React.FC<AddMedicineModalProps> = ({
   const [route, setRoute] = useState<MedicineItem['route']>('Oral');
 
   // STEP 2: SCHEDULE
-  const [startDate, setStartDate] = useState('2026-08-23');
-  const [endDate, setEndDate] = useState('2026-09-23');
+  const todayIso = new Date().toISOString().split('T')[0];
+  const nextMonthIso = new Date(Date.now() + 30 * 86400000).toISOString().split('T')[0];
+  const [startDate, setStartDate] = useState(todayIso);
+  const [endDate, setEndDate] = useState(nextMonthIso);
   const [doseTimes, setDoseTimes] = useState<string[]>(['08:00 AM', '12:30 PM']);
 
   // STEP 3: PRESCRIBER
-  const [doctor, setDoctor] = useState('Dr. Rajesh Kumar');
-  const [hospital, setHospital] = useState('Apollo Hospital');
-  const [prescriptionNo, setPrescriptionNo] = useState('RX-2026-9481');
+  const [doctor, setDoctor] = useState('');
+  const [hospital, setHospital] = useState('');
+  const [prescriptionNo, setPrescriptionNo] = useState('');
 
   // STEP 4: INSTRUCTIONS
   const [instructions, setInstructions] = useState('Take after meal with warm water.');
@@ -64,8 +66,8 @@ export const AddMedicineModal: React.FC<AddMedicineModalProps> = ({
   const handleSave = () => {
     if (!name || !name.trim()) return;
 
-    let formattedStart = '23 Aug 2026';
-    let formattedEnd = '23 Sep 2026';
+    let formattedStart = new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+    let formattedEnd = new Date(Date.now() + 30 * 86400000).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
     try {
       if (startDate) formattedStart = new Date(startDate).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
       if (endDate) formattedEnd = new Date(endDate).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
@@ -83,8 +85,8 @@ export const AddMedicineModal: React.FC<AddMedicineModalProps> = ({
       times: doseTimes.length > 0 ? doseTimes : ['08:00 AM', '12:30 PM'],
       startDate: formattedStart,
       endDate: formattedEnd,
-      prescribedBy: doctor ? doctor.trim() : 'Dr. Rajesh Kumar',
-      hospital: hospital ? hospital.trim() : 'Apollo Hospital',
+      prescribedBy: doctor ? doctor.trim() : 'Attending Physician',
+      hospital: hospital ? hospital.trim() : 'Medical Clinic',
       purpose: `${name.trim()} therapy as prescribed`,
       instructions: instructions ? instructions.trim() : 'Take as instructed by doctor.',
       foodInstruction: foodInstruction || 'After Food',
@@ -343,7 +345,7 @@ export const AddMedicineModal: React.FC<AddMedicineModalProps> = ({
                 type="text"
                 value={doctor}
                 onChange={(e) => setDoctor(e.target.value)}
-                placeholder="e.g. Dr. Rajesh Kumar"
+                placeholder="e.g. Attending Physician"
                 className="w-full px-4 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white font-semibold text-xs focus:outline-none focus:border-[#00a896]"
               />
             </div>
@@ -356,7 +358,7 @@ export const AddMedicineModal: React.FC<AddMedicineModalProps> = ({
                 type="text"
                 value={hospital}
                 onChange={(e) => setHospital(e.target.value)}
-                placeholder="e.g. Apollo Hospital"
+                placeholder="e.g. City Medical Center"
                 className="w-full px-4 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white font-semibold text-xs focus:outline-none focus:border-[#00a896]"
               />
             </div>
@@ -369,7 +371,7 @@ export const AddMedicineModal: React.FC<AddMedicineModalProps> = ({
                 type="text"
                 value={prescriptionNo}
                 onChange={(e) => setPrescriptionNo(e.target.value)}
-                placeholder="e.g. RX-2026-9481"
+                placeholder="Optional prescription reference"
                 className="w-full px-4 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white font-mono text-xs focus:outline-none focus:border-[#00a896]"
               />
             </div>

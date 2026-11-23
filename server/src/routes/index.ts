@@ -28,6 +28,10 @@ import patientHealthTopicRoutes from './patientHealthTopic.routes';
 import healthShortsRoutes from './healthShorts.routes';
 import settingsRoutes from './settings.routes';
 import uploadRoutes from './upload.routes';
+import patientClinicalRoutes from './patientClinical.routes';
+import pharmacyOpsRoutes from './pharmacyOps.routes';
+import nurseOpsRoutes from './nurseOps.routes';
+import patientExtendedRoutes from './patientExtended.routes';
 
 const router = Router();
 
@@ -132,5 +136,17 @@ router.use('/settings', settingsRoutes);
 
 // Secure File Upload APIs
 router.use('/upload', uploadRoutes);
+
+// Patient Clinical History, Wellness, Emergency/SOS, Analytics Goals & Checkups
+router.use('/patient-clinical', patientClinicalRoutes);
+
+// Pharmacy Operations: Scoped Inventory, Invoices, Supplier POs, Schedule Audit, Interactions & Order Chat
+router.use('/pharmacy-ops', pharmacyOpsRoutes);
+
+// Nurse Operations: Inventory, Restock Requests, Clinical Alerts & Care Request Notes/Cancel
+router.use('/nurse-ops', nurseOpsRoutes);
+
+// Extended Patient Modules: Family Connect, Hospitals/Reviews, Lab Tests, Sanitation, Insights, Diet Assessment, AI Conversations
+router.use('/patient-extended', patientExtendedRoutes);
 
 export default router;

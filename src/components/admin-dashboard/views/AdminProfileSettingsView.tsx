@@ -4,7 +4,7 @@ import {
   User, Mail, Phone, Shield, ShieldCheck, Lock, CheckCircle2, 
   Building2, KeyRound, Calendar, Save, Eye, EyeOff, AlertCircle
 } from 'lucide-react';
-import { adminApi, authApi } from '../../../services/dhrApis';
+import { adminApi, profileApi } from '../../../services/dhrApis';
 import { AdminToast, type AdminToastType } from '../common/AdminToast';
 
 interface AdminProfileSettingsViewProps {
@@ -24,34 +24,22 @@ export const AdminProfileSettingsView: React.FC<AdminProfileSettingsViewProps> =
   const [savingProfile, setSavingProfile] = useState(false);
   const [savingPassword, setSavingPassword] = useState(false);
 
-  const resolveAdminDefaultName = (targetEmail?: string, role?: string, propName?: string) => {
-    if (propName && propName.trim() && propName.toLowerCase() !== 'superadmin' && propName.toLowerCase() !== 'admin') {
-      return propName;
-    }
-    const cleanEmail = (targetEmail || '').toLowerCase();
-    if (cleanEmail === 'superadmin@dhr-medicare.in' || (role && role.includes('Super'))) {
-      return 'Vikramaditya Rao';
-    }
-    if (cleanEmail === 'admin.kavita@dhr-medicare.in' || cleanEmail === 'admin@health.com') {
-      return 'Kavita Sundaram';
-    }
-    return 'Vikramaditya Rao';
-  };
-
-  // Profile info state
-  const [name, setName] = useState(() => resolveAdminDefaultName(user?.email, currentRole, user?.name));
-  const [email, setEmail] = useState(user?.email || (currentRole === 'Super Admin' ? 'superadmin@dhr-medicare.in' : 'admin.kavita@dhr-medicare.in'));
-  const [phone, setPhone] = useState('+91 98408 90123');
-  const [department, setDepartment] = useState(currentRole === 'Super Admin' ? 'National Health Governance Directorate' : 'Hospital Executive Administration');
-  const [designation, setDesignation] = useState(currentRole === 'Super Admin' ? 'Chief Information Security & Governance Officer' : 'Senior Health Facility Administrator');
-  const [location, setLocation] = useState('New Delhi / Chennai Headquarters');
+  // Profile info state (Hydrated from MySQL via profileApi.getProfile())
+  const rawInitName = user?.name || '';
+  const initName = rawInitName.toLowerCase() === 'system administrator' || rawInitName.toLowerCase() === 'hospital administrator'
+    ? (currentRole === 'Super Admin' ? 'Super Admin' : 'Admin')
+    : rawInitName;
+  const [name, setName] = useState(initName);
+  const [email, setEmail] = useState(user?.email || '');
+  const [phone, setPhone] = useState('');
+  const [department, setDepartment] = useState('');
+  const [designation, setDesignation] = useState('');
+  const [location, setLocation] = useState('');
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
 
   // Password reset state
-  const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
-  const [showCurrentPassword, setShowCurrentPassword] = useState(false);
   const [showNewPassword, setShowNewPassword] = useState(false);
 
   // Toast
@@ -64,23 +52,30 @@ export const AdminProfileSettingsView: React.FC<AdminProfileSettingsViewProps> =
   };
 
   useEffect(() => {
-    // Fetch live user info from auth/me
-    authApi.getCurrentUser()
+    setLoading(true);
+    profileApi
+      .getProfile()
       .then((res) => {
         if (res && res.data) {
-          const u = res.data;
-          setCurrentUserId(u.id);
-          if (u.email) setEmail(u.email);
-          if (u.phoneNumber) setPhone(u.phoneNumber);
-          const p = u.profile || {};
-          let resolvedName = p.fullName;
-          if (!resolvedName || resolvedName === 'superadmin' || resolvedName === 'admin') {
-            resolvedName = resolveAdminDefaultName(u.email, currentRole, user?.name);
-          }
-          if (resolvedName) setName(resolvedName);
+          const u: any = res.data;
+          const p: any = u.profile || {};
+          setCurrentUserId(u.id || null);
+          const rawN = u.fullName || p.fullName || user?.name || '';
+          const cleanN = rawN.toLowerCase() === 'system administrator' || rawN.toLowerCase() === 'hospital administrator'
+            ? (currentRole === 'Super Admin' ? 'Super Admin' : 'Admin')
+            : rawN;
+          setName(cleanN);
+          setEmail(u.email || user?.email || '');
+          setPhone(u.phoneNumber || u.phone || p.phoneNumber || '');
+          setDepartment(u.department || p.department || '');
+          setDesignation(u.designation || p.designation || '');
+          setLocation(u.location || p.location || '');
         }
       })
-      .catch(() => {});
+      .catch((err: any) => {
+        showToast(err?.message || 'Failed to load profile from database', 'error');
+      })
+      .finally(() => setLoading(false));
   }, [currentRole]);
 
   const handleSaveProfile = async (e: React.FormEvent) => {
@@ -88,24 +83,25 @@ export const AdminProfileSettingsView: React.FC<AdminProfileSettingsViewProps> =
     setSavingProfile(true);
 
     try {
-      if (currentUserId) {
-        await adminApi.updateUser(currentUserId, {
-          fullName: name,
-          phoneNumber: phone,
-        });
+      const res = await profileApi.updateAdminProfile({
+        fullName: name.trim(),
+        phoneNumber: phone.trim(),
+        department: department.trim(),
+        designation: designation.trim(),
+        location: location.trim(),
+      });
+
+      if (res?.data) {
+        const u: any = res.data;
+        if (u.fullName) setName(u.fullName);
+        if (u.phoneNumber !== undefined) setPhone(u.phoneNumber || '');
+        if (u.department !== undefined) setDepartment(u.department || '');
+        if (u.designation !== undefined) setDesignation(u.designation || '');
+        if (u.location !== undefined) setLocation(u.location || '');
       }
 
-      // Update cached user in localStorage & dispatch update event
-      try {
-        const stored = localStorage.getItem('app_user');
-        const parsed = stored ? JSON.parse(stored) : {};
-        parsed.name = name;
-        parsed.email = email;
-        localStorage.setItem('app_user', JSON.stringify(parsed));
-        window.dispatchEvent(new Event('app_user_updated'));
-      } catch {}
-
-      showToast('Administrator profile details updated successfully', 'success');
+      window.dispatchEvent(new Event('app_user_updated'));
+      showToast('Administrator profile details persisted to MySQL', 'success');
     } catch (err: any) {
       showToast(err?.message || 'Failed to update profile details', 'error');
     } finally {
@@ -126,11 +122,11 @@ export const AdminProfileSettingsView: React.FC<AdminProfileSettingsViewProps> =
 
     setSavingPassword(true);
     try {
-      if (currentUserId) {
-        await adminApi.resetPassword(currentUserId, newPassword);
+      if (!currentUserId) {
+        throw new Error('Active user session not loaded yet.');
       }
+      await adminApi.resetPassword(currentUserId, newPassword);
       showToast('Administrative password updated securely', 'success');
-      setCurrentPassword('');
       setNewPassword('');
       setConfirmPassword('');
     } catch (err: any) {
@@ -149,14 +145,14 @@ export const AdminProfileSettingsView: React.FC<AdminProfileSettingsViewProps> =
         <div className="relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-6">
           <div className="flex items-center gap-5">
             <div className="w-20 h-20 rounded-3xl bg-white/15 backdrop-blur-md border border-white/30 flex items-center justify-center text-3xl font-black text-white shadow-lg">
-              {name.charAt(0)}
+              {(name || currentRole).charAt(0).toUpperCase()}
             </div>
             <div>
-              <h1 className="text-2xl font-black tracking-tight">{name}</h1>
-              <p className="text-teal-100 text-sm mt-1">{designation}</p>
+              <h1 className="text-2xl font-black tracking-tight">{name || currentRole}</h1>
+              <p className="text-teal-100 text-sm mt-1">{designation || 'Not Recorded'}</p>
               <div className="flex flex-wrap items-center gap-4 text-xs text-teal-200 mt-3">
-                <span className="flex items-center gap-1.5"><Mail className="w-3.5 h-3.5" /> {email}</span>
-                <span className="flex items-center gap-1.5"><Building2 className="w-3.5 h-3.5" /> {department}</span>
+                <span className="flex items-center gap-1.5"><Mail className="w-3.5 h-3.5" /> {email || 'Not Recorded'}</span>
+                <span className="flex items-center gap-1.5"><Building2 className="w-3.5 h-3.5" /> {department || 'Not Recorded'}</span>
                 <span className="flex items-center gap-1.5"><ShieldCheck className="w-3.5 h-3.5 text-emerald-300" /> Verified System Operator</span>
               </div>
             </div>
@@ -180,7 +176,7 @@ export const AdminProfileSettingsView: React.FC<AdminProfileSettingsViewProps> =
               <p className="text-xs text-slate-600 dark:text-slate-400">
                 {currentRole === 'Super Admin'
                   ? 'Full administrative authority: Hospital approvals, RBAC permissions, audit radar, and health configuration.'
-                  : 'Facility management authority: Doctor directories, patient registry, and operational supervision.'}
+                  : 'Administrative authority: Staff directories, patient registry, and platform operational supervision.'}
               </p>
             </div>
 
@@ -268,6 +264,33 @@ export const AdminProfileSettingsView: React.FC<AdminProfileSettingsViewProps> =
                     type="text"
                     value={department}
                     onChange={(e) => setDepartment(e.target.value)}
+                    placeholder="e.g. System Administration Directorate"
+                    className="w-full px-4 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-teal-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-xs font-bold text-slate-600 dark:text-slate-400 block mb-1.5">
+                    Designation / Title
+                  </label>
+                  <input
+                    type="text"
+                    value={designation}
+                    onChange={(e) => setDesignation(e.target.value)}
+                    placeholder="e.g. System Administrator"
+                    className="w-full px-4 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-teal-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-xs font-bold text-slate-600 dark:text-slate-400 block mb-1.5">
+                    Location / Headquarters
+                  </label>
+                  <input
+                    type="text"
+                    value={location}
+                    onChange={(e) => setLocation(e.target.value)}
+                    placeholder="e.g. Chennai, Tamil Nadu"
                     className="w-full px-4 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-teal-500"
                   />
                 </div>
@@ -276,8 +299,8 @@ export const AdminProfileSettingsView: React.FC<AdminProfileSettingsViewProps> =
               <div className="flex justify-end pt-4">
                 <button
                   type="submit"
-                  disabled={savingProfile}
-                  className="px-6 py-2.5 rounded-xl bg-[#00a896] hover:bg-[#008f80] text-white text-xs font-black shadow-md cursor-pointer transition-all active:scale-95 flex items-center gap-2"
+                  disabled={savingProfile || loading}
+                  className="px-6 py-2.5 rounded-xl bg-[#00a896] hover:bg-[#008f80] text-white text-xs font-black shadow-md cursor-pointer transition-all active:scale-95 flex items-center gap-2 disabled:opacity-60"
                 >
                   <Save className="w-4 h-4" /> {savingProfile ? 'Saving Changes...' : 'Save Profile Details'}
                 </button>

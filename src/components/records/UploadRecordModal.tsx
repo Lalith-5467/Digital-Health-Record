@@ -1,7 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { X, Upload, FileText, CheckCircle2, FilePlus, Scan } from 'lucide-react';
 import type { MedicalRecordItem } from './recordsData';
+import { uploadApi } from '../../services/dhrApis';
 
 interface UploadRecordModalProps {
   isOpen: boolean;
@@ -26,63 +27,69 @@ export const UploadRecordModal: React.FC<UploadRecordModalProps> = ({
   const [title, setTitle] = useState('');
   const [type, setType] = useState<MedicalRecordItem['type']>('Lab Report');
   const [date, setDate] = useState(new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }));
-  const [doctor, setDoctor] = useState('Dr. Rajesh Kumar');
-  const [hospital, setHospital] = useState('Apollo Hospital');
+  const [doctor, setDoctor] = useState('');
+  const [hospital, setHospital] = useState('');
   const [notes, setNotes] = useState('');
   const [fileName, setFileName] = useState('');
   const [fileSize, setFileSize] = useState('');
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   if (!isOpen) return null;
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
+      setSelectedFile(file);
       setFileName(file.name);
-      setFileSize(`${(file.size / (1024 * 1024)).toFixed(1)} MB`);
-      setTitle(file.name.replace(/\.[^/.]+$/, "").replace(/[-_]/g, " "));
+      setFileSize(`${(file.size / (1024 * 1024)).toFixed(2)} MB`);
+      setTitle(file.name.replace(/\.[^/.]+$/, '').replace(/[-_]/g, ' '));
       setStep(2);
     }
   };
 
-  const handleSimulateDrop = () => {
-    setFileName('CBC_Blood_Panel_Aug2026.pdf');
-    setFileSize('2.4 MB');
-    setTitle('Complete Blood Count (CBC) Panel');
-    setType('Lab Report');
-    setStep(2);
-  };
-
-  const handleStartUpload = () => {
+  const handleStartUpload = async () => {
     setIsUploading(true);
-    setProgress(0);
+    setProgress(25);
+    try {
+      let uploadedUrl: string | undefined;
+      let resolvedFileName = fileName || 'document.pdf';
+      let resolvedFileSize = fileSize || '0.1 MB';
 
-    const interval = setInterval(() => {
-      setProgress((prev) => {
-        if (prev >= 100) {
-          clearInterval(interval);
-          setTimeout(() => {
-            const rec: MedicalRecordItem = {
-              id: `REC-${Date.now().toString().slice(-6)}`,
-              title: title || 'Medical Record Document',
-              type: type || 'Lab Report',
-              date: date || new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }),
-              timestamp: Date.now(),
-              doctor: doctor || 'Dr. Arun Kumar',
-              hospital: hospital || 'Apollo Hospital',
-              status: 'Normal',
-              fileName: fileName || 'document.pdf',
-              fileSize: fileSize || '2.4 MB',
-              notes: notes || undefined
-            };
-            if (onAddRecord) onAddRecord(rec);
-            if (onUploadComplete) onUploadComplete(rec);
-            onClose();
-          }, 300);
-          return 100;
+      if (selectedFile) {
+        setProgress(55);
+        const upRes = await uploadApi.uploadImage(selectedFile, 'MEDICAL_RECORD');
+        if (upRes?.data?.url) {
+          uploadedUrl = upRes.data.url;
+          resolvedFileName = upRes.data.originalName || resolvedFileName;
         }
-        return prev + 25;
-      });
-    }, 180);
+      }
+
+      setProgress(100);
+      const rec: MedicalRecordItem & { fileUrl?: string } = {
+        id: `REC-${Date.now().toString().slice(-6)}`,
+        title: title || 'Medical Record Document',
+        type: type || 'Lab Report',
+        date: date || new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }),
+        timestamp: Date.now(),
+        doctor: doctor || 'Attending Physician',
+        hospital: hospital || 'Medical Facility',
+        status: 'Normal',
+        fileName: resolvedFileName,
+        fileSize: resolvedFileSize,
+        fileUrl: uploadedUrl,
+        notes: notes || undefined,
+      };
+      if (onAddRecord) await onAddRecord(rec);
+      if (onUploadComplete) onUploadComplete(rec);
+      setSelectedFile(null);
+      setStep(1);
+      onClose();
+    } catch (err) {
+      console.error('Upload failed:', err);
+    } finally {
+      setIsUploading(false);
+    }
   };
 
   return (
@@ -131,7 +138,7 @@ export const UploadRecordModal: React.FC<UploadRecordModalProps> = ({
             <div className="space-y-4 text-xs">
               {/* DRAG AND DROP ZONE */}
               <div
-                onClick={handleSimulateDrop}
+                onClick={() => fileInputRef.current?.click()}
                 className="p-8 rounded-2xl border-2 border-dashed border-slate-200 dark:border-slate-700 hover:border-[#00a896] bg-slate-50 dark:bg-slate-900/50 hover:bg-slate-100 dark:hover:bg-slate-900 transition-all text-center space-y-3 cursor-pointer group"
               >
                 <div className="w-12 h-12 rounded-2xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400 group-hover:text-[#00a896] group-hover:bg-teal-500/10 flex items-center justify-center mx-auto transition-all">
@@ -148,6 +155,7 @@ export const UploadRecordModal: React.FC<UploadRecordModalProps> = ({
                 </p>
 
                 <input
+                  ref={fileInputRef}
                   type="file"
                   accept=".pdf,.jpg,.jpeg,.png"
                   onChange={handleFileSelect}

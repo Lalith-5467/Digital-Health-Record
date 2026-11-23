@@ -20,6 +20,17 @@ import {
 
 const router = Router();
 
+// Router-level guard: View-only accounts (secondary Super Admin) cannot execute mutating operations
+router.use((req, res, next) => {
+  if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method) && req.user?.isViewOnly) {
+    return res.status(403).json({
+      success: false,
+      message: 'Access denied: View-only Super Administrator clearance cannot modify system settings',
+    });
+  }
+  next();
+});
+
 // Public: Get published global settings and branding
 router.get('/', getSettings);
 

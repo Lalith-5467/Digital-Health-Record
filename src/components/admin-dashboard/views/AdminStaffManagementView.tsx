@@ -6,9 +6,7 @@ import {
   Plus, RefreshCw, X, Check, Award
 } from 'lucide-react';
 import { adminApi } from '../../../services/dhrApis';
-import { 
-  getStoredHospitals, type HospitalAdminRecord 
-} from '../../../utils/adminMockStorage';
+import type { HospitalAdminRecord } from '../../../utils/adminMockStorage';
 import { AdminToast } from '../common/AdminToast';
 import type { AdminToastType } from '../common/AdminToast';
 import { AdminDeleteConfirmModal } from '../modals/AdminDeleteConfirmModal';
@@ -114,9 +112,6 @@ export const AdminStaffManagementView: React.FC<AdminStaffManagementViewProps> =
     avatarBg,
   } = roleConfig;
 
-  const isMockId = (id: string) =>
-    id.startsWith('DOC-') || id.startsWith('NUR-') || id.startsWith('PHARM-') || id.startsWith('CG-');
-
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<'All' | 'Active' | 'Suspended'>('All');
   const [hospitalFilter, setHospitalFilter] = useState<string>(defaultHospital || 'All');
@@ -127,14 +122,26 @@ export const AdminStaffManagementView: React.FC<AdminStaffManagementViewProps> =
   useEffect(() => {
     if (defaultHospital) {
       setHospitalFilter(defaultHospital);
+      setAddHospital(defaultHospital);
     }
   }, [defaultHospital]);
 
   useEffect(() => {
-    setAvailableHospitals(getStoredHospitals());
-    const handleHospUpdate = () => setAvailableHospitals(getStoredHospitals());
-    window.addEventListener('admin_hospitals_updated', handleHospUpdate);
-    return () => window.removeEventListener('admin_hospitals_updated', handleHospUpdate);
+    const loadHospitals = () => {
+      adminApi
+        .getHospitals()
+        .then((res) => {
+          if (res?.data && Array.isArray(res.data)) {
+            setAvailableHospitals(res.data);
+          } else {
+            setAvailableHospitals([]);
+          }
+        })
+        .catch(() => setAvailableHospitals([]));
+    };
+    loadHospitals();
+    window.addEventListener('admin_hospitals_updated', loadHospitals);
+    return () => window.removeEventListener('admin_hospitals_updated', loadHospitals);
   }, []);
 
   // Modals
@@ -158,7 +165,7 @@ export const AdminStaffManagementView: React.FC<AdminStaffManagementViewProps> =
   const [addPhone, setAddPhone] = useState('');
   const [addPassword, setAddPassword] = useState('Staff@123');
   const [addField, setAddField] = useState('');
-  const [addHospital, setAddHospital] = useState('MediCare Central Hospital');
+  const [addHospital, setAddHospital] = useState(defaultHospital || 'MediCare Central Hospital');
   const [addLicense, setAddLicense] = useState('');
 
   // Delete Confirmation Modal State
@@ -174,23 +181,6 @@ export const AdminStaffManagementView: React.FC<AdminStaffManagementViewProps> =
     setToastType(toastT);
   };
 
-  // Local storage helper for mock staff overrides
-  const getMockOverrides = (): Record<string, Partial<StaffMember>> => {
-    try {
-      return JSON.parse(localStorage.getItem('admin_mock_staff_overrides') || '{}');
-    } catch {
-      return {};
-    }
-  };
-
-  const setMockOverride = (id: string, updates: Partial<StaffMember>) => {
-    try {
-      const current = getMockOverrides();
-      current[id] = { ...(current[id] || {}), ...updates };
-      localStorage.setItem('admin_mock_staff_overrides', JSON.stringify(current));
-    } catch {}
-  };
-
   const fetchStaff = async (isManual = false) => {
     setLoading(true);
     try {
@@ -200,62 +190,59 @@ export const AdminStaffManagementView: React.FC<AdminStaffManagementViewProps> =
         raw = Array.isArray(res.data) ? res.data : (res.data as any).users || [];
       }
 
-      const overrides = getMockOverrides();
-
       if (raw && raw.length > 0) {
         const mapped: StaffMember[] = raw.map((u: any) => {
           const isStaffActive = u.isActive === true || u.status === 'ACTIVE' || u.status === 'Active' || u.status === 'On Duty';
           const baseStatus: 'Active' | 'Suspended' = isStaffActive ? 'Active' : 'Suspended';
-          const overrideStatus = overrides[u.id]?.status;
 
           if (type === 'doctor') {
             const doc = u.doctor || u.profile || {};
             return {
               id: u.id,
-              name: overrides[u.id]?.name || doc.fullName || u.email.split('@')[0],
-              specialization: overrides[u.id]?.specialization || doc.speciality || 'General Practitioner',
-              hospital: overrides[u.id]?.hospital || doc.hospital || 'MediCare Central Hospital',
-              licenseNumber: overrides[u.id]?.licenseNumber || doc.licenseNumber || 'Verified In-System',
+              name: doc.fullName || u.email.split('@')[0],
+              specialization: doc.speciality || 'General Practitioner',
+              hospital: doc.hospital || '',
+              licenseNumber: doc.licenseNumber || 'Not Recorded',
               experienceYears: doc.experienceYears || null,
-              email: overrides[u.id]?.email || u.email,
-              phone: overrides[u.id]?.phone || u.phoneNumber || 'Not registered',
-              status: overrideStatus || baseStatus,
+              email: u.email,
+              phone: u.phoneNumber || 'Not registered',
+              status: baseStatus,
             };
           } else if (type === 'nurse') {
             const n = u.nurse || u.profile || {};
             return {
               id: u.id,
-              name: overrides[u.id]?.name || n.fullName || u.email.split('@')[0],
-              department: overrides[u.id]?.department || n.department || 'Clinical Inpatient Ward',
-              hospital: overrides[u.id]?.hospital || n.hospital || 'MediCare Central Hospital',
-              licenseNumber: overrides[u.id]?.licenseNumber || n.licenseNumber || 'Verified In-System',
-              email: overrides[u.id]?.email || u.email,
-              phone: overrides[u.id]?.phone || u.phoneNumber || 'Not registered',
-              status: overrideStatus || baseStatus,
+              name: n.fullName || u.email.split('@')[0],
+              department: n.department || 'Clinical Inpatient Ward',
+              hospital: n.hospital || '',
+              licenseNumber: n.licenseNumber || 'Not Recorded',
+              email: u.email,
+              phone: u.phoneNumber || 'Not registered',
+              status: baseStatus,
             };
           } else if (type === 'pharmacist') {
             const p = u.pharmacist || u.profile || {};
             return {
               id: u.id,
-              name: overrides[u.id]?.name || p.fullName || u.email.split('@')[0],
-              specialization: overrides[u.id]?.specialization || p.dispensary || 'Central Dispensary & OPD Pharmacy',
-              hospital: overrides[u.id]?.hospital || p.hospital || 'MediCare Central Hospital',
-              licenseNumber: overrides[u.id]?.licenseNumber || p.licenseNumber || p.councilRegNo || 'Verified In-System',
-              email: overrides[u.id]?.email || u.email,
-              phone: overrides[u.id]?.phone || u.phoneNumber || 'Not registered',
-              status: overrideStatus || baseStatus,
+              name: p.fullName || u.email.split('@')[0],
+              specialization: p.pharmacyName || p.dispensary || 'Dispensary',
+              hospital: p.pharmacyName || p.hospital || '',
+              licenseNumber: p.licenseNumber || p.pciRegistrationNo || 'Not Recorded',
+              email: u.email,
+              phone: u.phoneNumber || 'Not registered',
+              status: baseStatus,
             };
           } else {
             const c = u.caregiver || u.profile || {};
             return {
               id: u.id,
-              name: overrides[u.id]?.name || c.fullName || u.email.split('@')[0],
-              department: overrides[u.id]?.department || c.specialty || 'Elderly Homecare & Geriatric Care',
-              hospital: overrides[u.id]?.hospital || c.hospital || 'MediCare Central Hospital',
-              licenseNumber: overrides[u.id]?.licenseNumber || c.certificationId || c.licenseNumber || 'Verified In-System',
-              email: overrides[u.id]?.email || u.email,
-              phone: overrides[u.id]?.phone || u.phoneNumber || 'Not registered',
-              status: overrideStatus || baseStatus,
+              name: c.fullName || u.email.split('@')[0],
+              department: c.caregiverType || c.relationship || 'Caregiver Support',
+              hospital: c.city || c.hospital || '',
+              licenseNumber: c.govIdNumber || c.licenseNumber || 'Not Recorded',
+              email: u.email,
+              phone: u.phoneNumber || c.phone || 'Not registered',
+              status: baseStatus,
             };
           }
         });
@@ -273,9 +260,7 @@ export const AdminStaffManagementView: React.FC<AdminStaffManagementViewProps> =
     } catch (err: any) {
       console.error(`Failed to load ${roleLabel.toLowerCase()} roster:`, err?.message);
       setStaffList([]);
-      if (isManual) {
-        showToast(`Failed to load ${roleLabel.toLowerCase()} records`, 'info');
-      }
+      showToast(err?.message || `Failed to load ${roleLabel.toLowerCase()} records`, 'error');
     } finally {
       setLoading(false);
     }
@@ -292,13 +277,13 @@ export const AdminStaffManagementView: React.FC<AdminStaffManagementViewProps> =
     setEditEmail(s.email);
     setEditPhone(s.phone === 'Not registered' ? '' : s.phone);
     setEditField((type === 'doctor' || type === 'pharmacist') ? (s.specialization || '') : (s.department || ''));
-    setEditHospital(s.hospital || 'MediCare Central Hospital');
-    setEditLicense(s.licenseNumber === 'Verified In-System' ? '' : s.licenseNumber);
+    setEditHospital(s.hospital || '');
+    setEditLicense(s.licenseNumber === 'Not Recorded' || s.licenseNumber === 'Verified In-System' ? '' : s.licenseNumber);
     setEditStatus(s.status);
     setIsEditModalOpen(true);
   };
 
-  // Save Edit
+  // Save Edit (All Staff Fields Persisted in MySQL)
   const handleUpdateStaff = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editName.trim()) {
@@ -307,50 +292,34 @@ export const AdminStaffManagementView: React.FC<AdminStaffManagementViewProps> =
     }
     setIsSubmitting(true);
 
-    const updatedData: Partial<StaffMember> = {
-      name: editName.trim(),
-      email: editEmail.trim().toLowerCase(),
-      phone: editPhone.trim() || 'Not registered',
-      specialization: (type === 'doctor' || type === 'pharmacist') ? editField.trim() : undefined,
-      department: (type === 'nurse' || type === 'caregiver') ? editField.trim() : undefined,
-      hospital: editHospital.trim() || 'MediCare Central Hospital',
-      licenseNumber: editLicense.trim(),
-      status: editStatus,
-    };
-
-    // Update local state optimistically
-    setStaffList(prev => prev.map(item => {
-      if (item.id === editId) {
-        return {
-          ...item,
-          ...updatedData,
-        };
-      }
-      return item;
-    }));
-    setMockOverride(editId, updatedData);
-
     try {
-      if (!isMockId(editId)) {
-        await adminApi.updateUser(editId, {
-          fullName: editName.trim(),
-          email: editEmail.trim().toLowerCase() || undefined,
-          phoneNumber: editPhone.trim() || undefined,
-          status: editStatus === 'Active',
-        });
-        showToast(`${roleLabel} "${editName}" updated successfully.`, 'success');
+      const payload: any = {
+        fullName: editName.trim(),
+        email: editEmail.trim().toLowerCase() || undefined,
+        phoneNumber: editPhone.trim(),
+        hospital: editHospital.trim(),
+        licenseNumber: editLicense.trim(),
+        status: editStatus === 'Active',
+      };
+
+      if (type === 'doctor') {
+        payload.speciality = editField.trim();
+        payload.specialization = editField.trim();
+      } else if (type === 'nurse') {
+        payload.department = editField.trim();
+      } else if (type === 'pharmacist') {
+        payload.pharmacyName = editField.trim() || editHospital.trim();
       } else {
-        showToast(`${roleLabel} "${editName}" updated successfully.`, 'success');
+        payload.department = editField.trim();
       }
 
+      await adminApi.updateUser(editId, payload);
+      showToast(`${roleLabel} "${editName}" updated in MySQL.`, 'success');
       setIsEditModalOpen(false);
       window.dispatchEvent(new CustomEvent('admin_stats_updated'));
-      fetchStaff(false);
+      await fetchStaff(false);
     } catch (err: any) {
-      console.warn('Staff update encountered issue, keeping local changes:', err?.message);
-      showToast(`${roleLabel} "${editName}" updated successfully.`, 'success');
-      setIsEditModalOpen(false);
-      window.dispatchEvent(new CustomEvent('admin_stats_updated'));
+      showToast(err?.message || `Failed to update ${roleLabel.toLowerCase()} "${editName}".`, 'error');
     } finally {
       setIsSubmitting(false);
     }
@@ -361,23 +330,13 @@ export const AdminStaffManagementView: React.FC<AdminStaffManagementViewProps> =
     const nextStatus = s.status === 'Active' ? 'INACTIVE' : 'ACTIVE';
     const nextStatusLabel: 'Active' | 'Suspended' = nextStatus === 'ACTIVE' ? 'Active' : 'Suspended';
 
-    setStaffList(prev => prev.map(item => item.id === s.id ? { ...item, status: nextStatusLabel } : item));
-    setMockOverride(s.id, { status: nextStatusLabel });
-
-    if (isMockId(s.id)) {
-      showToast(`${roleLabel} ${s.name} duty status updated to ${nextStatusLabel}.`, 'success');
-      window.dispatchEvent(new CustomEvent('admin_stats_updated'));
-      return;
-    }
-
     try {
       await adminApi.updateUserStatus(s.id, nextStatus);
+      setStaffList(prev => prev.map(item => item.id === s.id ? { ...item, status: nextStatusLabel } : item));
       showToast(`${roleLabel} ${s.name} duty status updated to ${nextStatusLabel}.`, 'success');
       window.dispatchEvent(new CustomEvent('admin_stats_updated'));
     } catch (err: any) {
-      console.warn('Backend updateUserStatus failed, keeping local update:', err?.message);
-      showToast(`${roleLabel} ${s.name} duty status updated to ${nextStatusLabel}.`, 'info');
-      window.dispatchEvent(new CustomEvent('admin_stats_updated'));
+      showToast(err?.message || `Failed to update status for ${s.name}.`, 'error');
     }
   };
 
@@ -386,14 +345,12 @@ export const AdminStaffManagementView: React.FC<AdminStaffManagementViewProps> =
     if (!staffToDelete) return;
     setIsDeletingStaff(true);
     try {
-      if (!isMockId(staffToDelete.id)) {
-        await adminApi.deleteUser(staffToDelete.id);
-      }
+      await adminApi.deleteUser(staffToDelete.id);
       setStaffList(prev => prev.filter(item => item.id !== staffToDelete.id));
       showToast(`${roleLabel} "${staffToDelete.name}" was successfully deleted.`, 'delete');
       window.dispatchEvent(new CustomEvent('admin_stats_updated'));
     } catch (err: any) {
-      showToast(err.message || `Failed to delete ${roleLabel.toLowerCase()} record.`, 'error');
+      showToast(err?.message || `Failed to delete ${roleLabel.toLowerCase()} record.`, 'error');
     } finally {
       setIsDeletingStaff(false);
       setStaffToDelete(null);
@@ -420,7 +377,7 @@ export const AdminStaffManagementView: React.FC<AdminStaffManagementViewProps> =
         phoneNumber: addPhone.trim() || undefined,
         password: addPassword.trim() || 'Staff@123',
         role: apiRole,
-        hospital: addHospital.trim() || 'MediCare Central Hospital',
+        hospital: addHospital.trim() || undefined,
         licenseNumber: addLicense.trim() || undefined,
       };
 
@@ -429,9 +386,9 @@ export const AdminStaffManagementView: React.FC<AdminStaffManagementViewProps> =
       } else if (type === 'nurse') {
         payload.department = addField.trim() || 'Inpatient General Ward';
       } else if (type === 'pharmacist') {
-        payload.dispensary = addField.trim() || 'Central Pharmacy Hub';
+        payload.pharmacyName = addField.trim() || addHospital.trim() || 'Central Pharmacy Hub';
       } else {
-        payload.specialty = addField.trim() || 'Elderly Homecare & Geriatric Care';
+        payload.relationship = addField.trim() || 'Caregiver';
       }
 
       await adminApi.createUser(payload);
@@ -444,13 +401,23 @@ export const AdminStaffManagementView: React.FC<AdminStaffManagementViewProps> =
       setAddField('');
       setAddLicense('');
       window.dispatchEvent(new CustomEvent('admin_stats_updated'));
-      fetchStaff(false);
+      await fetchStaff(false);
     } catch (err: any) {
-      showToast(err.message || `Error registering ${roleLabel.toLowerCase()} account.`, 'error');
+      showToast(err?.message || `Error registering ${roleLabel.toLowerCase()} account.`, 'error');
     } finally {
       setIsSubmitting(false);
     }
   };
+
+  const isHospitalMatch = (itemHosp?: string, filterHosp?: string) => {
+    if (!filterHosp || filterHosp === 'All') return true;
+    if (!itemHosp) return false;
+    const a = itemHosp.toLowerCase().trim();
+    const b = filterHosp.toLowerCase().trim();
+    return a === b || (b.length > 5 && a.startsWith(b)) || (a.length > 5 && b.startsWith(a));
+  };
+
+  const hospitalStaff = staffList.filter(s => isHospitalMatch(s.hospital, hospitalFilter));
 
   const filtered = staffList.filter(s => {
     const sName = s.name || '';
@@ -465,8 +432,7 @@ export const AdminStaffManagementView: React.FC<AdminStaffManagementViewProps> =
     const matchesStatus = 
       statusFilter === 'All' ? true : s.status === statusFilter;
 
-    const matchesHospital = 
-      hospitalFilter === 'All' ? true : s.hospital === hospitalFilter;
+    const matchesHospital = isHospitalMatch(s.hospital, hospitalFilter);
 
     return matchesSearch && matchesStatus && matchesHospital;
   });
@@ -494,7 +460,9 @@ export const AdminStaffManagementView: React.FC<AdminStaffManagementViewProps> =
 
         <div className="flex items-center gap-3 relative z-10 shrink-0 flex-wrap">
           <span className="px-4 py-2.5 rounded-xl bg-black/20 text-white text-xs font-mono font-bold border border-white/20 backdrop-blur-md shadow-xs">
-            {staffList.length} Registered {pluralLabel}
+            {filtered.length !== hospitalStaff.length
+              ? `${filtered.length} of ${hospitalStaff.length} ${pluralLabel}`
+              : `${hospitalStaff.length} Registered ${pluralLabel}`}
           </span>
           <button
             onClick={() => fetchStaff(true)}

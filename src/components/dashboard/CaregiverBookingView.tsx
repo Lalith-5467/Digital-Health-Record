@@ -1,28 +1,24 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { 
-  HeartHandshake, 
-  User, 
-  Calendar, 
-  Clock, 
-  MapPin, 
-  CheckCircle2, 
-  AlertCircle, 
-  Sparkles, 
-  ShieldCheck, 
-  Truck, 
-  ChevronRight, 
-  Info, 
-  FileText, 
+import {
+  HeartHandshake,
+  User,
+  Calendar,
+  MapPin,
+  CheckCircle2,
+  AlertCircle,
+  Sparkles,
+  ShieldCheck,
+  Truck,
+  ChevronRight,
+  FileText,
   CheckCircle,
   Stethoscope,
-  Building2,
-  DollarSign
+  Clock
 } from 'lucide-react';
 import { useLanguage } from '../../context/LanguageContext';
-import { addHomeCareBooking, type DemoHomeCareBooking } from '../../mocks/caregiverHomeCareMock';
+import { clinicalApi, patientExtendedApi, profileApi } from '../../services/dhrApis';
 import { showGlobalToast } from '../common/GlobalToastManager';
-import { globalNotificationService } from '../../services/globalNotificationService';
 
 interface CaregiverBookingViewProps {
   user?: {
@@ -33,12 +29,13 @@ interface CaregiverBookingViewProps {
   onNavigate?: (navId: string) => void;
 }
 
-const DEPENDENT_OPTIONS = [
-  { id: 'ward-1', name: 'Arun Raj', relationship: 'Father', age: 68, address: 'Flat 4B, Emerald Heights, T. Nagar, Chennai - 600017' },
-  { id: 'ward-2', name: 'Priya Raj (Meena Kumar)', relationship: 'Mother', age: 64, address: 'No. 12, Rose Garden, Indiranagar, Bengaluru - 560038' },
-  { id: 'ward-3', name: 'Karthik Raj', relationship: 'Child / Son', age: 12, address: 'House 88, Lake View Appts, Jubilee Hills, Hyderabad - 500033' },
-  { id: 'ward-4', name: 'Meena Raj', relationship: 'Spouse', age: 62, address: 'Block C, Senior Paradise, Adyar, Chennai - 600020' },
-];
+interface DependentOption {
+  id: string;
+  name: string;
+  relationship: string;
+  age?: number | string;
+  address?: string;
+}
 
 const SERVICE_OPTIONS = [
   {
@@ -49,7 +46,8 @@ const SERVICE_OPTIONS = [
     role: 'Caregiver' as const,
     description: 'Bedside hygiene, bathing assistance, pill timing setup, and mobility aid.',
     icon: HeartHandshake,
-    estPrice: '₹450 / Visit'
+    estPrice: '₹450 / Visit',
+    feeNum: 450,
   },
   {
     id: 'wound-dressing',
@@ -59,7 +57,8 @@ const SERVICE_OPTIONS = [
     role: 'Nurse' as const,
     description: 'Sterile dressing change, BP, sugar & SpO2 telemetry monitoring by registered nurse.',
     icon: Stethoscope,
-    estPrice: '₹750 / Visit'
+    estPrice: '₹750 / Visit',
+    feeNum: 750,
   },
   {
     id: 'med-assist',
@@ -69,7 +68,8 @@ const SERVICE_OPTIONS = [
     role: 'Nurse' as const,
     description: 'Daily medication organizer setup, cognitive exercises, and doctor prescription sync.',
     icon: FileText,
-    estPrice: '₹600 / Visit'
+    estPrice: '₹600 / Visit',
+    feeNum: 600,
   },
   {
     id: 'mobility',
@@ -79,7 +79,8 @@ const SERVICE_OPTIONS = [
     role: 'Home Care Assistant' as const,
     description: 'Assisted walking, joint movement exercises, stair practice, and fall prevention.',
     icon: User,
-    estPrice: '₹500 / Visit'
+    estPrice: '₹500 / Visit',
+    feeNum: 500,
   },
   {
     id: 'physio',
@@ -89,7 +90,8 @@ const SERVICE_OPTIONS = [
     role: 'Nurse' as const,
     description: 'Therapeutic heat compress, joint pain massage, and prescribed exercise routine.',
     icon: ActivityIcon,
-    estPrice: '₹650 / Visit'
+    estPrice: '₹650 / Visit',
+    feeNum: 650,
   }
 ];
 
@@ -101,28 +103,88 @@ function ActivityIcon(props: any) {
   );
 }
 
+const getUpcomingDateOptions = () => {
+  const options: { value: string; label: string; isoDate: string }[] = [];
+  const today = new Date();
+  for (let i = 0; i < 5; i++) {
+    const d = new Date(today);
+    d.setDate(today.getDate() + i);
+    const formatted = d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+    const label = i === 0 ? `Today (${formatted})` : i === 1 ? `Tomorrow (${formatted})` : formatted;
+    options.push({
+      value: i === 0 ? 'Today' : i === 1 ? 'Tomorrow' : formatted,
+      label,
+      isoDate: d.toISOString(),
+    });
+  }
+  return options;
+};
+
 export const CaregiverBookingView: React.FC<CaregiverBookingViewProps> = ({ user, onNavigate }) => {
   const { t } = useLanguage();
 
+  const dateOptions = useMemo(() => getUpcomingDateOptions(), []);
+  const [dependents, setDependents] = useState<DependentOption[]>([
+    { id: 'self', name: user?.name || 'Myself', relationship: 'Self', address: user?.address || '' },
+  ]);
+  const [myRequests, setMyRequests] = useState<any[]>([]);
+
   // Form State
-  const [selectedDependentId, setSelectedDependentId] = useState<string>('ward-1');
+  const [selectedDependentId, setSelectedDependentId] = useState<string>('self');
   const [selectedServiceId, setSelectedServiceId] = useState<string>('geriatric');
   const [roleOverride, setRoleOverride] = useState<'Nurse' | 'Caregiver' | 'Home Care Assistant'>('Nurse');
   const [bookingDate, setBookingDate] = useState<string>('Today');
   const [bookingTime, setBookingTime] = useState<string>('05:30 PM');
   const [duration, setDuration] = useState<string>('1 Hour');
-  const [address, setAddress] = useState<string>(
-    user?.address || 'Flat 4B, Emerald Heights, T. Nagar, Chennai - 600017'
-  );
+  const [address, setAddress] = useState<string>(user?.address || '');
   const [notes, setNotes] = useState<string>('');
 
   // UI state
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [confirmedBooking, setConfirmedBooking] = useState<DemoHomeCareBooking | null>(null);
+  const [confirmedBooking, setConfirmedBooking] = useState<any | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
 
-  const selectedDependent = DEPENDENT_OPTIONS.find(d => d.id === selectedDependentId) || DEPENDENT_OPTIONS[0];
-  const selectedService = SERVICE_OPTIONS.find(s => s.id === selectedServiceId) || SERVICE_OPTIONS[0];
+  const loadData = async () => {
+    const [profileRes, familyRes, requestsRes] = await Promise.all([
+      profileApi.getPatientProfile().catch(() => ({ data: null })),
+      patientExtendedApi.getFamilyConnections().catch(() => ({ data: [] })),
+      clinicalApi.getMyCareRequests().catch(() => ({ data: [] })),
+    ]);
+
+    const patientProfile = profileRes?.data;
+    const selfAddress = patientProfile?.address || user?.address || '';
+    const selfName = patientProfile?.fullName || user?.name || 'Myself';
+    const selfOption: DependentOption = {
+      id: 'self',
+      name: selfName,
+      relationship: 'Self',
+      address: selfAddress,
+    };
+
+    const familyList = Array.isArray(familyRes?.data) ? familyRes.data : [];
+    const familyOptions: DependentOption[] = familyList.map((f: any) => ({
+      id: f.id,
+      name: f.name || f.memberName || f.fullName || 'Family Member',
+      relationship: f.relationship || f.relation || 'Family',
+      age: f.age,
+      address: f.address || selfAddress,
+    }));
+
+    setDependents([selfOption, ...familyOptions]);
+    if (!address && selfAddress) {
+      setAddress(selfAddress);
+    }
+
+    const reqList = Array.isArray(requestsRes?.data) ? requestsRes.data : [];
+    setMyRequests(reqList);
+  };
+
+  useEffect(() => {
+    loadData();
+  }, []);
+
+  const selectedDependent = dependents.find((d) => d.id === selectedDependentId) || dependents[0];
+  const selectedService = SERVICE_OPTIONS.find((s) => s.id === selectedServiceId) || SERVICE_OPTIONS[0];
 
   const validateForm = () => {
     const errs: Record<string, string> = {};
@@ -138,7 +200,7 @@ export const CaregiverBookingView: React.FC<CaregiverBookingViewProps> = ({ user
     return Object.keys(errs).length === 0;
   };
 
-  const handleConfirmBooking = (e: React.FormEvent) => {
+  const handleConfirmBooking = async (e: React.FormEvent) => {
     e.preventDefault();
     if (isSubmitting) return;
 
@@ -148,77 +210,59 @@ export const CaregiverBookingView: React.FC<CaregiverBookingViewProps> = ({ user
     }
 
     setIsSubmitting(true);
+    try {
+      const matchedDate = dateOptions.find((d) => d.value === bookingDate);
+      const scheduledIso = matchedDate?.isoDate || new Date().toISOString();
 
-    const professionalNames: Record<string, string> = {
-      'Nurse': 'Nurse Sarah Jenkins',
-      'Caregiver': 'Rajesh Kumar (Certified Caregiver)',
-      'Home Care Assistant': 'Priya Sharma (Home Care Assistant)'
-    };
+      const res = await clinicalApi.createNurseCareRequest({
+        serviceType: `${selectedService.serviceType} (${roleOverride})`,
+        specialization: selectedService.specialization,
+        role: roleOverride,
+        dependentName: selectedDependent?.name,
+        scheduledDate: scheduledIso,
+        scheduledTime: bookingTime,
+        duration,
+        address: address.trim(),
+        estimatedFee: selectedService.feeNum,
+        notes: [
+          `Recipient: ${selectedDependent?.name} (${selectedDependent?.relationship})`,
+          `Category: ${roleOverride}`,
+          `Duration: ${duration}`,
+          `Slot: ${bookingDate} at ${bookingTime}`,
+          notes.trim() ? `Notes: ${notes.trim()}` : '',
+        ]
+          .filter(Boolean)
+          .join(' | '),
+      });
 
-    const newBooking: DemoHomeCareBooking = {
-      bookingId: `hc-user-${Date.now()}`,
-      dependentId: selectedDependent.id,
-      dependentName: selectedDependent.name,
-      careProfessionalName: professionalNames[roleOverride] || 'Nurse Sarah Jenkins',
-      role: roleOverride,
-      specialization: selectedService.specialization,
-      serviceType: selectedService.serviceType,
-      bookingDate: bookingDate === 'Today' ? 'Today' : bookingDate === 'Tomorrow' ? 'Tomorrow' : bookingDate,
-      bookingTime,
-      duration,
-      status: 'Requested',
-      address: address.trim() || selectedDependent.address,
-      notes: notes.trim() || 'Patient booked home-care session via Patient Portal.',
-      rawTimestamp: Date.now() + 1800000
-    };
+      const created = res?.data;
+      setConfirmedBooking({
+        bookingId: created?.id || `REQ-${Date.now().toString().slice(-6)}`,
+        dependentName: selectedDependent?.name || 'Patient',
+        role: roleOverride,
+        serviceType: selectedService.title,
+        bookingDate,
+        bookingTime,
+        duration,
+        status: created?.status || 'REQUESTED',
+      });
 
-    // Store in caregiver mock & trigger notifications + sync
-    addHomeCareBooking(newBooking);
-
-    // Dispatch Global Notification & Voice for Patient
-    globalNotificationService.dispatchNotification({
-      id: `patient-booking-${Date.now()}`,
-      recipientRole: 'PATIENT',
-      title: 'Home Care Visit Requested',
-      message: `In-home ${newBooking.serviceType} visit booked for ${newBooking.dependentName} on ${newBooking.bookingDate} at ${newBooking.bookingTime}.`,
-      voiceText: `Your home care visit for ${newBooking.dependentName} has been booked for ${newBooking.bookingDate} at ${newBooking.bookingTime}.`,
-      type: 'Nurse Booking',
-      timestamp: 'Just now',
-      read: false
-    });
-
-    // Dispatch Global Notification & Voice for Caregiver / Nurse
-    globalNotificationService.dispatchNotification({
-      id: `caregiver-booking-${Date.now()}`,
-      recipientRole: 'CAREGIVER',
-      dependentId: selectedDependent.id,
-      wardName: selectedDependent.name,
-      title: 'New Home Care Booking Requested',
-      message: `Home care visit for ${newBooking.serviceType} booked for ${newBooking.bookingDate} at ${newBooking.bookingTime}.`,
-      voiceText: `New home care visit requested for ${selectedDependent.name} on ${newBooking.bookingDate} at ${newBooking.bookingTime}.`,
-      type: 'Nurse Booking',
-      timestamp: 'Just now',
-      read: false,
-      relatedRoute: 'home-care'
-    });
-
-    setTimeout(() => {
+      await loadData();
+      window.dispatchEvent(new Event('health_workflow_updated'));
+      showGlobalToast(`In-Home ${roleOverride} visit requested for ${selectedDependent?.name}. Saved to database.`, 'success');
+    } catch (err: any) {
+      showGlobalToast(err?.message || 'Failed to submit home-care request', 'error');
+    } finally {
       setIsSubmitting(false);
-      setConfirmedBooking(newBooking);
-      showGlobalToast(
-        `🚨 In-Home ${roleOverride} Visit Booked for ${selectedDependent.name}! Caregiver notification dispatched.`,
-        'success'
-      );
-    }, 600);
+    }
   };
 
   return (
     <div className="space-y-6 select-none pb-16">
-      
       {/* HEADER BANNER */}
       <div className="relative overflow-hidden rounded-3xl bg-gradient-to-r from-teal-50/80 via-white to-cyan-50/80 dark:from-[#0b1b36] dark:via-[#092b49] dark:to-[#041a2e] p-6 sm:p-8 text-slate-900 dark:text-white shadow-sm border border-slate-200/80 dark:border-slate-800">
         <div className="absolute top-0 right-0 w-96 h-96 bg-teal-500/10 rounded-full blur-3xl pointer-events-none" />
-        
+
         <div className="relative z-10 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div>
             <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-teal-100 dark:bg-teal-500/20 text-teal-700 dark:text-teal-300 text-xs font-black uppercase tracking-wider mb-2 border border-teal-500/20">
@@ -268,7 +312,7 @@ export const CaregiverBookingView: React.FC<CaregiverBookingViewProps> = ({ user
 
               <button
                 onClick={() => setConfirmedBooking(null)}
-                className="px-3 py-1.5 rounded-xl bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 text-xs font-bold border border-slate-200 dark:border-slate-800 hover:bg-slate-50"
+                className="px-3 py-1.5 rounded-xl bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 text-xs font-bold border border-slate-200 dark:border-slate-800 hover:bg-slate-50 cursor-pointer"
               >
                 {t('caregiver.booking.book_another', 'Book Another Visit')}
               </button>
@@ -276,12 +320,12 @@ export const CaregiverBookingView: React.FC<CaregiverBookingViewProps> = ({ user
 
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2 text-xs font-medium border-t border-emerald-200/60 dark:border-emerald-800/60">
               <div>
-                <span className="text-slate-500 dark:text-slate-400 block">{t('caregiver.booking.dependent', 'Dependent')}:</span>
+                <span className="text-slate-500 dark:text-slate-400 block">{t('caregiver.booking.dependent', 'Recipient')}:</span>
                 <strong className="text-slate-900 dark:text-white font-bold">{confirmedBooking.dependentName}</strong>
               </div>
               <div>
-                <span className="text-slate-500 dark:text-slate-400 block">{t('caregiver.booking.assigned_role', 'Assigned Professional')}:</span>
-                <strong className="text-slate-900 dark:text-white font-bold">{confirmedBooking.careProfessionalName} ({confirmedBooking.role})</strong>
+                <span className="text-slate-500 dark:text-slate-400 block">{t('caregiver.booking.assigned_role', 'Requested Role')}:</span>
+                <strong className="text-slate-900 dark:text-white font-bold">{confirmedBooking.role}</strong>
               </div>
               <div>
                 <span className="text-slate-500 dark:text-slate-400 block">{t('caregiver.booking.visit_schedule', 'Visit Schedule')}:</span>
@@ -292,12 +336,12 @@ export const CaregiverBookingView: React.FC<CaregiverBookingViewProps> = ({ user
             <div className="p-3 rounded-2xl bg-white/80 dark:bg-slate-900/80 border border-emerald-200/50 dark:border-emerald-800/40 text-xs text-slate-600 dark:text-slate-300 flex items-center justify-between">
               <span className="flex items-center gap-1.5">
                 <Truck className="w-4 h-4 text-emerald-600" />
-                <span>Caregiver notification dispatched to active portal guardian popover.</span>
+                <span>Request stored in database and dispatched to available nursing & caregiver staff.</span>
               </span>
               {onNavigate && (
                 <button
                   onClick={() => onNavigate('dashboard')}
-                  className="text-xs font-bold text-teal-600 dark:text-cyan-400 hover:underline flex items-center gap-1"
+                  className="text-xs font-bold text-teal-600 dark:text-cyan-400 hover:underline flex items-center gap-1 cursor-pointer"
                 >
                   <span>Go to Overview</span>
                   <ChevronRight className="w-3.5 h-3.5" />
@@ -310,16 +354,14 @@ export const CaregiverBookingView: React.FC<CaregiverBookingViewProps> = ({ user
 
       {/* MAIN FORM GRID */}
       <form onSubmit={handleConfirmBooking} className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        
         {/* LEFT 7 COLS: STEP FORM SECTIONS */}
         <div className="lg:col-span-7 space-y-6">
-          
           {/* STEP 1: SELECT DEPENDENT */}
           <div className="bg-white dark:bg-[#0b1120] rounded-3xl p-6 border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
             <div className="flex items-center justify-between">
               <h3 className="text-sm font-black text-slate-900 dark:text-white flex items-center gap-2">
                 <User className="w-4 h-4 text-teal-600 dark:text-cyan-400" />
-                <span>1. {t('caregiver.booking.step_dependent', 'Select Dependent / Family Member')}</span>
+                <span>1. {t('caregiver.booking.step_dependent', 'Select Recipient / Family Member')}</span>
               </h3>
               {errors.dependent && (
                 <span className="text-xs font-bold text-rose-500 flex items-center gap-1">
@@ -329,14 +371,14 @@ export const CaregiverBookingView: React.FC<CaregiverBookingViewProps> = ({ user
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              {DEPENDENT_OPTIONS.map((dep) => {
+              {dependents.map((dep) => {
                 const isSelected = dep.id === selectedDependentId;
                 return (
                   <div
                     key={dep.id}
                     onClick={() => {
                       setSelectedDependentId(dep.id);
-                      setAddress(dep.address);
+                      if (dep.address) setAddress(dep.address);
                     }}
                     className={`p-4 rounded-2xl border cursor-pointer transition-all flex items-start justify-between gap-3 ${
                       isSelected
@@ -346,14 +388,14 @@ export const CaregiverBookingView: React.FC<CaregiverBookingViewProps> = ({ user
                   >
                     <div className="flex items-center gap-3">
                       <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-teal-500 to-cyan-600 flex items-center justify-center text-white font-black text-sm shrink-0">
-                        {dep.name.charAt(0)}
+                        {dep.name.charAt(0).toUpperCase()}
                       </div>
                       <div>
                         <h4 className="text-xs font-black text-slate-900 dark:text-white leading-tight">
                           {dep.name}
                         </h4>
                         <p className="text-[11px] text-slate-500 dark:text-slate-400 font-semibold">
-                          {dep.relationship} • {dep.age} yrs
+                          {dep.relationship}{dep.age ? ` • ${dep.age} yrs` : ''}
                         </p>
                       </div>
                     </div>
@@ -418,9 +460,6 @@ export const CaregiverBookingView: React.FC<CaregiverBookingViewProps> = ({ user
                       <span className="text-xs font-black text-slate-900 dark:text-white block">
                         {srv.estPrice}
                       </span>
-                      <span className="text-[9px] text-emerald-600 dark:text-emerald-400 font-bold uppercase">
-                        Covered
-                      </span>
                     </div>
                   </div>
                 );
@@ -446,7 +485,7 @@ export const CaregiverBookingView: React.FC<CaregiverBookingViewProps> = ({ user
                     key={r}
                     type="button"
                     onClick={() => setRoleOverride(r)}
-                    className={`py-2 px-3 rounded-xl text-xs font-extrabold transition-all border ${
+                    className={`py-2 px-3 rounded-xl text-xs font-extrabold transition-all border cursor-pointer ${
                       roleOverride === r
                         ? 'bg-purple-500 text-white border-purple-500 shadow-md shadow-purple-500/20'
                         : 'bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700'
@@ -469,11 +508,9 @@ export const CaregiverBookingView: React.FC<CaregiverBookingViewProps> = ({ user
                   onChange={(e) => setBookingDate(e.target.value)}
                   className="w-full h-10 px-3 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 font-bold text-xs text-slate-900 dark:text-white"
                 >
-                  <option value="Today">Today (Immediate)</option>
-                  <option value="Tomorrow">Tomorrow</option>
-                  <option value="22 Sep 2026">22 Sep 2026</option>
-                  <option value="23 Sep 2026">23 Sep 2026</option>
-                  <option value="25 Sep 2026">25 Sep 2026</option>
+                  {dateOptions.map((opt) => (
+                    <option key={opt.value} value={opt.value}>{opt.label}</option>
+                  ))}
                 </select>
               </div>
 
@@ -547,12 +584,10 @@ export const CaregiverBookingView: React.FC<CaregiverBookingViewProps> = ({ user
               />
             </div>
           </div>
-
         </div>
 
-        {/* RIGHT 5 COLS: LIVE BOOKING SUMMARY CARD & CONFIRM BUTTON */}
+        {/* RIGHT 5 COLS: LIVE BOOKING SUMMARY CARD & EXISTING REQUESTS */}
         <div className="lg:col-span-5 space-y-6">
-          
           <div className="bg-white dark:bg-[#0b1120] rounded-3xl p-6 border border-slate-200 dark:border-slate-800 shadow-sm space-y-5 sticky top-24">
             <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
               <h3 className="text-sm font-black text-slate-900 dark:text-white flex items-center gap-2">
@@ -560,14 +595,14 @@ export const CaregiverBookingView: React.FC<CaregiverBookingViewProps> = ({ user
                 <span>{t('caregiver.booking.summary_title', 'In-Home Booking Summary')}</span>
               </h3>
               <span className="text-[10px] font-black uppercase px-2.5 py-0.5 rounded-full bg-teal-100 dark:bg-teal-950 text-teal-700 dark:text-teal-300">
-                {t('caregiver.booking.requested_badge', 'Requested')}
+                {t('caregiver.booking.requested_badge', 'Live Request')}
               </span>
             </div>
 
             <div className="space-y-3 text-xs">
               <div className="flex items-center justify-between text-slate-600 dark:text-slate-300 font-medium">
-                <span className="text-slate-400">{t('caregiver.booking.target_dependent', 'Target Dependent')}:</span>
-                <span className="font-extrabold text-slate-900 dark:text-white">{selectedDependent.name} ({selectedDependent.relationship})</span>
+                <span className="text-slate-400">{t('caregiver.booking.target_dependent', 'Recipient')}:</span>
+                <span className="font-extrabold text-slate-900 dark:text-white">{selectedDependent?.name} ({selectedDependent?.relationship})</span>
               </div>
 
               <div className="flex items-center justify-between text-slate-600 dark:text-slate-300 font-medium">
@@ -597,7 +632,7 @@ export const CaregiverBookingView: React.FC<CaregiverBookingViewProps> = ({ user
                 <span className="text-teal-600 dark:text-cyan-400 text-sm font-black">{selectedService.estPrice}</span>
               </p>
               <p className="text-[11px] text-slate-500 dark:text-slate-400 font-medium">
-                Direct billing covered under Star Health / ABDM CarePlus Floater Policy.
+                Saved directly to your clinical care schedule and routed to verified home-care staff.
               </p>
             </div>
 
@@ -607,18 +642,55 @@ export const CaregiverBookingView: React.FC<CaregiverBookingViewProps> = ({ user
               className="w-full py-3.5 rounded-2xl bg-teal-500 hover:bg-teal-400 text-slate-950 font-black text-xs transition-all shadow-lg shadow-teal-500/25 flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
             >
               <HeartHandshake className="w-4 h-4" />
-              <span>{isSubmitting ? 'Dispatching Caregiver Visit...' : t('caregiver.booking.confirm_btn', 'Confirm & Request Caregiver Visit')}</span>
+              <span>{isSubmitting ? 'Submitting Care Request...' : t('caregiver.booking.confirm_btn', 'Confirm & Request Caregiver Visit')}</span>
             </button>
-
-            <p className="text-[10px] text-center text-slate-400 font-semibold">
-              Caregiver notification will be dispatched immediately to portal tracking popover.
-            </p>
           </div>
-
         </div>
-
       </form>
 
+      {/* EXISTING CARE REQUESTS FROM MYSQL */}
+      <div className="bg-white dark:bg-[#0b1120] rounded-3xl p-6 border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
+        <div className="flex items-center justify-between">
+          <h3 className="text-sm font-black text-slate-900 dark:text-white flex items-center gap-2">
+            <Clock className="w-4 h-4 text-teal-600 dark:text-cyan-400" />
+            <span>My Home-Care Requests ({myRequests.length})</span>
+          </h3>
+        </div>
+
+        {myRequests.length === 0 ? (
+          <p className="text-xs text-slate-500 dark:text-slate-400 py-4 text-center">
+            No home-care or nursing requests scheduled yet.
+          </p>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {myRequests.map((req: any) => (
+              <div
+                key={req.id}
+                className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-800 space-y-1.5 text-xs"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-black text-slate-900 dark:text-white truncate">
+                    {req.serviceType || 'Home Care Visit'}
+                  </span>
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-black uppercase bg-teal-500/15 text-teal-700 dark:text-teal-300 border border-teal-500/20">
+                    {req.status || 'REQUESTED'}
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                  {req.scheduledDate ? new Date(req.scheduledDate).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : 'Scheduled'}
+                  {req.scheduledTime ? ` • ${req.scheduledTime}` : ''}
+                </p>
+                {req.address && (
+                  <p className="text-[11px] text-slate-600 dark:text-slate-300 truncate">
+                    <MapPin className="w-3 h-3 inline mr-1 text-rose-500" />
+                    {req.address}
+                  </p>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 };

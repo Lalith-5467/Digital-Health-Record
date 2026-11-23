@@ -171,8 +171,8 @@ const initialStats: StatItem[] = [
   {
     id: 'checkup',
     title: 'Health Check-Up',
-    value: 'Due',
-    subtitle: 'Scheduled in 30 days',
+    value: '00',
+    subtitle: 'Loading checkups...',
     icon: Clock,
     iconGradient: 'linear-gradient(135deg,#a855f7,#7c3aed)',
     iconShadow: '0 4px 12px rgba(168,85,247,.4)',
@@ -180,9 +180,9 @@ const initialStats: StatItem[] = [
     cardBorder: '1px solid rgba(167,139,250,.35)',
     cardShadow: '0 2px 16px rgba(139,92,246,.08)',
     accentColor: '#7c3aed',
-    badgeText: '📅 Scheduled in 30 days',
+    badgeText: 'No checkups yet',
     badgeCls: 'bg-violet-100 text-violet-700 dark:bg-violet-900/60 dark:text-violet-200',
-    footerText: 'Stay healthy! Check-up is coming',
+    footerText: 'Schedule a preventive check-up',
     footerIcon: Bell,
     footerIconCls: 'text-violet-500',
     footerBg: 'bg-white/80 dark:bg-violet-950/60 border-violet-100 dark:border-violet-900/40',
@@ -191,8 +191,8 @@ const initialStats: StatItem[] = [
   {
     id: 'insurance',
     title: 'Insurance Policy',
-    value: '₹10L',
-    subtitle: 'CarePlus Floater Active',
+    value: 'None',
+    subtitle: 'No active policy linked',
     icon: ShieldCheck,
     iconGradient: 'linear-gradient(135deg,#38bdf8,#1d4ed8)',
     iconShadow: '0 4px 12px rgba(59,130,246,.4)',
@@ -200,9 +200,9 @@ const initialStats: StatItem[] = [
     cardBorder: '1px solid rgba(147,197,253,.4)',
     cardShadow: '0 2px 16px rgba(59,130,246,.08)',
     accentColor: '#1d4ed8',
-    badgeText: '✓ Covered',
+    badgeText: 'Not Linked',
     badgeCls: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/60 dark:text-emerald-200',
-    footerText: "You're Protected · Coverage active",
+    footerText: 'Add insurance coverage details',
     footerIcon: ShieldCheck,
     footerIconCls: 'text-blue-500',
     footerBg: 'bg-white/80 dark:bg-blue-950/60 border-blue-100 dark:border-blue-900/40',
@@ -211,8 +211,8 @@ const initialStats: StatItem[] = [
   {
     id: 'family',
     title: 'Family Members',
-    value: '03',
-    subtitle: 'Shared emergency records',
+    value: '00',
+    subtitle: 'No linked family members',
     icon: Users,
     iconGradient: 'linear-gradient(135deg,#34d399,#059669)',
     iconShadow: '0 4px 12px rgba(16,185,129,.4)',
@@ -220,9 +220,9 @@ const initialStats: StatItem[] = [
     cardBorder: '1px solid rgba(110,231,183,.4)',
     cardShadow: '0 2px 16px rgba(16,185,129,.08)',
     accentColor: '#059669',
-    badgeText: '+ 3 Linked',
+    badgeText: '0 Linked',
     badgeCls: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/60 dark:text-emerald-200',
-    footerText: 'Family Connected · Manage loved ones',
+    footerText: 'Connect family & dependents',
     footerIcon: Heart,
     footerIconCls: 'text-emerald-500',
     footerBg: 'bg-white/80 dark:bg-emerald-950/60 border-emerald-100 dark:border-emerald-900/40',
@@ -231,8 +231,8 @@ const initialStats: StatItem[] = [
   {
     id: 'appointments',
     title: 'Appointments',
-    value: '03',
-    subtitle: '2 upcoming this week',
+    value: '00',
+    subtitle: 'No upcoming appointments',
     icon: Calendar,
     iconGradient: 'linear-gradient(135deg,#818cf8,#4338ca)',
     iconShadow: '0 4px 12px rgba(99,102,241,.4)',
@@ -240,9 +240,9 @@ const initialStats: StatItem[] = [
     cardBorder: '1px solid rgba(165,180,252,.4)',
     cardShadow: '0 2px 16px rgba(99,102,241,.08)',
     accentColor: '#4338ca',
-    badgeText: '📅 2 Upcoming',
+    badgeText: '0 Upcoming',
     badgeCls: 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/60 dark:text-indigo-200',
-    footerText: 'Stay on Track · Upcoming appts.',
+    footerText: 'Book a doctor consultation',
     footerIcon: Calendar,
     footerIconCls: 'text-indigo-500',
     footerBg: 'bg-white/80 dark:bg-indigo-950/60 border-indigo-100 dark:border-indigo-900/40',
@@ -251,8 +251,8 @@ const initialStats: StatItem[] = [
   {
     id: 'medicines',
     title: 'Active Medicines',
-    value: '03',
-    subtitle: '100% adherence today',
+    value: '00',
+    subtitle: 'No active medications',
     icon: Pill,
     iconGradient: 'linear-gradient(135deg,#fb923c,#ea580c)',
     iconShadow: '0 4px 12px rgba(249,115,22,.4)',
@@ -260,9 +260,9 @@ const initialStats: StatItem[] = [
     cardBorder: '1px solid rgba(253,186,116,.4)',
     cardShadow: '0 2px 16px rgba(249,115,22,.08)',
     accentColor: '#ea580c',
-    badgeText: '✓ 100% On Time',
+    badgeText: 'No doses today',
     badgeCls: 'bg-amber-100 text-amber-800 dark:bg-amber-900/60 dark:text-amber-200',
-    footerText: 'Great Adherence! Keep it up',
+    footerText: 'Track daily prescriptions',
     footerIcon: CheckCircle2,
     footerIconCls: 'text-orange-500',
     footerBg: 'bg-white/80 dark:bg-orange-950/60 border-orange-100 dark:border-orange-900/40',
@@ -271,9 +271,9 @@ const initialStats: StatItem[] = [
   {
     id: 'analytics',
     title: 'Health Score',
-    value: '85',
+    value: '0',
     unit: '/100',
-    subtitle: '+4 points from last week',
+    subtitle: 'Log vitals to calculate score',
     icon: Activity,
     iconGradient: 'linear-gradient(135deg,#2dd4bf,#059669)',
     iconShadow: '0 4px 12px rgba(20,184,166,.4)',
@@ -281,9 +281,9 @@ const initialStats: StatItem[] = [
     cardBorder: '1px solid rgba(94,234,212,.4)',
     cardShadow: '0 2px 16px rgba(20,184,166,.08)',
     accentColor: '#0d9488',
-    badgeText: '↑ +4 pts',
+    badgeText: 'No data yet',
     badgeCls: 'bg-teal-100 text-teal-700 dark:bg-teal-900/60 dark:text-teal-200',
-    footerText: "Improving · You're doing great!",
+    footerText: 'Add vitals to track progress',
     footerIcon: TrendingUp,
     footerIconCls: 'text-teal-500',
     footerBg: 'bg-white/80 dark:bg-teal-950/60 border-teal-100 dark:border-teal-900/40',
@@ -291,7 +291,16 @@ const initialStats: StatItem[] = [
   },
 ];
 
-import { dashboardApi } from '../../services/dhrApis';
+import {
+  appointmentApi,
+  medicineApi,
+  recordApi,
+  vitalApi,
+  insuranceApi,
+  reminderApi,
+  patientExtendedApi,
+  patientClinicalApi,
+} from '../../services/dhrApis';
 import { useLanguage } from '../../context/LanguageContext';
 
 /* ─────────────────────────────────────────────────────────────
@@ -363,33 +372,208 @@ export const DashboardStatsGrid: React.FC<DashboardStatsGridProps> = ({
   };
 
   useEffect(() => {
-    dashboardApi.getStats().then((res) => {
-      if (res && res.data) {
-        const d = res.data;
-        setItems((prev) =>
-          prev.map((item) => {
-            if (item.id === 'appointments') {
-              const count = d.upcomingAppointments ?? 2;
-              return {
-                ...item,
-                value: count.toString().padStart(2, '0'),
-                subtitle: `${count} upcoming scheduled`,
-                badgeText: `📅 ${count} Upcoming`,
-              };
-            }
-            if (item.id === 'medicines') {
-              const count = d.activePrescriptions ?? 3;
-              return {
-                ...item,
-                value: count.toString().padStart(2, '0'),
-                subtitle: `${count} active prescribed therapies`,
-              };
-            }
-            return item;
-          })
-        );
+    let mounted = true;
+    const loadAllStats = async () => {
+      const [
+        aptsRes,
+        medsRes,
+        recordsRes,
+        vitalsRes,
+        policiesRes,
+        remindersRes,
+        familyRes,
+        checkupsRes,
+      ] = await Promise.all([
+        appointmentApi.getAppointments().catch(() => ({ data: [] })),
+        medicineApi.getActiveMedications().catch(() => ({ data: { medications: [], todayDoses: [] } })),
+        recordApi.getMedicalRecords().catch(() => ({ data: [] })),
+        vitalApi.getVitals().catch(() => ({ data: [] })),
+        insuranceApi.getPolicies().catch(() => ({ data: [] })),
+        reminderApi.getReminders().catch(() => ({ data: [] })),
+        patientExtendedApi.getFamilyConnections().catch(() => ({ data: [] })),
+        patientClinicalApi.getCheckups().catch(() => ({ data: [] })),
+      ]);
+
+      if (!mounted) return;
+
+      const apts = Array.isArray(aptsRes?.data) ? aptsRes.data : [];
+      const upcomingApts = apts.filter(
+        (a: any) => a.status !== 'CANCELLED' && a.status !== 'COMPLETED'
+      );
+
+      const medsList = Array.isArray(medsRes?.data?.medications) ? medsRes.data.medications : [];
+      const activeMeds = medsList.filter((m: any) => !m.status || m.status === 'Active' || m.status === 'ACTIVE');
+      const todayDoses = Array.isArray(medsRes?.data?.todayDoses) ? medsRes.data.todayDoses : [];
+      const takenToday = todayDoses.filter((d: any) => d.status === 'Taken' || d.status === 'taken').length;
+      const adherencePct = todayDoses.length > 0 ? Math.round((takenToday / todayDoses.length) * 100) : 0;
+
+      const records = Array.isArray(recordsRes?.data) ? recordsRes.data : [];
+      const vitals = Array.isArray(vitalsRes?.data) ? vitalsRes.data : [];
+      const policies = Array.isArray(policiesRes?.data) ? policiesRes.data : [];
+      const reminders = Array.isArray(remindersRes?.data) ? remindersRes.data : [];
+      const family = Array.isArray(familyRes?.data) ? familyRes.data : [];
+      const checkups = Array.isArray(checkupsRes?.data) ? checkupsRes.data : [];
+
+      const activeReminders = reminders.filter((r: any) => r.status !== 'COMPLETED' && !r.isCompletedToday);
+      const activePolicies = policies.filter((p: any) => !p.status || String(p.status).toUpperCase() === 'ACTIVE');
+      const primaryPolicy = activePolicies[0] || policies[0];
+      const coverageAmount = Number(primaryPolicy?.sumInsured || primaryPolicy?.coverageAmount || 0);
+      const formattedCoverage =
+        coverageAmount >= 100000
+          ? `₹${(coverageAmount / 100000).toFixed(coverageAmount % 100000 === 0 ? 0 : 1)}L`
+          : coverageAmount > 0
+            ? `₹${coverageAmount.toLocaleString('en-IN')}`
+            : activePolicies.length > 0
+              ? `${activePolicies.length} Active`
+              : 'None';
+
+      // Compute real health score from latest vital & adherence
+      const latestVital = vitals[0];
+      const subScores: number[] = [];
+      if (latestVital?.heartRate) {
+        const hr = Number(latestVital.heartRate);
+        subScores.push(hr >= 60 && hr <= 100 ? 92 : hr >= 50 && hr <= 110 ? 78 : 65);
       }
-    }).catch(() => {});
+      if (latestVital?.systolicBp && latestVital?.diastolicBp) {
+        const sys = Number(latestVital.systolicBp);
+        const dia = Number(latestVital.diastolicBp);
+        subScores.push(sys <= 125 && dia <= 85 && sys >= 90 ? 92 : sys <= 140 ? 78 : 64);
+      }
+      if (latestVital?.oxygenSaturation) {
+        const spo2 = Number(latestVital.oxygenSaturation);
+        subScores.push(spo2 >= 95 ? 96 : spo2 >= 90 ? 80 : 65);
+      }
+      if (todayDoses.length > 0) {
+        subScores.push(adherencePct);
+      }
+      const computedScore =
+        subScores.length > 0 ? Math.round(subScores.reduce((a, b) => a + b, 0) / subScores.length) : 0;
+
+      const upcomingCheckups = checkups.filter((c: any) => c.status !== 'COMPLETED');
+
+      setItems((prev) =>
+        prev.map((item) => {
+          if (item.id === 'checkup') {
+            const count = upcomingCheckups.length || activeReminders.length;
+            return {
+              ...item,
+              value: count > 0 ? count.toString().padStart(2, '0') : '00',
+              subtitle:
+                upcomingCheckups.length > 0
+                  ? `${upcomingCheckups.length} scheduled check-up${upcomingCheckups.length > 1 ? 's' : ''}`
+                  : `${activeReminders.length} active reminder${activeReminders.length === 1 ? '' : 's'}`,
+              badgeText:
+                upcomingCheckups.length > 0
+                  ? `📅 ${upcomingCheckups.length} Scheduled`
+                  : activeReminders.length > 0
+                    ? `🔔 ${activeReminders.length} Active`
+                    : 'No checkups yet',
+              footerText:
+                records.length > 0
+                  ? `${records.length} medical record${records.length === 1 ? '' : 's'} in vault`
+                  : 'Schedule a preventive check-up',
+            };
+          }
+          if (item.id === 'insurance') {
+            return {
+              ...item,
+              value: formattedCoverage,
+              subtitle: primaryPolicy
+                ? `${primaryPolicy.providerName || primaryPolicy.insurerName || 'Insurance'} ${primaryPolicy.planName || primaryPolicy.policyType || 'Policy'}`
+                : 'No active policy linked',
+              badgeText: activePolicies.length > 0 ? '✓ Covered' : 'Not Linked',
+              footerText:
+                activePolicies.length > 0
+                  ? `${activePolicies.length} active polic${activePolicies.length === 1 ? 'y' : 'ies'}`
+                  : 'Add insurance coverage details',
+            };
+          }
+          if (item.id === 'family') {
+            return {
+              ...item,
+              value: family.length.toString().padStart(2, '0'),
+              subtitle:
+                family.length > 0
+                  ? `${family.length} linked family member${family.length === 1 ? '' : 's'}`
+                  : 'No family members linked',
+              badgeText: family.length > 0 ? `+ ${family.length} Linked` : '0 Linked',
+              footerText:
+                family.length > 0
+                  ? 'Family Connected · Manage loved ones'
+                  : 'Connect family & dependents',
+            };
+          }
+          if (item.id === 'appointments') {
+            return {
+              ...item,
+              value: upcomingApts.length.toString().padStart(2, '0'),
+              subtitle:
+                upcomingApts.length > 0
+                  ? `${upcomingApts.length} upcoming · ${apts.length} total`
+                  : `${apts.length} total appointment${apts.length === 1 ? '' : 's'}`,
+              badgeText: `📅 ${upcomingApts.length} Upcoming`,
+              footerText:
+                upcomingApts.length > 0
+                  ? 'Stay on Track · Upcoming appts.'
+                  : 'Book a doctor consultation',
+            };
+          }
+          if (item.id === 'medicines') {
+            return {
+              ...item,
+              value: activeMeds.length.toString().padStart(2, '0'),
+              subtitle:
+                todayDoses.length > 0
+                  ? `${adherencePct}% adherence (${takenToday}/${todayDoses.length} today)`
+                  : activeMeds.length > 0
+                    ? `${activeMeds.length} active medication${activeMeds.length === 1 ? '' : 's'}`
+                    : 'No active medications',
+              badgeText:
+                todayDoses.length > 0
+                  ? `✓ ${adherencePct}% On Time`
+                  : activeMeds.length > 0
+                    ? `${activeMeds.length} Active`
+                    : 'No doses today',
+              footerText:
+                todayDoses.length > 0
+                  ? adherencePct >= 80
+                    ? 'Great Adherence! Keep it up'
+                    : 'Remember remaining doses today'
+                  : 'Track daily prescriptions',
+            };
+          }
+          if (item.id === 'analytics') {
+            return {
+              ...item,
+              value: computedScore.toString(),
+              subtitle:
+                vitals.length > 0
+                  ? `Based on ${vitals.length} vital reading${vitals.length === 1 ? '' : 's'}`
+                  : 'Log vitals to calculate score',
+              badgeText:
+                computedScore >= 80
+                  ? '✓ Optimal'
+                  : computedScore > 0
+                    ? 'Moderate'
+                    : 'No data yet',
+              footerText:
+                vitals.length > 0
+                  ? `${records.length} records · ${vitals.length} vitals`
+                  : 'Add vitals to track progress',
+            };
+          }
+          return item;
+        })
+      );
+    };
+
+    loadAllStats();
+    const handleRefresh = () => loadAllStats();
+    window.addEventListener('health_workflow_updated', handleRefresh);
+    return () => {
+      mounted = false;
+      window.removeEventListener('health_workflow_updated', handleRefresh);
+    };
   }, []);
 
   useEffect(() => {
@@ -422,41 +606,11 @@ export const DashboardStatsGrid: React.FC<DashboardStatsGridProps> = ({
     return val;
   };
 
-  const translateStatSubtitle = (id: string, original: string) => {
-    switch (id) {
-      case 'checkup': return t('card.scheduled_in_30_days', original);
-      case 'insurance': return t('card.careplus_active', original);
-      case 'family': return t('card.shared_emergency_records', original);
-      case 'appointments': return t('card.upcoming_this_week', original);
-      case 'medicines': return t('card.adherence_today', original);
-      case 'analytics': return t('card.points_from_last_week', original);
-      default: return original;
-    }
-  };
+  const translateStatSubtitle = (_id: string, original: string) => original;
 
-  const translateStatBadge = (id: string, original: string) => {
-    switch (id) {
-      case 'checkup': return `📅 ${t('card.scheduled_in_30_days', 'Scheduled in 30 days')}`;
-      case 'insurance': return `✓ ${t('card.covered', 'Covered')}`;
-      case 'family': return `+ 3 ${t('card.linked', 'Linked')}`;
-      case 'appointments': return `📅 2 ${t('card.upcoming', 'Upcoming')}`;
-      case 'medicines': return `✓ 100% ${t('card.on_time', 'On Time')}`;
-      case 'analytics': return `↑ +4 ${t('card.pts', 'pts')}`;
-      default: return original;
-    }
-  };
+  const translateStatBadge = (_id: string, original: string) => original;
 
-  const translateStatFooter = (id: string, original: string) => {
-    switch (id) {
-      case 'checkup': return t('card.stay_healthy_checkup', original);
-      case 'insurance': return t('card.protected_coverage_active', original);
-      case 'family': return t('card.family_connected', original);
-      case 'appointments': return t('card.stay_on_track', original);
-      case 'medicines': return t('card.great_adherence', original);
-      case 'analytics': return t('card.improving_great', original);
-      default: return original;
-    }
-  };
+  const translateStatFooter = (_id: string, original: string) => original;
 
   return (
     /* ── ORIGINAL: grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-6 gap-3 — UNCHANGED ── */

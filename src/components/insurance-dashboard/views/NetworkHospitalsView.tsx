@@ -1,10 +1,11 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
   Building2, MapPin, Phone, ShieldCheck, Search, X, CheckCircle2, 
   Map, Star, Activity, PlusCircle, AlertCircle, Bookmark, ChevronLeft, ChevronRight, Stethoscope
 } from 'lucide-react';
 import { useLanguage } from '../../../context/LanguageContext';
+import { insuranceApi } from '../../../services/dhrApis';
 
 type Hospital = {
   id: string;
@@ -22,72 +23,61 @@ type Hospital = {
   lastVerified: string;
 };
 
-const HOSPITALS: Hospital[] = [
-  {
-    id: 'HOSP-001',
-    name: 'Apollo Central Health City',
-    location: 'Chennai, Tamil Nadu',
-    fullAddress: '21 Greams Lane, Off Greams Road, Thousand Lights, Chennai 600006',
-    type: 'Multi-Specialty Hospital',
-    status: 'Active',
-    cashlessAvailable: true,
-    specialties: ['Cardiology', 'Oncology', 'Orthopedics', 'Neurology'],
-    tpa: ['Star Health', 'HDFC ERGO', 'ICICI Lombard'],
-    cashlessServices: ['Admission', 'Surgery', 'Emergency', 'Diagnostics'],
-    phone: '+91 44 2829 0200',
-    rating: '4.9',
-    lastVerified: 'Aug 25, 2026'
-  },
-  {
-    id: 'HOSP-002',
-    name: 'Fortis Malar Hospital',
-    location: 'Chennai, Tamil Nadu',
-    fullAddress: '52, 1st Main Rd, Gandhi Nagar, Adyar, Chennai 600020',
-    type: 'General Hospital',
-    status: 'Active',
-    cashlessAvailable: true,
-    specialties: ['Cardiology', 'Urology', 'General Surgery'],
-    tpa: ['Star Health', 'Care Health'],
-    cashlessServices: ['Admission', 'Surgery', 'Emergency'],
-    phone: '+91 44 4289 2222',
-    rating: '4.7',
-    lastVerified: 'Aug 20, 2026'
-  },
-  {
-    id: 'HOSP-003',
-    name: 'MIOT International',
-    location: 'Chennai, Tamil Nadu',
-    fullAddress: '4/112, Mount Poonamallee Rd, Manapakkam, Chennai 600089',
-    type: 'Specialty Hospital',
-    status: 'Active',
-    cashlessAvailable: true,
-    specialties: ['Orthopedics', 'Trauma', 'Cardiology'],
-    tpa: ['Star Health', 'Bajaj Allianz'],
-    cashlessServices: ['Admission', 'Surgery', 'Diagnostics'],
-    phone: '+91 44 4200 2288',
-    rating: '4.8',
-    lastVerified: 'Aug 28, 2026'
-  },
-  {
-    id: 'HOSP-004',
-    name: 'City Care Clinic',
-    location: 'Coimbatore, Tamil Nadu',
-    fullAddress: '15, Cross Cut Road, Gandhipuram, Coimbatore 641012',
-    type: 'Clinic',
-    status: 'Under Review',
-    cashlessAvailable: false,
-    specialties: ['General Medicine', 'Pediatrics'],
-    tpa: ['N/A'],
-    cashlessServices: ['N/A'],
-    phone: '+91 422 223 4567',
-    rating: '4.1',
-    lastVerified: 'Sep 01, 2026'
-  }
-];
-
 export const NetworkHospitalsView: React.FC = () => {
   const { t } = useLanguage();
+  const [HOSPITALS, setHospitals] = useState<Hospital[]>([]);
   const [selectedHospital, setSelectedHospital] = useState<Hospital | null>(null);
+
+  useEffect(() => {
+    insuranceApi
+      .getNetworkHospitals()
+      .then((res) => {
+        if (res?.data && Array.isArray(res.data)) {
+          setHospitals(
+            res.data.map((h: any) => {
+              let parsedDepts: string[] = ['General Medicine', 'Emergency'];
+              if (h.departments) {
+                try {
+                  const arr = typeof h.departments === 'string' ? JSON.parse(h.departments) : h.departments;
+                  if (Array.isArray(arr) && arr.length > 0) parsedDepts = arr;
+                } catch {}
+              }
+              const rawStatus = String(h.status || '').toUpperCase();
+              const status: Hospital['status'] =
+                rawStatus === 'ACTIVE' ? 'Active' : rawStatus === 'SUSPENDED' || rawStatus === 'REJECTED' ? 'Inactive' : 'Under Review';
+              return {
+                id: h.code || h.id,
+                name: h.name,
+                location: [h.city, h.state].filter(Boolean).join(', ') || 'Not Recorded',
+                fullAddress: h.address || [h.city, h.state].filter(Boolean).join(', ') || 'Not Recorded',
+                type: h.accreditation || h.type || 'Multi-Specialty Hospital',
+                status,
+                cashlessAvailable: status === 'Active',
+                specialties: parsedDepts,
+                tpa: ['MediCare TPA'],
+                cashlessServices: ['Admission', 'Surgery', 'Emergency', 'Diagnostics'],
+                phone: h.contactPhone || 'Not Recorded',
+                rating: h.rating ? String(h.rating) : '—',
+                lastVerified: h.updatedAt ? new Date(h.updatedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : 'Not Recorded',
+              };
+            })
+          );
+        }
+      })
+      .catch(() => setHospitals([]));
+  }, []);
+
+  const totalHospitals = HOSPITALS.length;
+  const cashlessCount = HOSPITALS.filter((h) => h.cashlessAvailable).length;
+  const citiesList = React.useMemo(() => {
+    const set = new Set<string>();
+    HOSPITALS.forEach((h) => {
+      const city = h.location.split(',')[0]?.trim();
+      if (city && city !== 'Not Recorded') set.add(city);
+    });
+    return Array.from(set).sort();
+  }, [HOSPITALS]);
+  const activePct = totalHospitals > 0 ? Math.round((HOSPITALS.filter((h) => h.status === 'Active').length / totalHospitals) * 100) : 0;
   
   // Draft states (bound to inputs)
   const [searchQuery, setSearchQuery] = useState('');
@@ -150,19 +140,19 @@ export const NetworkHospitalsView: React.FC = () => {
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col justify-center">
           <p className="text-[10px] uppercase font-bold text-slate-400 mb-1">{t('Network Hospitals')}</p>
-          <p className="text-2xl font-black text-blue-600 dark:text-cyan-400">1,248</p>
+          <p className="text-2xl font-black text-blue-600 dark:text-cyan-400">{totalHospitals.toLocaleString('en-IN')}</p>
         </div>
         <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col justify-center">
           <p className="text-[10px] uppercase font-bold text-slate-400 mb-1">{t('Cashless Enabled')}</p>
-          <p className="text-2xl font-black text-emerald-600 dark:text-emerald-400">986</p>
+          <p className="text-2xl font-black text-emerald-600 dark:text-emerald-400">{cashlessCount.toLocaleString('en-IN')}</p>
         </div>
         <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col justify-center">
           <p className="text-[10px] uppercase font-bold text-slate-400 mb-1">{t('Cities Covered')}</p>
-          <p className="text-2xl font-black text-purple-600 dark:text-purple-400">182</p>
+          <p className="text-2xl font-black text-purple-600 dark:text-purple-400">{citiesList.length}</p>
         </div>
         <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col justify-center">
           <p className="text-[10px] uppercase font-bold text-slate-400 mb-1">{t('Active Network')}</p>
-          <p className="text-2xl font-black text-amber-600 dark:text-amber-400">97%</p>
+          <p className="text-2xl font-black text-amber-600 dark:text-amber-400">{activePct}%</p>
         </div>
       </div>
 
@@ -186,10 +176,10 @@ export const NetworkHospitalsView: React.FC = () => {
             onChange={(e) => setLocationFilter(e.target.value)}
             className="w-full px-4 py-2.5 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl text-sm font-medium text-slate-700 dark:text-slate-300 outline-none focus:ring-2 focus:ring-blue-500/50"
           >
-            <option value="">Location / City</option>
-            <option value="chennai">Chennai</option>
-            <option value="coimbatore">Coimbatore</option>
-            <option value="madurai">Madurai</option>
+            <option value="">Location / City (All)</option>
+            {citiesList.map((city) => (
+              <option key={city} value={city.toLowerCase()}>{city}</option>
+            ))}
           </select>
 
           <select 
@@ -364,21 +354,11 @@ export const NetworkHospitalsView: React.FC = () => {
         )}
       </div>
 
-      {/* 5. PAGINATION */}
-      <div className="flex justify-center mt-8">
-        <div className="flex items-center gap-1 bg-white dark:bg-slate-900 p-1 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm">
-          <button className="p-2 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 cursor-not-allowed">
-            <ChevronLeft className="w-5 h-5" />
-          </button>
-          <button className="w-9 h-9 rounded-xl bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-cyan-400 font-black text-sm flex items-center justify-center cursor-pointer">1</button>
-          <button className="w-9 h-9 rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-400 font-bold text-sm flex items-center justify-center cursor-pointer">2</button>
-          <button className="w-9 h-9 rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-400 font-bold text-sm flex items-center justify-center cursor-pointer">3</button>
-          <span className="px-2 text-slate-400">...</span>
-          <button className="w-9 h-9 rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-400 font-bold text-sm flex items-center justify-center cursor-pointer">32</button>
-          <button className="p-2 text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white cursor-pointer">
-            <ChevronRight className="w-5 h-5" />
-          </button>
-        </div>
+      {/* 5. RESULT SUMMARY FOOTER */}
+      <div className="flex justify-center mt-6">
+        <span className="px-4 py-2 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-xs font-bold text-slate-500">
+          Showing {filteredHospitals.length} of {HOSPITALS.length} network hospitals
+        </span>
       </div>
 
       {/* 6. DETAILS DRAWER */}

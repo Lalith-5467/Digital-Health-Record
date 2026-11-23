@@ -53,7 +53,7 @@ export const AccountSettingsSection: React.FC<AccountSettingsSectionProps> = ({
       <div className="p-4 bg-rose-500/5 dark:bg-slate-950 rounded-2xl border border-rose-300 dark:border-rose-500/30 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
         <div>
           <h4 className="font-extrabold text-slate-900 dark:text-white text-sm">Deactivate Account</h4>
-          <p className="text-[11px] text-slate-600 dark:text-slate-400 font-medium">Mark account inactive locally. You can reactivate anytime.</p>
+          <p className="text-[11px] text-slate-600 dark:text-slate-400 font-medium">Deactivate your account in the database. Contact support to reactivate.</p>
         </div>
 
         <button
@@ -73,7 +73,7 @@ export const AccountSettingsSection: React.FC<AccountSettingsSectionProps> = ({
               <h4 className="font-extrabold text-slate-900 dark:text-white text-sm">Confirm Account Deactivation</h4>
               <button onClick={() => setDeactivateModalOpen(false)} className="p-1 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-900 dark:text-white cursor-pointer"><X className="w-5 h-5" /></button>
             </div>
-            <p className="text-slate-600 dark:text-slate-300 font-medium">Are you sure you want to deactivate your demo patient account?</p>
+            <p className="text-slate-600 dark:text-slate-300 font-medium">Are you sure you want to deactivate your patient account?</p>
             <div className="pt-2 flex justify-between gap-3 font-sans">
               <button onClick={() => setDeactivateModalOpen(false)} className="px-4 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-300 font-bold border border-slate-300 dark:border-slate-700">Cancel</button>
               <button

@@ -1,7 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { X, Filter, RotateCcw, Check } from 'lucide-react';
 import type { RecordFilterState } from './recordsData';
+import { appointmentApi } from '../../services/dhrApis';
 
 interface RecordFilterDrawerProps {
   isOpen: boolean;
@@ -9,6 +10,7 @@ interface RecordFilterDrawerProps {
   filters: RecordFilterState;
   onApplyFilters: (filters: RecordFilterState) => void;
   onResetFilters: () => void;
+  availableDoctors?: string[];
 }
 
 export const RecordFilterDrawer: React.FC<RecordFilterDrawerProps> = ({
@@ -16,13 +18,33 @@ export const RecordFilterDrawer: React.FC<RecordFilterDrawerProps> = ({
   onClose,
   filters,
   onApplyFilters,
-  onResetFilters
+  onResetFilters,
+  availableDoctors = [],
 }) => {
   const [localFilters, setLocalFilters] = useState<RecordFilterState>(filters);
+  const [apiDoctors, setApiDoctors] = useState<string[]>([]);
 
-  React.useEffect(() => {
+  useEffect(() => {
     setLocalFilters(filters);
   }, [filters, isOpen]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    let mounted = true;
+    appointmentApi
+      .getDoctors()
+      .then((res) => {
+        if (mounted && Array.isArray(res?.data)) {
+          setApiDoctors(res.data.map((d: any) => d.fullName).filter(Boolean));
+        }
+      })
+      .catch(() => {
+        if (mounted) setApiDoctors([]);
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [isOpen]);
 
   const handleApply = () => {
     onApplyFilters(localFilters);
@@ -34,9 +56,13 @@ export const RecordFilterDrawer: React.FC<RecordFilterDrawerProps> = ({
     onClose();
   };
 
+  const currentYear = new Date().getFullYear();
   const recordTypes = ['All', 'Lab Report', 'Prescription', 'Consultation', 'Imaging', 'Discharge', 'Vaccination', 'Other'];
-  const years = ['All', '2026', '2025', '2024', 'Older'];
-  const doctors = ['All', 'Dr. Rajesh Kumar', 'Dr. Priya Sharma', 'Dr. Arun Kumar', 'Dr. Anita Desai'];
+  const years = ['All', String(currentYear), String(currentYear - 1), String(currentYear - 2), 'Older'];
+  const doctors = useMemo(() => {
+    const merged = Array.from(new Set([...availableDoctors, ...apiDoctors].filter(Boolean)));
+    return ['All', ...merged];
+  }, [availableDoctors, apiDoctors]);
 
   if (!isOpen) return null;
 

@@ -1,9 +1,10 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Menu, X, Bell, Shield, LogOut, ChevronDown, UserCheck,
   HelpCircle, Search, ShieldCheck, KeyRound, Sparkles, Check,
-  AlertTriangle, Lock, User
+  AlertTriangle, Lock, User, FileText, Calendar, Activity,
+  Pill, Send, RefreshCw, Loader2, CheckCircle2
 } from 'lucide-react';
 import { Logo } from '../components/ui/Logo';
 import { ThemeToggle } from '../components/ui/ThemeToggle';
@@ -26,7 +27,7 @@ import { AdminProfileSettingsView } from '../components/admin-dashboard/views/Ad
 import { NotificationPopover } from '../components/dashboard/NotificationPopover';
 import { DashboardAnnouncementBanner } from '../components/common/DashboardAnnouncementBanner';
 import { ErrorBoundary } from '../components/common/ErrorBoundary';
-import { notificationApi } from '../services/dhrApis';
+import { adminExtendedApi, notificationApi, profileApi } from '../services/dhrApis';
 import { getAuthToken, parseJwtRole } from '../services/apiClient';
 
 interface AdminDashboardPageProps {
@@ -55,16 +56,14 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
     }
     const propRole = (user?.role || '').toUpperCase();
     if (propRole === 'SUPER_ADMIN' || propRole.includes('SUPER')) return 'Super Admin';
-    if (propRole === 'ADMIN') return 'Admin';
-    return 'Super Admin';
+    return 'Admin';
   };
 
-  const [currentRole, setCurrentRole] = useState<'Admin' | 'Super Admin'>(getInitialAdminRole);
+  const currentRole: 'Admin' | 'Super Admin' = getInitialAdminRole();
   const [activeNavId, setActiveNavId] = useState<string>(initialNavId);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [isProfileDropdownOpen, setIsProfileDropdownOpen] = useState(false);
-  const [isRoleModalOpen, setIsRoleModalOpen] = useState(false);
   const [notificationPopoverOpen, setNotificationPopoverOpen] = useState(false);
   const [unreadNotificationsCount, setUnreadNotificationsCount] = useState(0);
 
@@ -90,52 +89,39 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
     return () => window.removeEventListener('notifications_updated', handleUpdate);
   }, []);
 
-  const [currentAdminUser, setCurrentAdminUser] = useState(() => {
-    try {
-      const stored = localStorage.getItem('app_user');
-      if (stored) {
-        const parsed = JSON.parse(stored);
-        if (parsed && parsed.name) return parsed;
-      }
-    } catch {}
-    return user;
-  });
+  const [currentAdminUser, setCurrentAdminUser] = useState<any>(user || null);
 
-  React.useEffect(() => {
-    const handleUserUpdated = () => {
-      try {
-        const stored = localStorage.getItem('app_user');
-        if (stored) {
-          const parsed = JSON.parse(stored);
-          if (parsed && parsed.name) {
-            setCurrentAdminUser((prev: any) => ({
-              ...(prev || {}),
-              ...parsed
-            }));
+  useEffect(() => {
+    const loadProfile = () => {
+      profileApi
+        .getProfile()
+        .then((res) => {
+          if (res?.data) {
+            const d: any = res.data;
+            setCurrentAdminUser({
+              name: d.fullName || d.profile?.fullName || d.email?.split('@')[0],
+              email: d.email,
+              role: d.role,
+            });
           }
-        }
-      } catch {}
+        })
+        .catch(() => {});
     };
-    window.addEventListener('app_user_updated', handleUserUpdated);
-    return () => window.removeEventListener('app_user_updated', handleUserUpdated);
+    loadProfile();
+    window.addEventListener('app_user_updated', loadProfile);
+    return () => window.removeEventListener('app_user_updated', loadProfile);
   }, []);
 
-  const resolveAdminDisplayName = (u?: any, role?: string) => {
-    if (u?.name && u.name.trim() && u.name.toLowerCase() !== 'superadmin' && u.name.toLowerCase() !== 'admin') {
-      return u.name;
-    }
-    const emailLower = (u?.email || '').toLowerCase();
-    if (emailLower === 'superadmin@dhr-medicare.in' || (role && role.includes('Super'))) {
-      return 'Vikramaditya Rao';
-    }
-    if (emailLower === 'admin.kavita@dhr-medicare.in' || emailLower === 'admin@health.com') {
-      return 'Kavita Sundaram';
-    }
-    return role === 'Super Admin' ? 'Vikramaditya Rao' : 'Administrator';
-  };
-
-  const adminName = resolveAdminDisplayName(currentAdminUser || user, currentRole);
-  const adminEmail = currentAdminUser?.email || user?.email || (currentRole === 'Super Admin' ? 'superadmin@dhr-medicare.in' : 'admin@dhr-medicare.in');
+  const rawAdminName =
+    (currentAdminUser?.name && currentAdminUser.name.trim()) ||
+    (user?.name && user.name.trim()) ||
+    currentRole;
+  const adminName =
+    rawAdminName.toLowerCase() === 'system administrator' ||
+    rawAdminName.toLowerCase() === 'hospital administrator'
+      ? (currentRole === 'Super Admin' ? 'Super Admin' : 'Admin')
+      : rawAdminName;
+  const adminEmail = currentAdminUser?.email || user?.email || '';
 
   const SUPER_ADMIN_ONLY_VIEWS = [
     'admin-management',
@@ -176,12 +162,9 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
               This administrative module contains system-wide security, role assignment, and firewall policies. Please elevate your credentials to Super Admin.
             </p>
           </div>
-          <button
-            onClick={() => setCurrentRole('Super Admin')}
-            className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-blue-500 to-cyan-500 text-slate-950 font-black text-xs shadow-md cursor-pointer"
-          >
-            Switch Role to Super Admin
-          </button>
+          <p className="text-xs font-bold text-slate-400">
+            Sign in with a verified Super Admin account to access governance controls.
+          </p>
         </div>
       );
     }
@@ -195,9 +178,7 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
             <AdminHospitalManagementView
               onLaunchHospitalPortal={(hospital) => {
                 if (onNavigate) {
-                  try {
-                    localStorage.setItem('active_hospital_portal', JSON.stringify(hospital));
-                  } catch { }
+                  window.history.pushState(null, '', `/hospital/dashboard?hospitalId=${encodeURIComponent(hospital.id)}`);
                   onNavigate('hospital/dashboard');
                 }
               }}
@@ -219,12 +200,14 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
       case 'insurance':
         return <AdminOperationsView type="insurance" />;
       case 'pharmacy-orders':
+        return <AdminOperationsView type="pharmacy" />;
       case 'prescriptions':
       case 'medical-records':
       case 'appointments':
       case 'vitals-monitoring':
+        return <AdminClinicalOverviewPanel activeSection={activeNavId} />;
       case 'notifications-dispatch':
-        return <AdminOperationsView type="pharmacy" />;
+        return <AdminNotificationsDispatchPanel />;
       case 'admin-management':
         return <SuperAdminManagementView currentRole={currentRole} />;
       case 'roles-permissions':
@@ -327,20 +310,14 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
                     <User className="w-3.5 h-3.5 text-[#00a896]" /> My Profile & Settings
                   </button>
 
-                  <button
-                    onClick={() => {
-                      setCurrentRole(currentRole === 'Admin' ? 'Super Admin' : 'Admin');
-                      setIsProfileDropdownOpen(false);
-                    }}
-                    className="w-full flex items-center justify-between px-3 py-2 rounded-xl text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
-                  >
+                  <div className="w-full flex items-center justify-between px-3 py-2 rounded-xl text-slate-500 dark:text-slate-400">
                     <span className="flex items-center gap-2">
-                      <KeyRound className="w-3.5 h-3.5 text-amber-500" /> Switch Role Mode
+                      <KeyRound className="w-3.5 h-3.5 text-amber-500" /> Verified Role
                     </span>
-                    <span className="text-[9px] font-mono text-slate-400">
-                      {currentRole === 'Admin' ? '→ Super' : '→ Admin'}
+                    <span className="text-[9px] font-mono font-bold text-teal-600 dark:text-cyan-400">
+                      {currentRole}
                     </span>
-                  </button>
+                  </div>
 
                   <div className="pt-1 border-t border-slate-100 dark:border-slate-800">
                     <button
@@ -427,6 +404,429 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
           handleSelectNav('activity-logs');
         }}
       />
+    </div>
+  );
+};
+
+// ==========================================
+// REAL DB-BACKED CLINICAL OVERVIEW PANEL
+// ==========================================
+const AdminClinicalOverviewPanel: React.FC<{ activeSection: string }> = ({ activeSection }) => {
+  const [data, setData] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [searchTerm, setSearchTerm] = useState('');
+
+  const loadClinical = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await adminExtendedApi.getClinicalOverview();
+      setData(res?.data || null);
+    } catch (err: any) {
+      setError(err?.message || 'Failed to load clinical overview from database');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadClinical();
+  }, [activeSection]);
+
+  const counts = data?.counts || {
+    prescriptions: 0,
+    medicalRecords: 0,
+    appointments: 0,
+    vitals: 0,
+    careRequests: 0,
+    insuranceClaims: 0,
+    pharmacyOrders: 0,
+  };
+
+  const sectionMeta: Record<string, { title: string; subtitle: string }> = {
+    prescriptions: {
+      title: 'Clinical Prescriptions Registry',
+      subtitle: 'Live prescriptions issued across all doctors and patients in MySQL.',
+    },
+    'medical-records': {
+      title: 'Medical Records & Clinical Vault',
+      subtitle: 'Centralized repository of patient medical records, diagnostic reports, and clinical summaries.',
+    },
+    appointments: {
+      title: 'Appointments & Consultations Log',
+      subtitle: 'Real-time consultation schedule and appointment audit across the hospital network.',
+    },
+    'vitals-monitoring': {
+      title: 'Vitals & Clinical Telemetry Overview',
+      subtitle: 'Aggregated clinical counts for vitals logs, care requests, prescriptions, and records.',
+    },
+  };
+
+  const meta = sectionMeta[activeSection] || sectionMeta.appointments;
+  const q = searchTerm.trim().toLowerCase();
+
+  const recentPrescriptions: any[] = (data?.recentPrescriptions || []).filter(
+    (p: any) =>
+      !q ||
+      String(p.diagnosis || '').toLowerCase().includes(q) ||
+      String(p.patient?.fullName || '').toLowerCase().includes(q) ||
+      String(p.doctor?.fullName || '').toLowerCase().includes(q)
+  );
+
+  const recentRecords: any[] = (data?.recentRecords || []).filter(
+    (r: any) =>
+      !q ||
+      String(r.title || '').toLowerCase().includes(q) ||
+      String(r.type || '').toLowerCase().includes(q) ||
+      String(r.patient?.fullName || '').toLowerCase().includes(q)
+  );
+
+  const recentAppointments: any[] = (data?.recentAppointments || []).filter(
+    (a: any) =>
+      !q ||
+      String(a.patient?.fullName || '').toLowerCase().includes(q) ||
+      String(a.doctor?.fullName || '').toLowerCase().includes(q) ||
+      String(a.status || '').toLowerCase().includes(q)
+  );
+
+  return (
+    <div className="space-y-6 pb-16 max-w-7xl mx-auto">
+      <div className="p-6 sm:p-8 rounded-2xl bg-[#00a896] text-white shadow-lg flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div>
+          <h2 className="text-2xl font-black tracking-tight">{meta.title}</h2>
+          <p className="text-sm text-teal-50/90 font-medium mt-1">{meta.subtitle}</p>
+        </div>
+        <button
+          onClick={loadClinical}
+          disabled={loading}
+          className="px-4 py-2.5 rounded-xl bg-white text-[#00796b] font-black text-xs shadow-md flex items-center gap-2 cursor-pointer self-start md:self-auto"
+        >
+          <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} /> Refresh Live Data
+        </button>
+      </div>
+
+      {/* KPI STRIP */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="p-4 rounded-2xl bg-white dark:bg-[#0b1120] border border-slate-200 dark:border-slate-800">
+          <div className="flex items-center justify-between text-slate-400 mb-1">
+            <span className="text-xs font-bold">Prescriptions</span>
+            <Pill className="w-4 h-4 text-teal-500" />
+          </div>
+          <p className="text-2xl font-black text-slate-900 dark:text-white">{counts.prescriptions}</p>
+        </div>
+        <div className="p-4 rounded-2xl bg-white dark:bg-[#0b1120] border border-slate-200 dark:border-slate-800">
+          <div className="flex items-center justify-between text-slate-400 mb-1">
+            <span className="text-xs font-bold">Medical Records</span>
+            <FileText className="w-4 h-4 text-blue-500" />
+          </div>
+          <p className="text-2xl font-black text-slate-900 dark:text-white">{counts.medicalRecords}</p>
+        </div>
+        <div className="p-4 rounded-2xl bg-white dark:bg-[#0b1120] border border-slate-200 dark:border-slate-800">
+          <div className="flex items-center justify-between text-slate-400 mb-1">
+            <span className="text-xs font-bold">Appointments</span>
+            <Calendar className="w-4 h-4 text-emerald-500" />
+          </div>
+          <p className="text-2xl font-black text-slate-900 dark:text-white">{counts.appointments}</p>
+        </div>
+        <div className="p-4 rounded-2xl bg-white dark:bg-[#0b1120] border border-slate-200 dark:border-slate-800">
+          <div className="flex items-center justify-between text-slate-400 mb-1">
+            <span className="text-xs font-bold">Vitals Logged</span>
+            <Activity className="w-4 h-4 text-rose-500" />
+          </div>
+          <p className="text-2xl font-black text-slate-900 dark:text-white">{counts.vitals}</p>
+        </div>
+      </div>
+
+      {error && (
+        <div className="p-4 rounded-2xl bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-800 text-rose-700 dark:text-rose-300 text-xs font-bold">
+          {error}
+        </div>
+      )}
+
+      {/* SEARCH */}
+      {activeSection !== 'vitals-monitoring' && (
+        <div className="relative max-w-md">
+          <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+          <input
+            type="text"
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            placeholder="Filter records by patient, doctor, or title..."
+            className="w-full h-10 pl-10 pr-4 rounded-xl bg-white dark:bg-[#0b1120] border border-slate-200 dark:border-slate-800 text-xs font-semibold text-slate-900 dark:text-white outline-none focus:border-[#00a896]"
+          />
+        </div>
+      )}
+
+      {/* DATA TABLE */}
+      <div className="bg-white dark:bg-[#0b1120] rounded-3xl border border-slate-200 dark:border-slate-800 shadow-xs overflow-hidden">
+        {loading ? (
+          <div className="p-14 flex items-center justify-center gap-2 text-slate-500 text-sm font-bold">
+            <Loader2 className="w-5 h-5 animate-spin text-[#00a896]" /> Loading clinical database records...
+          </div>
+        ) : activeSection === 'prescriptions' ? (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs">
+              <thead className="bg-slate-50 dark:bg-slate-800/60 text-[10px] uppercase font-black tracking-wider text-slate-500 border-b border-slate-200 dark:border-slate-700">
+                <tr>
+                  <th className="py-3.5 px-5">Patient</th>
+                  <th className="py-3.5 px-4">Prescribing Doctor</th>
+                  <th className="py-3.5 px-4">Diagnosis</th>
+                  <th className="py-3.5 px-4">Medicines</th>
+                  <th className="py-3.5 px-4">Issued</th>
+                  <th className="py-3.5 px-5 text-right">Status</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                {recentPrescriptions.length === 0 ? (
+                  <tr><td colSpan={6} className="py-12 text-center text-slate-400 font-bold">No prescriptions found in database.</td></tr>
+                ) : (
+                  recentPrescriptions.map((rx: any) => (
+                    <tr key={rx.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
+                      <td className="py-3.5 px-5 font-bold text-slate-900 dark:text-white">{rx.patient?.fullName || 'Patient'}</td>
+                      <td className="py-3.5 px-4 font-semibold text-slate-700 dark:text-slate-300">{rx.doctor?.fullName || 'Doctor'}</td>
+                      <td className="py-3.5 px-4 text-slate-600 dark:text-slate-400">{rx.diagnosis || 'General'}</td>
+                      <td className="py-3.5 px-4 font-mono">{Array.isArray(rx.items) ? rx.items.length : 0} items</td>
+                      <td className="py-3.5 px-4 text-slate-500">{rx.issuedAt ? new Date(rx.issuedAt).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : '—'}</td>
+                      <td className="py-3.5 px-5 text-right font-bold text-teal-600 dark:text-teal-400">{rx.status || 'ACTIVE'}</td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        ) : activeSection === 'medical-records' ? (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs">
+              <thead className="bg-slate-50 dark:bg-slate-800/60 text-[10px] uppercase font-black tracking-wider text-slate-500 border-b border-slate-200 dark:border-slate-700">
+                <tr>
+                  <th className="py-3.5 px-5">Record Title</th>
+                  <th className="py-3.5 px-4">Patient</th>
+                  <th className="py-3.5 px-4">Type</th>
+                  <th className="py-3.5 px-4">Hospital</th>
+                  <th className="py-3.5 px-4">Record Date</th>
+                  <th className="py-3.5 px-5 text-right">Status</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                {recentRecords.length === 0 ? (
+                  <tr><td colSpan={6} className="py-12 text-center text-slate-400 font-bold">No medical records found in database.</td></tr>
+                ) : (
+                  recentRecords.map((rec: any) => (
+                    <tr key={rec.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
+                      <td className="py-3.5 px-5 font-bold text-slate-900 dark:text-white">{rec.title}</td>
+                      <td className="py-3.5 px-4 font-semibold text-slate-700 dark:text-slate-300">{rec.patient?.fullName || 'Patient'}</td>
+                      <td className="py-3.5 px-4"><span className="px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800 font-mono text-[10px] font-bold">{rec.type}</span></td>
+                      <td className="py-3.5 px-4 text-slate-600 dark:text-slate-400">{rec.hospital || 'Not Recorded'}</td>
+                      <td className="py-3.5 px-4 text-slate-500">{rec.recordDate ? new Date(rec.recordDate).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : '—'}</td>
+                      <td className="py-3.5 px-5 text-right font-bold text-emerald-600 dark:text-emerald-400">{rec.status || 'VERIFIED'}</td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        ) : activeSection === 'appointments' ? (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs">
+              <thead className="bg-slate-50 dark:bg-slate-800/60 text-[10px] uppercase font-black tracking-wider text-slate-500 border-b border-slate-200 dark:border-slate-700">
+                <tr>
+                  <th className="py-3.5 px-5">Patient</th>
+                  <th className="py-3.5 px-4">Doctor</th>
+                  <th className="py-3.5 px-4">Date & Slot</th>
+                  <th className="py-3.5 px-4">Type</th>
+                  <th className="py-3.5 px-4">Fee</th>
+                  <th className="py-3.5 px-5 text-right">Status</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                {recentAppointments.length === 0 ? (
+                  <tr><td colSpan={6} className="py-12 text-center text-slate-400 font-bold">No appointments found in database.</td></tr>
+                ) : (
+                  recentAppointments.map((apt: any) => (
+                    <tr key={apt.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
+                      <td className="py-3.5 px-5 font-bold text-slate-900 dark:text-white">{apt.patient?.fullName || 'Patient'}</td>
+                      <td className="py-3.5 px-4 font-semibold text-slate-700 dark:text-slate-300">
+                        {apt.doctor?.fullName || 'Doctor'} {apt.doctor?.speciality ? `(${apt.doctor.speciality})` : ''}
+                      </td>
+                      <td className="py-3.5 px-4 text-slate-600 dark:text-slate-400">
+                        {apt.appointmentDate ? new Date(apt.appointmentDate).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : '—'} • {apt.slotTime || '—'}
+                      </td>
+                      <td className="py-3.5 px-4 font-mono">{apt.type || 'IN_PERSON'}</td>
+                      <td className="py-3.5 px-4 font-bold">₹{Number(apt.fee || 0).toLocaleString('en-IN')}</td>
+                      <td className="py-3.5 px-5 text-right font-bold text-blue-600 dark:text-cyan-400">{apt.status}</td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="p-8 grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="p-5 rounded-2xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-800">
+              <p className="text-xs font-bold text-slate-500">Total Vitals Entries Recorded</p>
+              <p className="text-3xl font-black text-slate-900 dark:text-white mt-1">{counts.vitals}</p>
+            </div>
+            <div className="p-5 rounded-2xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-800">
+              <p className="text-xs font-bold text-slate-500">Home & Nurse Care Requests</p>
+              <p className="text-3xl font-black text-slate-900 dark:text-white mt-1">{counts.careRequests}</p>
+            </div>
+            <div className="p-5 rounded-2xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-800">
+              <p className="text-xs font-bold text-slate-500">Insurance Claims / Pharmacy Orders</p>
+              <p className="text-3xl font-black text-slate-900 dark:text-white mt-1">
+                {counts.insuranceClaims} / {counts.pharmacyOrders}
+              </p>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+// ==========================================
+// REAL DB-BACKED BROADCAST NOTIFICATION FORM
+// ==========================================
+const AdminNotificationsDispatchPanel: React.FC = () => {
+  const [targetRole, setTargetRole] = useState<string>('ALL');
+  const [title, setTitle] = useState('');
+  const [message, setMessage] = useState('');
+  const [type, setType] = useState<'INFO' | 'ALERT' | 'SUCCESS'>('INFO');
+  const [category, setCategory] = useState('Admin Broadcast');
+  const [submitting, setSubmitting] = useState(false);
+  const [feedback, setFeedback] = useState<{ kind: 'success' | 'error'; text: string } | null>(null);
+
+  const handleDispatch = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!title.trim() || !message.trim()) return;
+    setSubmitting(true);
+    setFeedback(null);
+    try {
+      const res = await adminExtendedApi.dispatchNotification({
+        targetRole,
+        title: title.trim(),
+        message: message.trim(),
+        type,
+        category: category.trim() || 'Admin Broadcast',
+      });
+      const dispatched = res?.data?.dispatched ?? 0;
+      setFeedback({ kind: 'success', text: `Broadcast persisted & dispatched to ${dispatched} active user(s) in MySQL.` });
+      setTitle('');
+      setMessage('');
+      window.dispatchEvent(new Event('notifications_updated'));
+    } catch (err: any) {
+      setFeedback({ kind: 'error', text: err?.message || 'Failed to dispatch notification.' });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="space-y-6 pb-16 max-w-3xl mx-auto">
+      <div className="p-6 sm:p-8 rounded-2xl bg-[#00a896] text-white shadow-lg">
+        <h2 className="text-2xl font-black tracking-tight flex items-center gap-2">
+          <Bell className="w-6 h-6" /> Broadcast Notifications Dispatch
+        </h2>
+        <p className="text-sm text-teal-50/90 font-medium mt-1">
+          Send real-time system alerts and clinical advisories directly to active portal users in MySQL.
+        </p>
+      </div>
+
+      {feedback && (
+        <div
+          className={`p-4 rounded-2xl text-xs font-bold flex items-center gap-2 border ${
+            feedback.kind === 'success'
+              ? 'bg-emerald-50 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800'
+              : 'bg-rose-50 dark:bg-rose-950/30 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800'
+          }`}
+        >
+          {feedback.kind === 'success' ? <CheckCircle2 className="w-4 h-4 shrink-0" /> : <AlertTriangle className="w-4 h-4 shrink-0" />}
+          <span>{feedback.text}</span>
+        </div>
+      )}
+
+      <form
+        onSubmit={handleDispatch}
+        className="bg-white dark:bg-[#0b1120] rounded-3xl border border-slate-200 dark:border-slate-800 shadow-sm p-6 sm:p-8 space-y-5"
+      >
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div>
+            <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5">Target Audience</label>
+            <select
+              value={targetRole}
+              onChange={(e) => setTargetRole(e.target.value)}
+              className="w-full h-11 px-3.5 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-sm font-semibold text-slate-900 dark:text-white outline-none focus:border-[#00a896]"
+            >
+              <option value="ALL">All Active Users</option>
+              <option value="PATIENT">Patients Only</option>
+              <option value="DOCTOR">Doctors Only</option>
+              <option value="NURSE">Nurses Only</option>
+              <option value="PHARMACIST">Pharmacists Only</option>
+              <option value="CAREGIVER">Caregivers Only</option>
+              <option value="INSURANCE_PROVIDER">Insurance Providers Only</option>
+              <option value="ADMIN">Administrators Only</option>
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5">Alert Severity</label>
+            <select
+              value={type}
+              onChange={(e) => setType(e.target.value as any)}
+              className="w-full h-11 px-3.5 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-sm font-semibold text-slate-900 dark:text-white outline-none focus:border-[#00a896]"
+            >
+              <option value="INFO">Information (INFO)</option>
+              <option value="SUCCESS">Announcement (SUCCESS)</option>
+              <option value="ALERT">Urgent Advisory (ALERT)</option>
+            </select>
+          </div>
+        </div>
+
+        <div>
+          <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5">Category</label>
+          <input
+            type="text"
+            value={category}
+            onChange={(e) => setCategory(e.target.value)}
+            placeholder="e.g. System Maintenance, Clinical Advisory"
+            className="w-full h-11 px-3.5 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-sm font-semibold text-slate-900 dark:text-white outline-none focus:border-[#00a896]"
+          />
+        </div>
+
+        <div>
+          <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5">Notification Title *</label>
+          <input
+            type="text"
+            required
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            placeholder="Enter broadcast headline..."
+            className="w-full h-11 px-3.5 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-sm font-semibold text-slate-900 dark:text-white outline-none focus:border-[#00a896]"
+          />
+        </div>
+
+        <div>
+          <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5">Message Body *</label>
+          <textarea
+            rows={4}
+            required
+            value={message}
+            onChange={(e) => setMessage(e.target.value)}
+            placeholder="Write the full notification message to dispatch to recipients..."
+            className="w-full p-3.5 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-sm font-semibold text-slate-900 dark:text-white outline-none focus:border-[#00a896]"
+          />
+        </div>
+
+        <div className="flex justify-end pt-2">
+          <button
+            type="submit"
+            disabled={submitting}
+            className="px-6 py-3 rounded-xl bg-[#00a896] hover:bg-[#00897b] text-white font-black text-xs shadow-md flex items-center gap-2 cursor-pointer disabled:opacity-60"
+          >
+            {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+            <span>{submitting ? 'Dispatching...' : 'Dispatch Broadcast Notification'}</span>
+          </button>
+        </div>
+      </form>
     </div>
   );
 };

@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { Calendar, Video, Clock, ChevronRight, CheckCircle2 } from 'lucide-react';
 import { useLanguage } from '../../context/LanguageContext';
+import { dashboardApi } from '../../services/dhrApis';
 
 interface UpcomingAppointmentCardProps {
   onNavigate: (id: string) => void;
@@ -13,23 +14,44 @@ export const UpcomingAppointmentCard: React.FC<UpcomingAppointmentCardProps> = (
   onToast
 }) => {
   const { t } = useLanguage();
-  const [secondsLeft, setSecondsLeft] = useState(6135);
+  const [nextApt, setNextApt] = useState<any>(null);
+  const [secondsLeft, setSecondsLeft] = useState(0);
 
   useEffect(() => {
+    dashboardApi
+      .getStats()
+      .then((res) => {
+        const apt = res?.data?.nextAppointment || null;
+        setNextApt(apt);
+        if (apt?.appointmentDate) {
+          const diffSec = Math.max(0, Math.floor((new Date(apt.appointmentDate).getTime() - Date.now()) / 1000));
+          setSecondsLeft(diffSec);
+        }
+      })
+      .catch(() => setNextApt(null));
+  }, []);
+
+  useEffect(() => {
+    if (!nextApt) return;
     const timer = setInterval(() => {
       setSecondsLeft((prev) => (prev > 0 ? prev - 1 : 0));
     }, 1000);
     return () => clearInterval(timer);
-  }, []);
+  }, [nextApt]);
 
   const hours = Math.floor(secondsLeft / 3600);
   const minutes = Math.floor((secondsLeft % 3600) / 60);
   const secs = secondsLeft % 60;
   const pad = (n: number) => n.toString().padStart(2, '0');
-  const isReady = secondsLeft === 0;
+  const isReady = nextApt ? secondsLeft === 0 : false;
 
   const handleJoinCall = () => {
-    onToast(t('apt_card.joining_demo', '✓ Joining Tele-Consult video room (Demo)...'));
+    if (!nextApt) {
+      onNavigate('appointments');
+      return;
+    }
+    onToast(t('apt_card.joining_demo', 'Opening Tele-Consultation room...'));
+    onNavigate('consultation');
   };
 
   return (
@@ -83,22 +105,32 @@ export const UpcomingAppointmentCard: React.FC<UpcomingAppointmentCardProps> = (
           style={{ boxShadow: '0 0 0 2.5px rgba(14,165,233,.35)' }}
         />
         <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 flex-wrap">
-            <h4 className="text-sm font-extrabold text-slate-900 dark:text-white line-clamp-1">
-              Dr. Rajesh Kumar
-            </h4>
-            {/* Confirmed status indicator */}
-            <span className="flex items-center gap-0.5 text-[10px] font-bold px-1.5 py-0.5 rounded-full"
-              style={{ background: 'rgba(16,185,129,.1)', color: '#059669', border: '1px solid rgba(16,185,129,.25)' }}>
-              <CheckCircle2 className="w-2.5 h-2.5" />
-              <span>{t('apt_card.confirmed', 'Confirmed')}</span>
-            </span>
-          </div>
-          <p className="text-[11px] text-slate-500 dark:text-slate-400 font-medium mt-0.5">{t('apt_card.doctor_role', 'Senior General Physician')}</p>
-          <div className="flex items-center gap-1.5 text-[10px] font-bold mt-1.5" style={{ color: '#0284c7' }}>
-            <Calendar className="w-3 h-3" />
-            <span className="font-mono">25 Aug 2026 · 10:30 AM</span>
-          </div>
+          {nextApt ? (
+            <>
+              <div className="flex items-center gap-2 flex-wrap">
+                <h4 className="text-sm font-extrabold text-slate-900 dark:text-white line-clamp-1">
+                  {nextApt.doctor?.fullName || 'Scheduled Physician'}
+                </h4>
+                <span className="flex items-center gap-0.5 text-[10px] font-bold px-1.5 py-0.5 rounded-full"
+                  style={{ background: 'rgba(16,185,129,.1)', color: '#059669', border: '1px solid rgba(16,185,129,.25)' }}>
+                  <CheckCircle2 className="w-2.5 h-2.5" />
+                  <span>{nextApt.status || t('apt_card.confirmed', 'Confirmed')}</span>
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400 font-medium mt-0.5">{nextApt.doctor?.speciality || 'Specialist'}</p>
+              <div className="flex items-center gap-1.5 text-[10px] font-bold mt-1.5" style={{ color: '#0284c7' }}>
+                <Calendar className="w-3 h-3" />
+                <span className="font-mono">
+                  {new Date(nextApt.appointmentDate).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })} · {nextApt.slotTime}
+                </span>
+              </div>
+            </>
+          ) : (
+            <div>
+              <h4 className="text-sm font-extrabold text-slate-900 dark:text-white">No Upcoming Appointments</h4>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400 font-medium mt-0.5">Book a consultation to see it here.</p>
+            </div>
+          )}
         </div>
       </div>
 

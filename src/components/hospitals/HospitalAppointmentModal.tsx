@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
-import { X, Calendar, Check, Sparkles, ExternalLink } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { X, Calendar, Check, Sparkles, AlertCircle } from 'lucide-react';
 import type { HospitalItem } from './hospitalsData';
+import { appointmentApi } from '../../services/dhrApis';
 
 interface HospitalAppointmentModalProps {
   hospital: HospitalItem | null;
@@ -16,25 +17,87 @@ export const HospitalAppointmentModal: React.FC<HospitalAppointmentModalProps> =
   onConfirmBooking,
 }) => {
   const [selectedDept, setSelectedDept] = useState<string>('');
-  const [selectedDoc, setSelectedDoc] = useState<string>('Dr. Rajesh Kumar');
-  const [preferredDate, setPreferredDate] = useState<string>('2026-08-25');
+  const [doctors, setDoctors] = useState<any[]>([]);
+  const [loadingDoctors, setLoadingDoctors] = useState(false);
+  const [selectedDoctorId, setSelectedDoctorId] = useState<string>('');
+  const [preferredDate, setPreferredDate] = useState<string>(() => {
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    return tomorrow.toISOString().split('T')[0];
+  });
   const [preferredTime, setPreferredTime] = useState<string>('10:30 AM');
   const [reason, setReason] = useState<string>('Routine health consultation & checkup');
   const [booking, setBooking] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!isOpen || !hospital) return;
+    let active = true;
+    setLoadingDoctors(true);
+    setErrorMsg(null);
+
+    appointmentApi
+      .getDoctors()
+      .then((res) => {
+        if (!active) return;
+        const allDocs = Array.isArray(res?.data) ? res.data : [];
+        const hospNameLower = (hospital.name || '').toLowerCase();
+        const matching = allDocs.filter(
+          (d: any) => d.hospital && String(d.hospital).toLowerCase().includes(hospNameLower)
+        );
+        const list = matching.length > 0 ? matching : allDocs;
+        setDoctors(list);
+        if (list[0]?.id) {
+          setSelectedDoctorId(list[0].id);
+        } else {
+          setSelectedDoctorId('');
+        }
+      })
+      .catch(() => {
+        if (active) {
+          setDoctors([]);
+          setSelectedDoctorId('');
+        }
+      })
+      .finally(() => {
+        if (active) setLoadingDoctors(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [isOpen, hospital]);
 
   if (!isOpen || !hospital) return null;
 
   const activeDept = selectedDept || (hospital.specialties[0] || 'General Medicine');
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!selectedDoctorId) {
+      setErrorMsg('No registered doctor is available for booking right now.');
+      return;
+    }
     setBooking(true);
+    setErrorMsg(null);
 
-    setTimeout(() => {
-      setBooking(false);
-      onConfirmBooking(hospital.name, activeDept, selectedDoc, preferredDate);
+    try {
+      await appointmentApi.createAppointment({
+        doctorId: selectedDoctorId,
+        appointmentDate: preferredDate,
+        slotTime: preferredTime,
+        type: 'IN_PERSON',
+        reason: reason.trim() || `${activeDept} consultation at ${hospital.name}`,
+        notes: `Hospital: ${hospital.name} | Department: ${activeDept}`,
+      });
+      const chosenDoc = doctors.find((d) => d.id === selectedDoctorId);
+      onConfirmBooking(hospital.name, activeDept, chosenDoc?.fullName || 'Doctor', preferredDate);
       onClose();
-    }, 1000);
+    } catch (err: any) {
+      setErrorMsg(err?.message || 'Failed to book appointment. Please try another slot.');
+    } finally {
+      setBooking(false);
+    }
   };
 
   return (
@@ -77,15 +140,27 @@ export const HospitalAppointmentModal: React.FC<HospitalAppointmentModalProps> =
 
           <div>
             <label className="block text-slate-500 dark:text-slate-300 font-bold uppercase tracking-wider mb-1.5">Select Doctor</label>
-            <select
-              value={selectedDoc}
-              onChange={(e) => setSelectedDoc(e.target.value)}
-              className="w-full px-3 py-3 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white font-semibold focus:outline-none focus:border-[#00a896]"
-            >
-              <option value="Dr. Rajesh Kumar">Dr. Rajesh Kumar (Senior Consultant)</option>
-              <option value="Dr. Priya Sharma">Dr. Priya Sharma (General Physician)</option>
-              <option value="Dr. Arun V. Patel">Dr. Arun V. Patel (Specialist)</option>
-            </select>
+            {loadingDoctors ? (
+              <div className="w-full px-3 py-3 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-500 text-xs">
+                Loading registered doctors...
+              </div>
+            ) : doctors.length === 0 ? (
+              <div className="w-full px-3 py-3 rounded-xl bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-300 text-xs font-medium">
+                No registered doctors available in the database yet.
+              </div>
+            ) : (
+              <select
+                value={selectedDoctorId}
+                onChange={(e) => setSelectedDoctorId(e.target.value)}
+                className="w-full px-3 py-3 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white font-semibold focus:outline-none focus:border-[#00a896]"
+              >
+                {doctors.map((doc) => (
+                  <option key={doc.id} value={doc.id}>
+                    {doc.fullName} {doc.speciality ? `(${doc.speciality})` : ''}
+                  </option>
+                ))}
+              </select>
+            )}
           </div>
 
           <div className="grid grid-cols-2 gap-3">
@@ -95,6 +170,8 @@ export const HospitalAppointmentModal: React.FC<HospitalAppointmentModalProps> =
                 type="date"
                 value={preferredDate}
                 onChange={(e) => setPreferredDate(e.target.value)}
+                min={new Date().toISOString().split('T')[0]}
+                required
                 className="w-full px-3 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white font-semibold text-xs focus:outline-none focus:border-[#00a896]"
               />
             </div>
@@ -124,9 +201,12 @@ export const HospitalAppointmentModal: React.FC<HospitalAppointmentModalProps> =
             />
           </div>
 
-          <div className="p-3 rounded-2xl bg-cyan-500/10 border border-cyan-500/20 text-[11px] text-cyan-700 dark:text-cyan-300">
-            <span>ℹ Demo appointment request will be recorded locally in your portal.</span>
-          </div>
+          {errorMsg && (
+            <div className="p-3 rounded-2xl bg-rose-500/10 border border-rose-500/20 text-[11px] text-rose-700 dark:text-rose-300 flex items-center gap-2 font-semibold">
+              <AlertCircle className="w-4 h-4 shrink-0" />
+              <span>{errorMsg}</span>
+            </div>
+          )}
 
           <div className="pt-4 border-t border-slate-200 dark:border-slate-800 flex justify-between gap-3">
             <button
@@ -138,18 +218,18 @@ export const HospitalAppointmentModal: React.FC<HospitalAppointmentModalProps> =
             </button>
             <button
               type="submit"
-              disabled={booking}
-              className="flex-1 py-2.5 px-4 rounded-xl font-extrabold text-xs text-slate-900 dark:text-white bg-gradient-to-r from-[#00a896] to-cyan-600 hover:from-teal-600 hover:to-cyan-500 transition-all shadow-md flex items-center justify-center gap-2 cursor-pointer disabled:opacity-75"
+              disabled={booking || !selectedDoctorId}
+              className="flex-1 py-2.5 px-4 rounded-xl font-extrabold text-xs text-white bg-gradient-to-r from-[#00a896] to-cyan-600 hover:from-teal-600 hover:to-cyan-500 transition-all shadow-md flex items-center justify-center gap-2 cursor-pointer disabled:opacity-60"
             >
               {booking ? (
                 <>
                   <Sparkles className="w-4 h-4 animate-spin" />
-                  <span>Submitting Request...</span>
+                  <span>Booking Appointment...</span>
                 </>
               ) : (
                 <>
                   <Check className="w-4 h-4" />
-                  <span>Confirm Request</span>
+                  <span>Confirm Appointment</span>
                 </>
               )}
             </button>

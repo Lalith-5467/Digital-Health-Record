@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { PageHeader } from '../ui/PageHeader';
 import { useLanguage } from '../../context/LanguageContext';
@@ -23,18 +23,19 @@ import {
   Target,
   Download
 } from 'lucide-react';
-import type { VitalDataPoint, HealthGoal, ActivityItem } from './analyticsData';
-import {
-  MOCK_VITALS_TIMELINE,
-  MOCK_WEEKLY_ADHERENCE,
-  INITIAL_HEALTH_GOALS,
-  MOCK_ACTIVITY_TIMELINE,
-  MOCK_MONTHLY_COMPARISONS
-} from './analyticsData';
+import type { HealthGoal, ActivityItem } from './analyticsData';
 import { CreateGoalModal } from './CreateGoalModal';
 import { ReportPreviewModal } from './ReportPreviewModal';
 import { AnalyticsFilterDrawer } from './AnalyticsFilterDrawer';
 import type { AnalyticsFilterState } from './AnalyticsFilterDrawer';
+import {
+  vitalApi,
+  medicineApi,
+  patientClinicalApi,
+  appointmentApi,
+  recordApi,
+  profileApi,
+} from '../../services/dhrApis';
 
 interface UserProfile {
   name: string;
@@ -50,52 +51,17 @@ interface AnalyticsViewProps {
   onNavigate: (page: string) => void;
 }
 
-const vitalPreviewData: Record<string, {
-  color: string;
-  chartPath: string;
-  cx: string;
-  cy: string;
-  title: string;
-}> = {
-  'Heart Rate': {
-    color: '#f43f5e', // rose-500
-    chartPath: 'M0,65 S8,60 16.6,60 S25,62 33.3,62 S41.6,68 50,68 S58.3,62 66.6,62 S75,50 83.3,50 S91.6,65 100,65',
-    cx: '50',
-    cy: '68',
-    title: 'Heart Rate'
-  },
-  'Blood Pressure': {
-    color: '#818cf8', // indigo-400
-    chartPath: 'M0,50 C 7,50 7,45 15,45 S 22,55 30,55 S 37,50 45,50 S 52,45 60,45 S 67,30 75,30 S 82,40 90,40 S 95,45 100,45',
-    cx: '75',
-    cy: '30',
-    title: 'Blood Pressure'
-  },
-  'Temperature': {
-    color: '#f59e0b', // amber-500
-    chartPath: 'M0,70 C 10,70 10,65 20,65 S 30,50 40,50 S 50,55 60,55 S 70,45 80,45 S 90,60 100,60',
-    cx: '40',
-    cy: '50',
-    title: 'Temperature'
-  },
-  'SpO2': {
-    color: '#3b82f6', // blue-500
-    chartPath: 'M0,30 C 12,30 12,25 25,25 S 37,20 50,20 S 62,10 75,10 S 87,15 100,15',
-    cx: '50',
-    cy: '20',
-    title: 'SpO2'
-  },
-  'Weight': {
-    color: '#10b981', // emerald-500
-    chartPath: 'M0,45 C 10,45 10,40 20,40 S 30,35 40,35 S 50,32 60,32 S 70,30 80,30 S 90,32 100,32',
-    cx: '80',
-    cy: '30',
-    title: 'Body Weight'
-  }
+const METRIC_META: Record<string, { color: string; unit: string; minY: number; maxY: number }> = {
+  'Heart Rate': { color: '#ff4d6d', unit: 'BPM', minY: 40, maxY: 120 },
+  'Blood Pressure': { color: '#818cf8', unit: 'mmHg', minY: 80, maxY: 160 },
+  'Temperature': { color: '#f59e0b', unit: '°F', minY: 95, maxY: 103 },
+  'SpO2': { color: '#3b82f6', unit: '%', minY: 85, maxY: 100 },
+  'Weight': { color: '#10b981', unit: 'kg', minY: 30, maxY: 130 },
 };
 
-const generateSmoothPath = (points: {x: number, y: number}[]) => {
+const generateSmoothPath = (points: { x: number; y: number }[]) => {
   if (points.length === 0) return '';
+  if (points.length === 1) return `M0,${points[0].y} L100,${points[0].y}`;
   let path = `M${points[0].x},${points[0].y}`;
   for (let i = 0; i < points.length - 1; i++) {
     const p1 = points[i];
@@ -106,57 +72,59 @@ const generateSmoothPath = (points: {x: number, y: number}[]) => {
   return path;
 };
 
-const getDynamicPoints = (metric: string, timeframe: string, targetCx: number, targetCy: number) => {
-  let numPoints = 7;
-  if (timeframe === '30D') numPoints = 6;
-  if (timeframe === '3M') numPoints = 4;
-  if (timeframe === '1Y') numPoints = 6;
+const extractVitalNumeric = (v: any, metric: string): number | null => {
+  if (!v) return null;
+  if (metric === 'Heart Rate' && v.heartRate != null) return Number(v.heartRate);
+  if (metric === 'Blood Pressure' && v.systolicBp != null) return Number(v.systolicBp);
+  if (metric === 'Temperature' && v.temperature != null) return Number(v.temperature);
+  if (metric === 'SpO2' && v.oxygenSaturation != null) return Number(v.oxygenSaturation);
+  if (metric === 'Weight' && v.weightKg != null) return Number(v.weightKg);
+  return null;
+};
 
-  // Find which index is closest to the target cx
-  let closestIdx = 0;
-  let minDiff = 100;
-  
-  const points = [];
-  for (let i = 0; i < numPoints; i++) {
-    const x = (i / (numPoints - 1)) * 100;
-    const diff = Math.abs(x - targetCx);
-    if (diff < minDiff) {
-      minDiff = diff;
-      closestIdx = i;
-    }
-    
-    // Deterministic pseudo-random y
-    const seed = metric.charCodeAt(0) + i * 13 + timeframe.charCodeAt(0);
-    const y = 50 + (Math.sin(seed) * 15);
-    points.push({ x, y });
-  }
-  
-  // Force the closest point to match the tooltip target
-  points[closestIdx].y = targetCy;
-  return { points, activeIndex: closestIdx };
+const formatVitalDisplay = (v: any, metric: string): string => {
+  if (!v) return 'Not Recorded';
+  if (metric === 'Heart Rate') return v.heartRate != null ? `${v.heartRate} BPM` : 'Not Recorded';
+  if (metric === 'Blood Pressure') return v.systolicBp != null && v.diastolicBp != null ? `${v.systolicBp}/${v.diastolicBp} mmHg` : 'Not Recorded';
+  if (metric === 'Temperature') return v.temperature != null ? `${v.temperature} °F` : 'Not Recorded';
+  if (metric === 'SpO2') return v.oxygenSaturation != null ? `${v.oxygenSaturation}%` : 'Not Recorded';
+  if (metric === 'Weight') return v.weightKg != null ? `${v.weightKg} kg` : 'Not Recorded';
+  return 'Not Recorded';
 };
 
 export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
-  user: _user,
+  user,
   onNavigate,
 }) => {
   const { t } = useLanguage();
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
-  // GLOBAL DATE RANGE ('7 Days' | '30 Days' | '3 Months' | '6 Months' | '1 Year')
+  // GLOBAL DATE RANGE
   const [globalDateRange, setGlobalDateRange] = useState('30 Days');
 
-  // VITALS CHART METRIC SELECTOR ('Heart Rate' | 'Blood Pressure' | 'Temperature' | 'SpO2' | 'Weight')
+  // VITALS CHART METRIC SELECTOR
   const [selectedVitalMetric, setSelectedVitalMetric] = useState<'Heart Rate' | 'Blood Pressure' | 'Temperature' | 'SpO2' | 'Weight'>('Heart Rate');
   const [vitalsTimeframe, setVitalsTimeframe] = useState<'7D' | '30D' | '3M' | '1Y'>('7D');
-  const [hoveredVital, setHoveredVital] = useState<VitalDataPoint | null>(null);
 
-  // GOALS & LOCALSTORAGE
-  const [goals, setGoals] = useState<HealthGoal[]>(INITIAL_HEALTH_GOALS);
-  const [activities] = useState<ActivityItem[]>(MOCK_ACTIVITY_TIMELINE);
+  // LIVE MYSQL DATA STATES
+  const [vitals, setVitals] = useState<any[]>([]);
+  const [adherenceData, setAdherenceData] = useState<{ summary: any; timeSeries: any[]; hasData: boolean }>({
+    summary: null,
+    timeSeries: [],
+    hasData: false,
+  });
+  const [doseHistory, setDoseHistory] = useState<any[]>([]);
+  const [goals, setGoals] = useState<HealthGoal[]>([]);
+  const [wellnessLogs, setWellnessLogs] = useState<any[]>([]);
+  const [appointments, setAppointments] = useState<any[]>([]);
+  const [records, setRecords] = useState<any[]>([]);
+  const [patientProfile, setPatientProfile] = useState<any>(null);
 
-  // CALENDAR DATE FILTER
-  const [selectedCalendarDate, setSelectedCalendarDate] = useState<string>('24 Aug 2026');
+  // CALENDAR DATE FILTER (Current Month)
+  const now = new Date();
+  const [selectedCalendarDate, setSelectedCalendarDate] = useState<string>(
+    now.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
+  );
 
   // MODALS & DRAWERS
   const [createGoalModalOpen, setCreateGoalModalOpen] = useState(false);
@@ -166,20 +134,70 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
   const [filters, setFilters] = useState<AnalyticsFilterState>({
     activityType: 'All',
     status: 'All',
-    dateRange: '30 Days'
+    dateRange: '30 Days',
   });
 
+  const loadAllAnalytics = async () => {
+    const [
+      vitalsRes,
+      adhRes,
+      doseRes,
+      goalsRes,
+      wellnessRes,
+      aptsRes,
+      recsRes,
+      profRes,
+    ] = await Promise.all([
+      vitalApi.getVitals().catch(() => ({ data: [] })),
+      medicineApi.getAdherenceTrends().catch(() => ({ data: { summary: null, timeSeries: [], hasData: false } })),
+      medicineApi.getDoseHistory('30d').catch(() => ({ data: [] })),
+      patientClinicalApi.getGoals().catch(() => ({ data: [] })),
+      patientClinicalApi.getWellnessLogs().catch(() => ({ data: [] })),
+      appointmentApi.getAppointments().catch(() => ({ data: [] })),
+      recordApi.getMedicalRecords().catch(() => ({ data: [] })),
+      profileApi.getPatientProfile().catch(() => ({ data: null })),
+    ]);
 
-  // Load from localStorage on mount
-  useEffect(() => {
-    const savedGoals = localStorage.getItem('user_health_goals');
-    if (savedGoals) {
-      try {
-        setGoals(JSON.parse(savedGoals));
-      } catch (e) {
-        console.error(e);
-      }
+    setVitals(Array.isArray(vitalsRes?.data) ? vitalsRes.data : []);
+    if (adhRes?.data) {
+      setAdherenceData({
+        summary: adhRes.data.summary || null,
+        timeSeries: Array.isArray(adhRes.data.timeSeries) ? adhRes.data.timeSeries : [],
+        hasData: Boolean(adhRes.data.hasData),
+      });
     }
+    setDoseHistory(Array.isArray(doseRes?.data) ? doseRes.data : []);
+    setWellnessLogs(Array.isArray(wellnessRes?.data) ? wellnessRes.data : []);
+    setAppointments(Array.isArray(aptsRes?.data) ? aptsRes.data : []);
+    setRecords(Array.isArray(recsRes?.data) ? recsRes.data : []);
+    setPatientProfile(profRes?.data || null);
+
+    if (goalsRes?.data && Array.isArray(goalsRes.data)) {
+      setGoals(
+        goalsRes.data.map((g: any) => {
+          const target = Number(g.targetValue ?? 100);
+          const current = Number(g.currentValue ?? 0);
+          return {
+            id: g.id,
+            title: g.title,
+            category: (g.category || 'Activity') as any,
+            current,
+            target,
+            unit: g.unit || 'pts',
+            startDate: g.startDate ? new Date(g.startDate).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : '—',
+            endDate: g.endDate ? new Date(g.endDate).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : '—',
+            progress: target > 0 ? Math.min(100, Math.round((current / target) * 100)) : 0,
+            isPaused: Boolean(g.isPaused),
+          };
+        })
+      );
+    } else {
+      setGoals([]);
+    }
+  };
+
+  useEffect(() => {
+    loadAllAnalytics();
   }, []);
 
   const showToast = (msg: string) => {
@@ -187,26 +205,241 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
     setTimeout(() => setToastMessage(null), 3000);
   };
 
-  const handleSaveGoal = (newGoal: Partial<HealthGoal>) => {
-    const fullGoal: HealthGoal = {
-      id: newGoal.id || `GOAL-${Date.now().toString().slice(-4)}`,
-      title: newGoal.title || 'Health Target',
-      category: (newGoal.category as any) || 'Activity',
-      current: newGoal.current || 0,
-      target: newGoal.target || 100,
-      unit: newGoal.unit || 'pts',
-      startDate: newGoal.startDate || '27 Aug 2026',
-      endDate: newGoal.endDate || '30 Sep 2026',
-      progress: newGoal.progress || 0,
-      isPaused: newGoal.isPaused || false
-    };
-    const updated = [fullGoal, ...goals];
-    setGoals(updated);
-    localStorage.setItem('user_health_goals', JSON.stringify(updated));
-    showToast(`✓ Goal "${fullGoal.title}" added successfully`);
+  const handleSaveGoal = async (newGoal: Partial<HealthGoal>) => {
+    try {
+      await patientClinicalApi.createGoal({
+        title: newGoal.title || 'Health Target',
+        category: newGoal.category || 'Activity',
+        currentValue: Number(newGoal.current ?? 0),
+        targetValue: Number(newGoal.target ?? 100),
+        unit: newGoal.unit || 'pts',
+      });
+      await loadAllAnalytics();
+      showToast(`✓ Goal "${newGoal.title || 'Health Target'}" saved to database`);
+    } catch {
+      showToast('Failed to save health goal');
+    }
   };
 
-  // FILTERED ACTIVITY LIST
+  // REAL COMPUTED METRICS
+  const latestVital = vitals[0] || null;
+  const adherenceRate = useMemo(() => {
+    if (adherenceData.hasData) {
+      const rate = adherenceData.summary?.overallAdherence ?? adherenceData.summary?.adherenceRate;
+      if (rate != null) return Math.round(Number(rate));
+      if (adherenceData.timeSeries.length > 0) {
+        return Math.round(
+          adherenceData.timeSeries.reduce((s, d) => s + Number(d.adherencePct || 0), 0) /
+            adherenceData.timeSeries.length
+        );
+      }
+    }
+    if (doseHistory.length > 0) {
+      const taken = doseHistory.filter((d) => String(d.status).toLowerCase() === 'taken').length;
+      return Math.round((taken / doseHistory.length) * 100);
+    }
+    return 0;
+  }, [adherenceData, doseHistory]);
+
+  const weeklyAdherenceBars = useMemo(() => {
+    if (adherenceData.timeSeries.length > 0) {
+      return adherenceData.timeSeries.slice(-7).map((d: any) => ({
+        day: (d.label || d.date || '').slice(0, 3),
+        percentage: Math.round(Number(d.adherencePct || 0)),
+      }));
+    }
+    const days: { day: string; percentage: number }[] = [];
+    for (let i = 6; i >= 0; i--) {
+      const dt = new Date();
+      dt.setDate(dt.getDate() - i);
+      const dayKey = dt.toDateString();
+      const dayLogs = doseHistory.filter((l) => new Date(l.logDate || l.createdAt).toDateString() === dayKey);
+      const pct =
+        dayLogs.length > 0
+          ? Math.round((dayLogs.filter((l) => String(l.status).toLowerCase() === 'taken').length / dayLogs.length) * 100)
+          : 0;
+      days.push({
+        day: dt.toLocaleDateString('en-US', { weekday: 'short' }),
+        percentage: pct,
+      });
+    }
+    return days;
+  }, [adherenceData, doseHistory]);
+
+  const todayAdherence = useMemo(() => {
+    const todayStr = new Date().toDateString();
+    const todayLogs = doseHistory.filter((l) => new Date(l.logDate || l.createdAt).toDateString() === todayStr);
+    if (todayLogs.length === 0) return 0;
+    return Math.round((todayLogs.filter((l) => String(l.status).toLowerCase() === 'taken').length / todayLogs.length) * 100);
+  }, [doseHistory]);
+
+  const weekAdherence = useMemo(() => {
+    const nonZero = weeklyAdherenceBars.filter((b) => b.percentage > 0);
+    if (nonZero.length === 0) return adherenceRate;
+    return Math.round(nonZero.reduce((s, b) => s + b.percentage, 0) / nonZero.length);
+  }, [weeklyAdherenceBars, adherenceRate]);
+
+  // OVERALL HEALTH SCORE
+  const healthScore = useMemo(() => {
+    const parts: number[] = [];
+    if (latestVital?.heartRate != null) {
+      const hr = Number(latestVital.heartRate);
+      parts.push(hr >= 60 && hr <= 100 ? 94 : hr >= 50 && hr <= 110 ? 78 : 62);
+    }
+    if (latestVital?.systolicBp != null && latestVital?.diastolicBp != null) {
+      const sys = Number(latestVital.systolicBp);
+      const dia = Number(latestVital.diastolicBp);
+      parts.push(sys >= 90 && sys <= 125 && dia >= 60 && dia <= 85 ? 94 : sys <= 140 ? 78 : 62);
+    }
+    if (latestVital?.oxygenSaturation != null) {
+      const o2 = Number(latestVital.oxygenSaturation);
+      parts.push(o2 >= 95 ? 96 : o2 >= 90 ? 80 : 60);
+    }
+    if (wellnessLogs[0]?.sleepHours != null) {
+      const sl = Number(wellnessLogs[0].sleepHours);
+      parts.push(sl >= 7 && sl <= 9 ? 92 : sl >= 6 ? 78 : 62);
+    }
+    if (adherenceData.hasData || doseHistory.length > 0) {
+      parts.push(adherenceRate);
+    }
+    return parts.length > 0 ? Math.round(parts.reduce((a, b) => a + b, 0) / parts.length) : 0;
+  }, [latestVital, wellnessLogs, adherenceData.hasData, doseHistory.length, adherenceRate]);
+
+  // APPOINTMENT BREAKDOWN
+  const completedApts = appointments.filter((a) => a.status === 'COMPLETED').length;
+  const pendingApts = appointments.filter((a) => a.status !== 'COMPLETED' && a.status !== 'CANCELLED').length;
+  const cancelledApts = appointments.filter((a) => a.status === 'CANCELLED').length;
+  const videoApts = appointments.filter((a) => a.type === 'VIDEO').length;
+  const inPersonApts = appointments.filter((a) => a.type !== 'VIDEO').length;
+
+  // TIMEFRAME-FILTERED VITALS FOR CHART
+  const timeframeDays = vitalsTimeframe === '7D' ? 7 : vitalsTimeframe === '30D' ? 30 : vitalsTimeframe === '3M' ? 90 : 365;
+  const filteredVitalsForChart = useMemo(() => {
+    const cutoff = Date.now() - timeframeDays * 86400000;
+    return vitals
+      .filter((v) => {
+        const ts = new Date(v.recordedAt || v.createdAt).getTime();
+        return !isNaN(ts) && ts >= cutoff && extractVitalNumeric(v, selectedVitalMetric) !== null;
+      })
+      .slice(0, 12)
+      .reverse();
+  }, [vitals, timeframeDays, selectedVitalMetric]);
+
+  const chartPoints = useMemo(() => {
+    const meta = METRIC_META[selectedVitalMetric];
+    if (filteredVitalsForChart.length === 0) return [];
+    const vals = filteredVitalsForChart.map((v) => extractVitalNumeric(v, selectedVitalMetric) as number);
+    const minVal = Math.min(meta.minY, ...vals);
+    const maxVal = Math.max(meta.maxY, ...vals);
+    const span = maxVal - minVal || 1;
+    return filteredVitalsForChart.map((v, idx) => {
+      const val = vals[idx];
+      const x = filteredVitalsForChart.length === 1 ? 50 : (idx / (filteredVitalsForChart.length - 1)) * 100;
+      const y = Math.max(8, Math.min(92, 92 - ((val - minVal) / span) * 80));
+      return { x, y, raw: v, val };
+    });
+  }, [filteredVitalsForChart, selectedVitalMetric]);
+
+  const chartAvg = useMemo(() => {
+    if (chartPoints.length === 0) return null;
+    const avg = chartPoints.reduce((s, p) => s + p.val, 0) / chartPoints.length;
+    return selectedVitalMetric === 'Temperature' || selectedVitalMetric === 'Weight'
+      ? avg.toFixed(1)
+      : Math.round(avg).toString();
+  }, [chartPoints, selectedVitalMetric]);
+
+  // WEEKLY AVERAGES
+  const weeklyAverages = useMemo(() => {
+    const cutoff = Date.now() - 7 * 86400000;
+    const weekVitals = vitals.filter((v) => new Date(v.recordedAt || v.createdAt).getTime() >= cutoff);
+    const avgOf = (fn: (v: any) => number | null, dec = 0) => {
+      const nums = weekVitals.map(fn).filter((n): n is number => n !== null && !isNaN(n));
+      if (nums.length === 0) return null;
+      const val = nums.reduce((a, b) => a + b, 0) / nums.length;
+      return dec > 0 ? val.toFixed(dec) : Math.round(val).toString();
+    };
+    const hr = avgOf((v) => (v.heartRate != null ? Number(v.heartRate) : null));
+    const sys = avgOf((v) => (v.systolicBp != null ? Number(v.systolicBp) : null));
+    const dia = avgOf((v) => (v.diastolicBp != null ? Number(v.diastolicBp) : null));
+    const temp = avgOf((v) => (v.temperature != null ? Number(v.temperature) : null), 1);
+    const spo2 = avgOf((v) => (v.oxygenSaturation != null ? Number(v.oxygenSaturation) : null));
+    const weight = avgOf((v) => (v.weightKg != null ? Number(v.weightKg) : null), 1);
+    return {
+      hr: hr ? `${hr} BPM` : 'Not Recorded',
+      bp: sys && dia ? `${sys}/${dia} mmHg` : 'Not Recorded',
+      temp: temp ? `${temp} °F` : 'Not Recorded',
+      spo2: spo2 ? `${spo2}%` : 'Not Recorded',
+      weight: weight ? `${weight} kg` : 'Not Recorded',
+    };
+  }, [vitals]);
+
+  // MERGED REAL ACTIVITY TIMELINE
+  const activities: ActivityItem[] = useMemo(() => {
+    const list: (ActivityItem & { ts: number })[] = [];
+
+    vitals.slice(0, 8).forEach((v) => {
+      const dt = new Date(v.recordedAt || v.createdAt);
+      const parts = [];
+      if (v.heartRate != null) parts.push(`HR ${v.heartRate} BPM`);
+      if (v.systolicBp != null && v.diastolicBp != null) parts.push(`BP ${v.systolicBp}/${v.diastolicBp}`);
+      if (v.oxygenSaturation != null) parts.push(`SpO₂ ${v.oxygenSaturation}%`);
+      list.push({
+        id: `vit-${v.id}`,
+        type: 'Vital' as any,
+        title: 'Vital Reading Recorded',
+        subtitle: parts.length > 0 ? parts.join(' • ') : 'Biometric entry',
+        date: dt.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }),
+        time: dt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        status: 'Completed' as any,
+        ts: dt.getTime() || 0,
+      });
+    });
+
+    appointments.slice(0, 8).forEach((a) => {
+      const dt = new Date(a.appointmentDate || a.createdAt);
+      list.push({
+        id: `apt-${a.id}`,
+        type: 'Appointment' as any,
+        title: `Consultation with ${a.doctor?.fullName || 'Specialist'}`,
+        subtitle: `${a.type === 'VIDEO' ? 'Video' : 'In-Person'} • ${a.status}`,
+        date: dt.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }),
+        time: a.slotTime || dt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        status: (a.status || 'Confirmed') as any,
+        ts: dt.getTime() || 0,
+      });
+    });
+
+    records.slice(0, 8).forEach((r) => {
+      const dt = new Date(r.recordDate || r.createdAt);
+      list.push({
+        id: `rec-${r.id}`,
+        type: 'Record' as any,
+        title: r.title,
+        subtitle: `${r.type || 'Medical Record'} • ${r.hospital || 'Vault'}`,
+        date: dt.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }),
+        time: dt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        status: (r.status || 'Normal') as any,
+        ts: dt.getTime() || 0,
+      });
+    });
+
+    doseHistory.slice(0, 8).forEach((d) => {
+      const dt = new Date(d.logDate || d.createdAt);
+      list.push({
+        id: `dose-${d.id}`,
+        type: 'Medication' as any,
+        title: `${d.patientMedication?.name || 'Medication'} (${d.status})`,
+        subtitle: d.patientMedication ? `${d.patientMedication.dosage} ${d.patientMedication.unit}` : 'Dose log',
+        date: dt.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }),
+        time: d.takenAt || d.doseTime || dt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        status: (d.status || 'Taken') as any,
+        ts: dt.getTime() || 0,
+      });
+    });
+
+    return list.sort((a, b) => b.ts - a.ts);
+  }, [vitals, appointments, records, doseHistory]);
+
   const filteredActivities = activities.filter((act) => {
     if (filters.activityType !== 'All' && act.type !== filters.activityType) return false;
     if (searchQuery) {
@@ -215,6 +448,133 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
     }
     return true;
   });
+
+  // REAL MONTHLY COMPARISONS (This Month vs Last Month)
+  const monthlyComparisons = useMemo(() => {
+    const curMonth = now.getMonth();
+    const curYear = now.getFullYear();
+    const prevDate = new Date(curYear, curMonth - 1, 1);
+    const prevMonth = prevDate.getMonth();
+    const prevYear = prevDate.getFullYear();
+
+    const countInMonth = (arr: any[], dateKey: string, m: number, y: number) =>
+      arr.filter((item) => {
+        const d = new Date(item[dateKey] || item.createdAt);
+        return !isNaN(d.getTime()) && d.getMonth() === m && d.getFullYear() === y;
+      }).length;
+
+    const curVitals = countInMonth(vitals, 'recordedAt', curMonth, curYear);
+    const prevVitals = countInMonth(vitals, 'recordedAt', prevMonth, prevYear);
+    const curApts = countInMonth(appointments, 'appointmentDate', curMonth, curYear);
+    const prevApts = countInMonth(appointments, 'appointmentDate', prevMonth, prevYear);
+    const curRecs = countInMonth(records, 'recordDate', curMonth, curYear);
+    const prevRecs = countInMonth(records, 'recordDate', prevMonth, prevYear);
+    const curDoses = countInMonth(doseHistory, 'logDate', curMonth, curYear);
+    const prevDoses = countInMonth(doseHistory, 'logDate', prevMonth, prevYear);
+
+    const diffLabel = (cur: number, prev: number) => {
+      const d = cur - prev;
+      return d > 0 ? `+${d}` : `${d}`;
+    };
+
+    return [
+      { label: 'Vital Readings Logged', currentValue: `${curVitals}`, previousValue: `${prevVitals}`, change: diffLabel(curVitals, prevVitals) },
+      { label: 'Appointments Scheduled', currentValue: `${curApts}`, previousValue: `${prevApts}`, change: diffLabel(curApts, prevApts) },
+      { label: 'Medical Records Added', currentValue: `${curRecs}`, previousValue: `${prevRecs}`, change: diffLabel(curRecs, prevRecs) },
+      { label: 'Medication Doses Logged', currentValue: `${curDoses}`, previousValue: `${prevDoses}`, change: diffLabel(curDoses, prevDoses) },
+    ];
+  }, [vitals, appointments, records, doseHistory]);
+
+  // CURRENT MONTH CALENDAR DAYS & ACTIVITY DOTS
+  const currentMonthLabel = now.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+  const daysInCurrentMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+  const activeDaysSet = useMemo(() => {
+    const s = new Set<number>();
+    const collect = (dateStr?: string) => {
+      if (!dateStr) return;
+      const d = new Date(dateStr);
+      if (!isNaN(d.getTime()) && d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear()) {
+        s.add(d.getDate());
+      }
+    };
+    vitals.forEach((v) => collect(v.recordedAt));
+    appointments.forEach((a) => collect(a.appointmentDate));
+    records.forEach((r) => collect(r.recordDate || r.createdAt));
+    doseHistory.forEach((d) => collect(d.logDate || d.createdAt));
+    return s;
+  }, [vitals, appointments, records, doseHistory]);
+
+  const vitalsSummaryCards = [
+    {
+      id: 'Heart Rate',
+      label: t('card.heart_rate', 'Heart Rate'),
+      val: latestVital?.heartRate != null ? String(latestVital.heartRate) : '—',
+      unit: latestVital?.heartRate != null ? 'BPM' : 'No data',
+      icon: Heart,
+      iconBg: 'bg-rose-500/20',
+      iconColor: 'text-rose-500',
+      status: latestVital?.heartRate != null ? (latestVital.heartRate >= 60 && latestVital.heartRate <= 100 ? 'Normal' : 'Monitor') : 'Not Recorded',
+      sparkline: 'M0,10 L5,8 L10,12 L15,4 L20,10',
+      activeBorder: 'border-rose-500',
+      glow: 'bg-rose-500/10',
+    },
+    {
+      id: 'Blood Pressure',
+      label: t('card.blood_pressure', 'Blood Pressure'),
+      val: latestVital?.systolicBp != null && latestVital?.diastolicBp != null ? `${latestVital.systolicBp}/${latestVital.diastolicBp}` : '—',
+      unit: latestVital?.systolicBp != null ? 'mmHg' : 'No data',
+      icon: Activity,
+      iconBg: 'bg-indigo-500/20',
+      iconColor: 'text-indigo-400',
+      status: latestVital?.systolicBp != null ? (latestVital.systolicBp <= 130 ? 'Normal' : 'Elevated') : 'Not Recorded',
+      sparkline: 'M0,10 L5,5 L10,12 L15,8 L20,10',
+      activeBorder: 'border-indigo-500',
+      glow: 'bg-indigo-500/10',
+    },
+    {
+      id: 'Temperature',
+      label: t('analytics.temperature', 'Temperature'),
+      val: latestVital?.temperature != null ? String(latestVital.temperature) : '—',
+      unit: latestVital?.temperature != null ? '°F' : 'No data',
+      icon: Thermometer,
+      iconBg: 'bg-amber-500/20',
+      iconColor: 'text-amber-500',
+      status: latestVital?.temperature != null ? (latestVital.temperature <= 99.5 ? 'Normal' : 'Elevated') : 'Not Recorded',
+      sparkline: 'M0,10 L5,10 L10,8 L15,11 L20,10',
+      activeBorder: 'border-amber-500',
+      glow: 'bg-amber-500/10',
+    },
+    {
+      id: 'SpO2',
+      label: t('card.blood_spo2', 'SpO₂ • Oxygen'),
+      val: latestVital?.oxygenSaturation != null ? String(latestVital.oxygenSaturation) : '—',
+      unit: latestVital?.oxygenSaturation != null ? '%' : 'No data',
+      icon: Wind,
+      iconBg: 'bg-blue-500/20',
+      iconColor: 'text-blue-500',
+      status: latestVital?.oxygenSaturation != null ? (latestVital.oxygenSaturation >= 95 ? 'Normal' : 'Low') : 'Not Recorded',
+      sparkline: 'M0,10 L5,9 L10,10 L15,7 L20,10',
+      activeBorder: 'border-blue-500',
+      glow: 'bg-blue-500/10',
+    },
+    {
+      id: 'Weight',
+      label: t('analytics.weight', 'Body Weight'),
+      val: latestVital?.weightKg != null ? String(latestVital.weightKg) : (patientProfile?.weightKg != null ? String(patientProfile.weightKg) : '—'),
+      unit: (latestVital?.weightKg != null || patientProfile?.weightKg != null) ? 'kg' : 'No data',
+      icon: Scale,
+      iconBg: 'bg-emerald-500/20',
+      iconColor: 'text-emerald-500',
+      status: (latestVital?.weightKg != null || patientProfile?.weightKg != null) ? 'Recorded' : 'Not Recorded',
+      sparkline: 'M0,10 L5,12 L10,10 L15,14 L20,10',
+      activeBorder: 'border-emerald-500',
+      glow: 'bg-emerald-500/10',
+    },
+  ];
+
+  const activeMetricColor = METRIC_META[selectedVitalMetric]?.color || '#ff4d6d';
+  const activePoint = chartPoints.length > 0 ? chartPoints[chartPoints.length - 1] : null;
+  const donutDashOffset = 276.46 - (276.46 * healthScore) / 100;
 
   return (
     <div className="max-w-7xl mx-auto space-y-8 animate-in fade-in duration-300 pb-20 font-sans">
@@ -247,6 +607,10 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
               value={globalDateRange}
               onChange={(e) => {
                 setGlobalDateRange(e.target.value);
+                if (e.target.value === '7 Days') setVitalsTimeframe('7D');
+                else if (e.target.value === '30 Days') setVitalsTimeframe('30D');
+                else if (e.target.value === '3 Months') setVitalsTimeframe('3M');
+                else setVitalsTimeframe('1Y');
                 showToast(`Updated timeframe to ${e.target.value}`);
               }}
               className="px-3.5 py-2.5 rounded-xl bg-slate-100 dark:bg-slate-900 border border-slate-300 dark:border-slate-800 text-slate-800 dark:text-white font-bold text-xs focus:outline-none focus:border-teal-500 cursor-pointer shadow-sm"
@@ -271,13 +635,12 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
 
       {/* 2. HEALTH OVERVIEW HERO SECTION */}
       <div className="bg-gradient-to-r from-slate-50 to-slate-100 dark:from-slate-900 dark:to-slate-800 border border-slate-200/90 dark:border-slate-700 rounded-3xl p-6 sm:p-8 shadow-sm flex flex-col md:flex-row items-center justify-between gap-8 relative overflow-hidden font-sans">
-        {/* Decorative SVG Background */}
         <div className="absolute inset-0 opacity-[0.03] dark:opacity-10 pointer-events-none" style={{ backgroundImage: 'radial-gradient(circle at 80% 50%, #00a896 0%, transparent 50%), radial-gradient(circle at 20% 20%, #475569 0%, transparent 30%)' }}></div>
         <svg className="absolute right-0 top-0 h-full w-2/3 opacity-10 pointer-events-none text-[#00a896] dark:text-teal-500" viewBox="0 0 400 200" preserveAspectRatio="none">
-           <path fill="none" stroke="currentColor" strokeWidth="1" d="M10,10 Q150,200 390,10" />
-           <path fill="none" stroke="currentColor" strokeWidth="1" d="M10,190 Q150,0 390,190" />
-           <circle cx="200" cy="100" r="40" fill="none" stroke="currentColor" strokeWidth="0.5" />
-           <circle cx="200" cy="100" r="60" fill="none" stroke="currentColor" strokeWidth="0.5" strokeDasharray="4,4" />
+          <path fill="none" stroke="currentColor" strokeWidth="1" d="M10,10 Q150,200 390,10" />
+          <path fill="none" stroke="currentColor" strokeWidth="1" d="M10,190 Q150,0 390,190" />
+          <circle cx="200" cy="100" r="40" fill="none" stroke="currentColor" strokeWidth="0.5" />
+          <circle cx="200" cy="100" r="60" fill="none" stroke="currentColor" strokeWidth="0.5" strokeDasharray="4,4" />
         </svg>
 
         <div className="space-y-4 text-center md:text-left flex-1 relative z-10">
@@ -286,25 +649,33 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
           </span>
           <h2 className="text-2xl sm:text-3xl font-extrabold text-slate-900 dark:text-white">{t('analytics.activity_glance', 'Your health activity at a glance')}</h2>
           <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-300 max-w-xl leading-relaxed font-medium">
-            Consolidated personal health metric score: Excellent, <strong className="text-[#00a896] dark:text-teal-400">1.2% higher</strong> than previous period
+            {healthScore > 0 ? (
+              <>
+                Consolidated personal health score:{' '}
+                <strong className="text-[#00a896] dark:text-teal-400">
+                  {healthScore >= 85 ? 'Optimal' : healthScore >= 70 ? 'Good' : 'Moderate'} ({healthScore}/100)
+                </strong>{' '}
+                computed from {vitals.length} vital reading{vitals.length === 1 ? '' : 's'} and {doseHistory.length} dose log{doseHistory.length === 1 ? '' : 's'}.
+              </>
+            ) : (
+              'No vitals or adherence data logged yet. Record your vitals and medications to unlock live health analytics.'
+            )}
           </p>
 
           <div className="flex flex-wrap items-center justify-center md:justify-start gap-3 pt-2">
             <button onClick={() => onNavigate('dashboard')} className="px-5 py-2 rounded-full font-extrabold text-xs text-white bg-[#00a896] hover:bg-[#00897b] transition-all shadow-md cursor-pointer">
-              {t('nav.dashboard', 'Actual ratings')}
+              {t('nav.dashboard', 'Dashboard Overview')}
             </button>
             <button onClick={() => onNavigate('records')} className="px-5 py-2 rounded-full font-extrabold text-xs text-white bg-amber-500 hover:bg-amber-600 transition-all shadow-md cursor-pointer">
-              {t('records.title', 'More details')}
+              {t('records.title', 'View Health Vault')}
             </button>
           </div>
         </div>
 
-        {/* CIRCULAR DEMO HEALTH SCORE VISUALIZATION */}
+        {/* CIRCULAR HEALTH SCORE VISUALIZATION */}
         <div className="bg-white/60 dark:bg-slate-900/60 backdrop-blur-md p-6 rounded-3xl border border-slate-200/60 dark:border-slate-700/60 text-center space-y-2 shrink-0 min-w-[220px] shadow-lg relative z-10">
           <div className="relative w-32 h-32 mx-auto flex items-center justify-center">
-            {/* Inner background blob to mimic the soft glowing effect */}
             <div className="absolute inset-2 bg-gradient-to-br from-teal-100 to-teal-50 dark:from-teal-900/50 dark:to-slate-800 rounded-full opacity-70"></div>
-            
             <svg className="w-full h-full transform -rotate-90 relative z-10" viewBox="0 0 36 36">
               <path
                 className="text-slate-200/50 dark:text-slate-800/50"
@@ -315,7 +686,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
               />
               <path
                 className="text-[#00a896] dark:text-teal-400"
-                strokeDasharray="86, 100"
+                strokeDasharray={`${healthScore}, 100`}
                 strokeWidth="4"
                 strokeLinecap="round"
                 stroke="currentColor"
@@ -324,7 +695,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
               />
             </svg>
             <div className="absolute flex flex-col items-center justify-center z-10">
-              <span className="font-sans text-3xl font-extrabold text-slate-900 dark:text-white leading-none">86</span>
+              <span className="font-sans text-3xl font-extrabold text-slate-900 dark:text-white leading-none">{healthScore}</span>
               <span className="text-[10px] font-bold text-slate-600 dark:text-slate-400">score</span>
             </div>
           </div>
@@ -333,10 +704,9 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
             <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-700 dark:text-slate-300 block font-sans">
               {t('card.health_score', 'Total Health Score')}
             </span>
-
             <span className="text-[11px] font-bold text-[#00a896] dark:text-teal-400 inline-flex items-center gap-1">
               <ArrowUpRight className="w-3.5 h-3.5" />
-              1.2% on previous period
+              {vitals.length > 0 ? `${vitals.length} vitals synced` : 'No data yet'}
             </span>
           </div>
         </div>
@@ -350,15 +720,11 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
             <Pill className="w-4 h-4 text-amber-500 dark:text-amber-400" />
           </div>
           <div className="flex items-baseline gap-2 relative z-10">
-            <span className="text-2xl sm:text-3xl font-extrabold text-amber-600 dark:text-amber-400 font-sans">91%</span>
-            <span className="text-[10px] font-bold text-[#00a896] dark:text-teal-400 flex items-center"><ArrowUpRight className="w-3 h-3"/> 51%</span>
+            <span className="text-2xl sm:text-3xl font-extrabold text-amber-600 dark:text-amber-400 font-sans">{adherenceRate}%</span>
           </div>
-          <span className="text-[10px] text-slate-500 dark:text-slate-400 block font-medium relative z-10">vs previous period</span>
-          
-          {/* Decorative Sparkline */}
-          <svg className="absolute bottom-0 right-0 w-24 h-12 text-[#00a896] dark:text-teal-400 opacity-20" viewBox="0 0 100 50">
-            <path fill="none" stroke="currentColor" strokeWidth="3" d="M0,40 Q25,10 50,30 T100,5" />
-          </svg>
+          <span className="text-[10px] text-slate-500 dark:text-slate-400 block font-medium relative z-10">
+            {doseHistory.length > 0 ? `${doseHistory.length} doses logged` : 'No dose logs yet'}
+          </span>
         </div>
 
         <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-5 rounded-3xl space-y-4 shadow-sm">
@@ -367,10 +733,12 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
             <CalendarIcon className="w-4 h-4 text-[#00a896] dark:text-cyan-400" />
           </div>
           <div className="flex items-baseline gap-2">
-            <span className="text-2xl sm:text-3xl font-extrabold text-[#00a896] dark:text-cyan-400 font-sans">8</span>
+            <span className="text-2xl sm:text-3xl font-extrabold text-[#00a896] dark:text-cyan-400 font-sans">{appointments.length}</span>
             <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400">visits</span>
           </div>
-          <span className="text-[10px] text-slate-500 dark:text-slate-400 block font-medium">registered, 1 time</span>
+          <span className="text-[10px] text-slate-500 dark:text-slate-400 block font-medium">
+            {pendingApts} upcoming · {completedApts} completed
+          </span>
         </div>
 
         <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-5 rounded-3xl space-y-4 shadow-sm">
@@ -379,28 +747,31 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
             <FileText className="w-4 h-4 text-purple-500 dark:text-purple-400" />
           </div>
           <div className="flex items-baseline gap-2">
-            <span className="text-2xl sm:text-3xl font-extrabold text-purple-600 dark:text-purple-400 font-sans">24</span>
+            <span className="text-2xl sm:text-3xl font-extrabold text-purple-600 dark:text-purple-400 font-sans">{records.length}</span>
             <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400">records</span>
           </div>
-          <span className="text-[10px] text-slate-500 dark:text-slate-400 block font-medium">somecapio a prescription</span>
+          <span className="text-[10px] text-slate-500 dark:text-slate-400 block font-medium">
+            Synced in ABDM Health Vault
+          </span>
         </div>
 
         <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-5 rounded-3xl space-y-4 shadow-sm">
           <div className="flex items-center justify-between">
-            <span className="text-xs font-bold text-slate-800 dark:text-slate-200">{t('nav.consultation', 'Consultations')}</span>
+            <span className="text-xs font-bold text-slate-800 dark:text-slate-200">{t('nav.consultation', 'Video Consultations')}</span>
             <Video className="w-4 h-4 text-[#00a896] dark:text-teal-400" />
           </div>
           <div className="flex items-baseline gap-2">
-            <span className="text-2xl sm:text-3xl font-extrabold text-[#00a896] dark:text-teal-400 font-sans">12</span>
+            <span className="text-2xl sm:text-3xl font-extrabold text-[#00a896] dark:text-teal-400 font-sans">{videoApts}</span>
             <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400">sessions</span>
           </div>
-          <span className="text-[10px] text-slate-500 dark:text-slate-400 block font-medium">more average apx</span>
+          <span className="text-[10px] text-slate-500 dark:text-slate-400 block font-medium">
+            {inPersonApts} in-person clinic visit{inPersonApts === 1 ? '' : 's'}
+          </span>
         </div>
       </div>
 
-      {/* 4. VITALS OVERVIEW & INTERACTIVE TREND CHARTS (REDESIGNED) */}
+      {/* 4. VITALS OVERVIEW & INTERACTIVE TREND CHARTS */}
       <div className="bg-slate-50 dark:bg-[#121626] border border-slate-200 dark:border-slate-800/60 rounded-[1.5rem] p-3.5 sm:p-4 space-y-3 shadow-xl font-sans text-slate-900 dark:text-white">
-        
         {/* HEADER */}
         <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
           <div>
@@ -414,7 +785,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
                   <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#00a896] opacity-75"></span>
                   <span className="relative inline-flex rounded-full w-1.5 h-1.5 bg-[#00a896] shadow-[0_0_8px_#00a896]"></span>
                 </span>
-                {t('analytics.systems_normal', 'All systems normal')}
+                {vitals.length > 0 ? t('analytics.systems_normal', 'Live Vitals Synced') : 'No Vitals Yet'}
               </span>
             </div>
             <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1 font-medium">{t('analytics.track_vitals_desc', 'Track heart rate, blood pressure & vital metrics')}</p>
@@ -425,7 +796,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
             {(['7D', '30D', '3M', '1Y'] as const).map((tf) => (
               <button
                 key={tf}
-                onClick={() => setVitalsTimeframe(tf as any)}
+                onClick={() => setVitalsTimeframe(tf)}
                 className={`px-4 py-1.5 rounded-full font-bold transition-all cursor-pointer ${
                   vitalsTimeframe === tf ? 'bg-blue-600/90 text-white shadow-[0_0_12px_rgba(37,99,235,0.6)]' : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
                 }`}
@@ -438,13 +809,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
 
         {/* METRIC TOGGLES GRID */}
         <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5">
-          {[
-            { id: 'Heart Rate', label: t('card.heart_rate', 'Heart Rate'), val: '72', unit: 'BPM', icon: Heart, iconBg: 'bg-rose-500/20', iconColor: 'text-rose-500', isNormal: true, sparkline: 'M0,10 L5,8 L10,12 L15,4 L20,10', activeBorder: 'border-rose-500', glow: 'bg-rose-500/10' },
-            { id: 'Blood Pressure', label: t('card.blood_pressure', 'Blood Pressure'), val: '120/80', unit: 'mmHg', icon: Activity, iconBg: 'bg-indigo-500/20', iconColor: 'text-indigo-400', isNormal: true, sparkline: 'M0,10 L5,5 L10,12 L15,8 L20,10', activeBorder: 'border-indigo-500', glow: 'bg-indigo-500/10' },
-            { id: 'Temperature', label: t('analytics.temperature', 'Temperature'), val: '98.4', unit: '°F', icon: Thermometer, iconBg: 'bg-amber-500/20', iconColor: 'text-amber-500', isNormal: true, sparkline: 'M0,10 L5,10 L10,8 L15,11 L20,10', activeBorder: 'border-amber-500', glow: 'bg-amber-500/10' },
-            { id: 'SpO2', label: t('card.blood_spo2', 'SpO₂ • Oxygen'), val: '98', unit: '%', icon: Wind, iconBg: 'bg-blue-500/20', iconColor: 'text-blue-500', isNormal: true, sparkline: 'M0,10 L5,9 L10,10 L15,7 L20,10', activeBorder: 'border-blue-500', glow: 'bg-blue-500/10' },
-            { id: 'Weight', label: t('analytics.weight', 'Body Weight'), val: '68', unit: 'kg (-1.2)', icon: Scale, iconBg: 'bg-emerald-500/20', iconColor: 'text-emerald-500', isNormal: true, sparkline: 'M0,10 L5,12 L10,10 L15,14 L20,10', activeBorder: 'border-emerald-500', glow: 'bg-emerald-500/10' }
-          ].map((m) => {
+          {vitalsSummaryCards.map((m) => {
             const isSelected = selectedVitalMetric === m.id;
             return (
               <button
@@ -457,7 +822,6 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
                 }`}
               >
                 <div className={`absolute -top-4 -left-4 w-32 h-32 ${m.glow} blur-2xl pointer-events-none rounded-full transition-opacity duration-500 ${isSelected ? 'opacity-100' : 'opacity-50'}`}></div>
-                <div className={`absolute bottom-0 right-0 w-24 h-24 ${m.glow} blur-xl pointer-events-none rounded-full transition-opacity duration-500 opacity-20`}></div>
                 <div className="flex items-center gap-2.5 z-10">
                   <div className={`p-2 rounded-lg ${m.iconBg} ${m.iconColor} shadow-inner`}>
                     <m.icon className="w-4 h-4" />
@@ -472,13 +836,11 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
                 </div>
                 <div className="h-px w-full bg-slate-200 dark:bg-slate-700/50 z-10 my-0"></div>
                 <div className="flex items-center justify-between w-full z-10">
-                  {m.isNormal && (
-                    <span className="flex items-center gap-1.5 text-[10px] font-bold text-emerald-400 bg-emerald-400/10 px-1.5 py-0.5 rounded border border-emerald-400/20 leading-none">
-                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shadow-[0_0_4px_#34d399]"></span> Normal
-                    </span>
-                  )}
+                  <span className="flex items-center gap-1.5 text-[10px] font-bold text-emerald-500 bg-emerald-400/10 px-1.5 py-0.5 rounded border border-emerald-400/20 leading-none">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span> {m.status}
+                  </span>
                   <svg className={`w-6 h-3 ${m.iconColor}`} viewBox="0 0 20 20" preserveAspectRatio="none">
-                     <path d={m.sparkline} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
+                    <path d={m.sparkline} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
                   </svg>
                 </div>
               </button>
@@ -488,9 +850,8 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
 
         {/* MIDDLE SECTION: MAIN CHART & TODAY'S SUMMARY */}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-3.5">
-               {/* Main Chart (Left 8 cols) */}
+          {/* Main Chart (Left 8 cols) */}
           <div className="lg:col-span-8 bg-white dark:bg-[#0b132b] border border-slate-200 dark:border-slate-800/80 rounded-[20px] p-6 sm:p-8 relative overflow-hidden flex flex-col shadow-[0_8px_30px_rgb(0,0,0,0.04)] dark:shadow-[0_8px_30px_rgb(0,0,0,0.12)]">
-            {/* Ambient Background Gradient Glow */}
             <div className="absolute -top-32 -left-32 w-96 h-96 bg-blue-900/10 blur-[100px] rounded-full pointer-events-none"></div>
 
             {/* Header */}
@@ -501,304 +862,243 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
                   <span className="text-lg font-extrabold text-slate-900 dark:text-white uppercase tracking-wider">{selectedVitalMetric} TREND</span>
                 </div>
                 <div className="text-[11px] text-slate-400 font-medium">
-                  {vitalsTimeframe === '7D' && 'Week View · Aug 21 - Aug 27'}
-                  {vitalsTimeframe === '30D' && 'Month View · Aug 01 - Aug 30'}
-                  {vitalsTimeframe === '3M' && 'Quarter View · Jun 01 - Aug 31'}
-                  {vitalsTimeframe === '1Y' && 'Year View · 2026'}
+                  Last {timeframeDays} days · {chartPoints.length} recorded reading{chartPoints.length === 1 ? '' : 's'}
                 </div>
               </div>
               <div className="px-3 py-1.5 rounded-xl bg-slate-100 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-700/50 flex items-center gap-2 shadow-sm backdrop-blur-sm">
                 <span className="w-1.5 h-1.5 rounded-full bg-[#10b981] shadow-[0_0_8px_#10b981]"></span>
-                <span className="text-[10px] text-slate-700 dark:text-slate-200 font-bold tracking-wide">Active</span>
+                <span className="text-[10px] text-slate-700 dark:text-slate-200 font-bold tracking-wide">
+                  {chartPoints.length > 0 ? 'Live DB' : 'No Data'}
+                </span>
               </div>
             </div>
 
             {/* Chart Area */}
-            <div className="w-full relative pb-8 pl-8 pr-2 flex items-end h-[260px] mt-2">
-              
-              {/* Y-axis labels */}
-              <div className="absolute left-[0px] top-0 bottom-8 flex flex-col justify-between text-[10px] text-slate-500 font-bold z-10">
-                <span>100</span>
-                <span>90</span>
-                <span>80</span>
-                <span>70</span>
-                <span>60</span>
-                <span>50</span>
-                <span>40</span>
+            {chartPoints.length === 0 ? (
+              <div className="w-full h-[260px] flex flex-col items-center justify-center text-center text-xs text-slate-500 dark:text-slate-400 border border-dashed border-slate-200 dark:border-slate-800 rounded-2xl">
+                <Activity className="w-8 h-8 mb-2 opacity-40" />
+                <p className="font-bold">No {selectedVitalMetric.toLowerCase()} readings recorded in the last {timeframeDays} days.</p>
+                <p className="text-[11px] mt-1">Log vitals from your dashboard to visualize trends here.</p>
               </div>
+            ) : (
+              <div className="w-full relative pb-8 pl-8 pr-2 flex items-end h-[260px] mt-2">
+                <div className="w-full h-full relative z-10">
+                  <svg key={vitalsTimeframe + selectedVitalMetric} className="w-full h-full overflow-visible" preserveAspectRatio="none" viewBox="0 0 100 100">
+                    <defs>
+                      <linearGradient id="chartGradientPremium" x1="0" x2="0" y1="0" y2="1">
+                        <stop offset="0%" stopColor={activeMetricColor} stopOpacity="0.4" />
+                        <stop offset="100%" stopColor={activeMetricColor} stopOpacity="0.0" />
+                      </linearGradient>
+                    </defs>
 
-              {/* Grid Lines (Horizontal) */}
-              <div className="absolute inset-0 z-0 flex flex-col justify-between pb-8 pl-8 pr-2">
-                {[...Array(7)].map((_, i) => (
-                  <div key={`h-${i}`} className="w-full h-[1px] border-t border-dashed border-slate-200 dark:border-slate-700/30"></div>
-                ))}
-              </div>
+                    <path
+                      d={`${generateSmoothPath(chartPoints)} L100,100 L0,100 Z`}
+                      fill="url(#chartGradientPremium)"
+                    />
+                    <path
+                      d={generateSmoothPath(chartPoints)}
+                      fill="none"
+                      stroke={activeMetricColor}
+                      strokeWidth="3.5"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      style={{ filter: `drop-shadow(0 4px 8px ${activeMetricColor}60)` }}
+                    />
+                    {chartPoints.map((point, i) => (
+                      <circle
+                        key={`pt-${i}`}
+                        cx={point.x}
+                        cy={point.y}
+                        r={i === chartPoints.length - 1 ? '4.5' : '2.8'}
+                        fill="#ffffff"
+                        stroke={activeMetricColor}
+                        strokeWidth={i === chartPoints.length - 1 ? '3' : '2'}
+                      />
+                    ))}
+                  </svg>
 
-              {/* Grid Lines (Vertical) */}
-              <div className="absolute inset-0 z-0 flex justify-between pl-8 pr-2 pb-8">
-                {[...Array(
-                  vitalsTimeframe === '7D' ? 7 :
-                  vitalsTimeframe === '30D' ? 6 :
-                  vitalsTimeframe === '3M' ? 4 : 6
-                )].map((_, i) => (
-                  <div key={`v-${i}`} className="h-full w-[1px] border-l border-dashed border-slate-200 dark:border-slate-700/30"></div>
-                ))}
-              </div>
-
-              {/* Chart SVG container */}
-              <div className="w-full h-full relative z-10">
-                {(() => {
-                  const cx = parseInt(vitalPreviewData[selectedVitalMetric]?.cx || '50');
-                  const cy = parseInt(vitalPreviewData[selectedVitalMetric]?.cy || '40');
-                  const { points, activeIndex } = getDynamicPoints(selectedVitalMetric, vitalsTimeframe, cx, cy);
-                  const pathStr = generateSmoothPath(points);
-                  const activePoint = points[activeIndex];
-                  const chartColor = selectedVitalMetric === 'Heart Rate' ? '#ff4d6d' : vitalPreviewData[selectedVitalMetric]?.color || '#ff4d6d';
-                  
-                  return (
-                    <>
-                      <svg key={vitalsTimeframe + selectedVitalMetric} className="w-full h-full overflow-visible" preserveAspectRatio="none" viewBox="0 0 100 100">
-                        <defs>
-                          <linearGradient id="chartGradientPremium" x1="0" x2="0" y1="0" y2="1">
-                            <stop offset="0%" stopColor={chartColor} stopOpacity="0.4" />
-                            <stop offset="100%" stopColor={chartColor} stopOpacity="0.0" />
-                          </linearGradient>
-                        </defs>
-                        
-                        {/* Gradient Fill */}
-                        <path
-                          d={`${pathStr} L100,100 L0,100 Z`}
-                          fill="url(#chartGradientPremium)"
-                          className="transition-all duration-700 ease-in-out"
-                        />
-                        
-                        {/* Chart Line */}
-                        <path
-                          d={pathStr}
-                          fill="none"
-                          stroke={chartColor}
-                          strokeWidth="3.5"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          className="transition-all duration-700 ease-in-out"
-                          style={{ filter: `drop-shadow(0 4px 8px ${chartColor}60)` }}
-                        />
-                        
-                        {/* Vertical Highlight Guide Line */}
-                        <line 
-                          x1={activePoint.x} 
-                          y1={activePoint.y} 
-                          x2={activePoint.x} 
-                          y2="100" 
-                          stroke="rgba(255, 255, 255, 0.15)" 
-                          strokeDasharray="4,4" 
-                          strokeWidth="1.5" 
-                          className="transition-all duration-700 ease-in-out" 
-                        />
-                        
-                        {/* Highlight Glow behind Active Point */}
-                        <circle cx={activePoint.x} cy={activePoint.y} r="14" fill={`${chartColor}30`} className="animate-pulse blur-md" />
-
-                        {/* Data Points */}
-                        {points.map((point, i) => (
-                          <circle
-                            key={`pt-${i}`}
-                            cx={point.x}
-                            cy={point.y}
-                            r={i === activeIndex ? "5" : "3"}
-                            fill="#ffffff"
-                            stroke={chartColor}
-                            strokeWidth={i === activeIndex ? "3" : "2"}
-                            className="transition-all duration-700 ease-in-out shadow-lg"
-                          />
-                        ))}
-                      </svg>
-
-                      {/* Tooltip */}
-                      <div 
-                        className="absolute z-30 transition-all duration-700 ease-in-out"
-                        style={{
-                          left: `${activePoint.x}%`,
-                          top: `calc(${activePoint.y}% - 85px)`,
-                          transform: 'translateX(-50%)'
-                        }}
-                      >
-                        <div className="bg-[#0f172a] border border-slate-700/60 rounded-2xl px-5 py-3 shadow-[0_12px_40px_rgba(0,0,0,0.4)] flex flex-col items-center">
-                          <div className="text-[22px] font-black tracking-tight text-white leading-none mb-1.5">
-                            {vitalPreviewData[selectedVitalMetric]?.title === 'Heart Rate' ? '72 BPM' : vitalPreviewData[selectedVitalMetric]?.title === 'SpO2' ? '98%' : vitalPreviewData[selectedVitalMetric]?.title === 'Temperature' ? '98.4 °F' : vitalPreviewData[selectedVitalMetric]?.title === 'Body Weight' ? '68 kg' : '120/80 mmHg'}
-                          </div>
-                          <div className="text-[10px] text-slate-400 font-medium whitespace-nowrap mb-2.5">22 Aug, 10:30 AM</div>
-                          <div className="flex items-center gap-1.5 bg-slate-800/80 rounded-lg px-2.5 py-1.5 border border-slate-700/50">
-                            <ArrowUpRight className="w-3 h-3 text-[#10b981]" />
-                            <span className="text-[9px] text-slate-200 font-bold uppercase tracking-wider">Active Reading</span>
-                          </div>
-                          {/* Arrow down */}
-                          <div className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 w-3.5 h-3.5 bg-[#0f172a] border-r border-b border-slate-700/60 transform rotate-45"></div>
-                        </div>
+                  {/* Latest Reading Callout */}
+                  {activePoint && (
+                    <div className="absolute top-2 right-2 z-20 bg-[#0f172a] border border-slate-700/60 rounded-2xl px-4 py-2.5 shadow-xl text-white">
+                      <div className="text-base font-black leading-none mb-1">
+                        {formatVitalDisplay(activePoint.raw, selectedVitalMetric)}
                       </div>
-                    </>
-                  );
-                })()}
+                      <div className="text-[10px] text-slate-400 font-medium">
+                        {new Date(activePoint.raw.recordedAt || activePoint.raw.createdAt).toLocaleString('en-GB', {
+                          day: '2-digit',
+                          month: 'short',
+                          hour: '2-digit',
+                          minute: '2-digit',
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* X-axis labels from real dates */}
+                <div className="absolute bottom-[-20px] left-8 right-2 flex justify-between text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+                  {chartPoints.slice(0, 6).map((pt, i) => (
+                    <span key={i}>
+                      {new Date(pt.raw.recordedAt || pt.raw.createdAt).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })}
+                    </span>
+                  ))}
+                </div>
+
+                {chartAvg && (
+                  <div className="absolute right-2 bottom-6 text-[10px] text-slate-400 font-bold bg-slate-800/30 px-2.5 py-1 rounded-md backdrop-blur-sm z-20 border border-slate-700/30">
+                    Avg ({vitalsTimeframe}): {chartAvg} {METRIC_META[selectedVitalMetric]?.unit}
+                  </div>
+                )}
               </div>
-              
-              {/* X-axis labels */}
-              <div className="absolute bottom-[-20px] left-8 right-2 flex justify-between text-[11px] font-bold text-slate-500 uppercase tracking-wider">
-                 {vitalsTimeframe === '7D' && <><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span><span>Sun</span></>}
-                 {vitalsTimeframe === '30D' && <><span>01 Aug</span><span>08 Aug</span><span>15 Aug</span><span>22 Aug</span><span>29 Aug</span><span>05 Sep</span></>}
-                 {vitalsTimeframe === '3M' && <><span>Jun</span><span>Jul</span><span>Aug</span><span>Sep</span></>}
-                 {vitalsTimeframe === '1Y' && <><span>Jan</span><span>Mar</span><span>May</span><span>Jul</span><span>Sep</span><span>Nov</span></>}
-              </div>
-              
-              {/* Average text */}
-              <div className="absolute right-2 bottom-6 text-[10px] text-slate-400 font-bold bg-slate-800/30 px-2.5 py-1 rounded-md backdrop-blur-sm z-20 border border-slate-700/30">
-                Avg. Week: 70 BPM
-              </div>
-            </div>
+            )}
           </div>
+
           {/* Today's Summary (Right 4 cols) */}
           <div className="lg:col-span-4 bg-white/90 dark:bg-[#15192b]/90 backdrop-blur-lg border border-slate-200/80 dark:border-slate-700/50 rounded-xl p-3.5 flex flex-col gap-2 shadow-sm hover:shadow-md transition-shadow">
             <div className="flex items-center gap-1.5 mb-1.5">
               <CalendarIcon className="w-4 h-4 text-slate-500 dark:text-slate-400" />
-              <span className="text-[13px] font-bold text-slate-900 dark:text-white tracking-wide">Today's Summary</span>
+              <span className="text-[13px] font-bold text-slate-900 dark:text-white tracking-wide">Latest Vitals Summary</span>
             </div>
-            
-            {/* Donut Chart visual */}
+
             <div className="flex justify-center my-1.5">
               <div className="relative w-28 h-28 flex items-center justify-center">
-                 {/* SVG donut */}
-                 {/* Enhanced Circular Gauge */}
-                 <div className="absolute inset-0 rounded-full bg-emerald-500/5 blur-xl pointer-events-none"></div>
-                 <svg className="w-full h-full transform -rotate-90 drop-shadow-lg" viewBox="0 0 100 100">
-                    <circle cx="50" cy="50" r="44" fill="none" stroke="currentColor" className="text-slate-200 dark:text-slate-800" strokeWidth="8" />
-                    <circle cx="50" cy="50" r="44" fill="none" stroke="url(#donutGradient)" strokeWidth="8" strokeDasharray="276.46" strokeDashoffset="5.5" strokeLinecap="round" style={{ filter: 'drop-shadow(0 0 6px rgba(16,185,129,0.5))' }} className="animate-fade-in" />
-                    <defs>
-                       <linearGradient id="donutGradient" x1="0" y1="0" x2="1" y2="1">
-                          <stop offset="0%" stopColor="#38bdf8" />
-                          <stop offset="50%" stopColor="#34d399" />
-                          <stop offset="100%" stopColor="#fbbf24" />
-                       </linearGradient>
-                    </defs>
-                 </svg>
-                 <div className="absolute text-center flex flex-col items-center justify-center pt-1">
-                    <span className="text-3xl font-extrabold text-slate-900 dark:text-white tracking-tighter shadow-sm leading-none">98<span className="text-[11px] text-slate-500 dark:text-slate-400 font-bold ml-0.5">%</span></span>
-                    <span className="text-[9px] text-emerald-400 font-bold uppercase tracking-widest mt-1 leading-none">Vitals Score</span>
-                 </div>
+                <div className="absolute inset-0 rounded-full bg-emerald-500/5 blur-xl pointer-events-none"></div>
+                <svg className="w-full h-full transform -rotate-90 drop-shadow-lg" viewBox="0 0 100 100">
+                  <circle cx="50" cy="50" r="44" fill="none" stroke="currentColor" className="text-slate-200 dark:text-slate-800" strokeWidth="8" />
+                  <circle
+                    cx="50"
+                    cy="50"
+                    r="44"
+                    fill="none"
+                    stroke="url(#donutGradient)"
+                    strokeWidth="8"
+                    strokeDasharray="276.46"
+                    strokeDashoffset={donutDashOffset}
+                    strokeLinecap="round"
+                  />
+                  <defs>
+                    <linearGradient id="donutGradient" x1="0" y1="0" x2="1" y2="1">
+                      <stop offset="0%" stopColor="#38bdf8" />
+                      <stop offset="50%" stopColor="#34d399" />
+                      <stop offset="100%" stopColor="#fbbf24" />
+                    </linearGradient>
+                  </defs>
+                </svg>
+                <div className="absolute text-center flex flex-col items-center justify-center pt-1">
+                  <span className="text-3xl font-extrabold text-slate-900 dark:text-white tracking-tighter leading-none">
+                    {healthScore}<span className="text-[11px] text-slate-500 dark:text-slate-400 font-bold ml-0.5">%</span>
+                  </span>
+                  <span className="text-[9px] text-emerald-400 font-bold uppercase tracking-widest mt-1 leading-none">Health Score</span>
+                </div>
               </div>
             </div>
 
             <div className="space-y-0.5 text-xs">
-              {[
-                { label: 'Heart Rate', icon: Heart, color: 'text-rose-500' },
-                { label: 'Blood Pressure', icon: Activity, color: 'text-indigo-400' },
-                { label: 'Temperature', icon: Thermometer, color: 'text-amber-500' },
-                { label: 'SpO₂ • Oxygen', icon: Wind, color: 'text-blue-500' },
-                { label: 'Body Weight', icon: Scale, color: 'text-emerald-500' }
-              ].map((v, i) => (
-                <div key={i} className="flex items-center justify-between py-1.5 px-0.5 border-b border-slate-200 dark:border-slate-800/40 last:border-0">
-                   <div className="flex items-center gap-2 text-slate-600 dark:text-slate-300">
-                     <v.icon className={`w-3.5 h-3.5 ${v.color}`} />
-                     <span className="font-medium text-[11px] tracking-wide">{v.label}</span>
-                   </div>
-                   <span className="text-[10px] font-bold text-emerald-400 tracking-wide">Normal</span>
+              {vitalsSummaryCards.map((v) => (
+                <div key={v.id} className="flex items-center justify-between py-1.5 px-0.5 border-b border-slate-200 dark:border-slate-800/40 last:border-0">
+                  <div className="flex items-center gap-2 text-slate-600 dark:text-slate-300">
+                    <v.icon className={`w-3.5 h-3.5 ${v.iconColor}`} />
+                    <span className="font-medium text-[11px] tracking-wide">{v.label}</span>
+                  </div>
+                  <span className="text-[10px] font-bold text-emerald-500 tracking-wide">{v.status}</span>
                 </div>
               ))}
             </div>
 
-            <button 
+            <button
               onClick={() => setReportModalOpen(true)}
               className="mt-2 w-full py-2 rounded-lg bg-slate-100 dark:bg-slate-800/80 hover:bg-slate-200 dark:hover:bg-slate-700/80 border border-slate-200 dark:border-slate-700 text-[11px] font-bold text-slate-700 dark:text-slate-300 transition-colors flex items-center justify-center gap-1 shadow-sm cursor-pointer"
             >
-               View Full Report <ArrowUpRight className="w-3 h-3" />
+              View Full Report <ArrowUpRight className="w-3 h-3" />
             </button>
           </div>
         </div>
 
         {/* BOTTOM SECTION: 3 PANELS */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5">
-          
           {/* Health Insights */}
-          <div className="bg-white/90 dark:bg-[#15192b]/90 backdrop-blur-lg border border-slate-200/80 dark:border-slate-700/50 rounded-xl p-3.5 flex flex-col justify-between relative overflow-hidden shadow-sm hover:shadow-md transition-shadow">
-             <div className="flex items-center gap-2 mb-2.5">
-                <Sparkles className="w-4 h-4 text-rose-500" />
-                <span className="text-[13px] font-bold text-slate-900 dark:text-white tracking-wide">Health Insights</span>
-             </div>
-             <div className="bg-slate-50 dark:bg-[#121626] border border-slate-200 dark:border-rose-900/20 rounded-lg p-2.5 flex gap-2 items-center shadow-sm dark:shadow-lg relative overflow-hidden">
-                {/* Subtle glow behind the text */}
-                <div className="absolute top-0 right-0 w-16 h-16 bg-rose-500/10 blur-xl rounded-full"></div>
-                
-                <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed font-medium relative z-10 w-2/3">
-                  Your heart rate is slightly elevated after 6 PM. Consider light activities or meditation.
-                </p>
-                <div className="shrink-0 relative z-10 flex-1 flex justify-end">
-                   <Heart className="w-8 h-8 text-rose-500 drop-shadow-[0_0_6px_rgba(244,63,94,0.5)]" strokeWidth={1.5} />
-                </div>
-             </div>
+          <div className="bg-white/90 dark:bg-[#15192b]/90 backdrop-blur-lg border border-slate-200/80 dark:border-slate-700/50 rounded-xl p-3.5 flex flex-col justify-between relative overflow-hidden shadow-sm">
+            <div className="flex items-center gap-2 mb-2.5">
+              <Sparkles className="w-4 h-4 text-rose-500" />
+              <span className="text-[13px] font-bold text-slate-900 dark:text-white tracking-wide">Health Insights</span>
+            </div>
+            <div className="bg-slate-50 dark:bg-[#121626] border border-slate-200 dark:border-rose-900/20 rounded-lg p-2.5 flex gap-2 items-center relative overflow-hidden">
+              <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed font-medium relative z-10 w-2/3">
+                {latestVital?.heartRate != null
+                  ? `Latest heart rate is ${latestVital.heartRate} BPM${latestVital.systolicBp ? ` and BP is ${latestVital.systolicBp}/${latestVital.diastolicBp} mmHg` : ''}. Keep logging consistently.`
+                  : 'Log your vitals regularly to receive automated cardiovascular and wellness insights.'}
+              </p>
+              <div className="shrink-0 relative z-10 flex-1 flex justify-end">
+                <Heart className="w-8 h-8 text-rose-500" strokeWidth={1.5} />
+              </div>
+            </div>
           </div>
 
           {/* Weekly Averages */}
-          <div className="bg-white/90 dark:bg-[#15192b]/90 backdrop-blur-lg border border-slate-200/80 dark:border-slate-700/50 rounded-xl p-3.5 shadow-sm hover:shadow-md transition-shadow">
-             <div className="flex items-center gap-2 mb-2.5">
-                <BarChart3 className="w-4 h-4 text-slate-500 dark:text-slate-400" />
-                <span className="text-[13px] font-bold text-slate-900 dark:text-white tracking-wide">Weekly Averages</span>
-             </div>
-             <div className="space-y-1.5">
-               {[
-                 { label: 'Heart Rate', val: '68 BPM', icon: Heart, color: 'text-rose-500', valColor: 'text-rose-500' },
-                 { label: 'Blood Pressure', val: '118/76 mmHg', icon: Activity, color: 'text-indigo-400', valColor: 'text-indigo-400' },
-                 { label: 'Temperature', val: '98.2 °F', icon: Thermometer, color: 'text-amber-500', valColor: 'text-amber-500' },
-                 { label: 'SpO₂', val: '97%', icon: Wind, color: 'text-blue-500', valColor: 'text-blue-500' },
-                 { label: 'Body Weight', val: '68.6 kg', icon: Scale, color: 'text-emerald-500', valColor: 'text-emerald-500' }
-               ].map((v, i) => (
-                 <div key={i} className="flex items-center justify-between text-[11px] px-0.5">
-                    <div className="flex items-center gap-2 text-slate-600 dark:text-slate-300">
-                      <v.icon className={`w-3.5 h-3.5 ${v.color}`} />
-                      <span className="font-medium tracking-wide text-xs">{v.label}</span>
-                    </div>
-                    <span className={`font-bold tracking-wide text-xs ${v.valColor}`}>{v.val}</span>
-                 </div>
-               ))}
-             </div>
+          <div className="bg-white/90 dark:bg-[#15192b]/90 backdrop-blur-lg border border-slate-200/80 dark:border-slate-700/50 rounded-xl p-3.5 shadow-sm">
+            <div className="flex items-center gap-2 mb-2.5">
+              <BarChart3 className="w-4 h-4 text-slate-500 dark:text-slate-400" />
+              <span className="text-[13px] font-bold text-slate-900 dark:text-white tracking-wide">7-Day Averages</span>
+            </div>
+            <div className="space-y-1.5">
+              {[
+                { label: 'Heart Rate', val: weeklyAverages.hr, icon: Heart, color: 'text-rose-500' },
+                { label: 'Blood Pressure', val: weeklyAverages.bp, icon: Activity, color: 'text-indigo-400' },
+                { label: 'Temperature', val: weeklyAverages.temp, icon: Thermometer, color: 'text-amber-500' },
+                { label: 'SpO₂', val: weeklyAverages.spo2, icon: Wind, color: 'text-blue-500' },
+                { label: 'Body Weight', val: weeklyAverages.weight, icon: Scale, color: 'text-emerald-500' },
+              ].map((v, i) => (
+                <div key={i} className="flex items-center justify-between text-[11px] px-0.5">
+                  <div className="flex items-center gap-2 text-slate-600 dark:text-slate-300">
+                    <v.icon className={`w-3.5 h-3.5 ${v.color}`} />
+                    <span className="font-medium tracking-wide text-xs">{v.label}</span>
+                  </div>
+                  <span className={`font-bold tracking-wide text-xs ${v.color}`}>{v.val}</span>
+                </div>
+              ))}
+            </div>
           </div>
 
-          {/* Recent Activity */}
-          <div className="bg-white/90 dark:bg-[#15192b]/90 backdrop-blur-lg border border-slate-200/80 dark:border-slate-700/50 rounded-xl p-3.5 relative shadow-sm hover:shadow-md transition-shadow">
-             <div className="flex items-center justify-between mb-3">
-                <div className="flex items-center gap-2">
-                   <Activity className="w-4 h-4 text-blue-500" />
-                   <span className="text-[13px] font-bold text-slate-900 dark:text-white tracking-wide">Recent Activity</span>
-                </div>
-                <span className="text-[9px] font-bold text-blue-400 cursor-pointer hover:text-blue-300 tracking-wide uppercase">View All</span>
-             </div>
-             <div className="space-y-0 relative mt-1">
-               {/* Timeline line */}
-               <div className="absolute left-[4.5px] top-1.5 bottom-2.5 w-px bg-slate-700/50 z-0"></div>
-               
-               {[
-                 { label: 'Heart Rate recorded', val: '72 BPM', time: '10:30 AM', color: 'bg-rose-500', valColor: 'text-rose-500' },
-                 { label: 'Blood Pressure recorded', val: '120/80 mmHg', time: '10:25 AM', color: 'bg-indigo-500', valColor: 'text-indigo-400' },
-                 { label: 'Temperature recorded', val: '98.4 °F', time: '10:20 AM', color: 'bg-amber-500', valColor: 'text-amber-500' }
-               ].map((a, i) => (
-                 <div key={i} className="flex items-start gap-2.5 py-1.5 relative z-10 border-b border-slate-200 dark:border-slate-800/40 last:border-0 px-0.5">
-                    <div className={`w-2.5 h-2.5 shrink-0 rounded-full bg-slate-900 border-[1.5px] border-[#0b1120] flex items-center justify-center mt-[3px] shadow-sm`}>
-                       <span className={`w-1 h-1 rounded-full ${a.color}`}></span>
+          {/* Recent Vitals Activity */}
+          <div className="bg-white/90 dark:bg-[#15192b]/90 backdrop-blur-lg border border-slate-200/80 dark:border-slate-700/50 rounded-xl p-3.5 relative shadow-sm">
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-2">
+                <Activity className="w-4 h-4 text-blue-500" />
+                <span className="text-[13px] font-bold text-slate-900 dark:text-white tracking-wide">Recent Readings</span>
+              </div>
+            </div>
+            {vitals.length === 0 ? (
+              <p className="text-[11px] text-slate-500 dark:text-slate-400 py-4 text-center">No vital readings recorded yet.</p>
+            ) : (
+              <div className="space-y-1.5">
+                {vitals.slice(0, 3).map((v) => {
+                  const summary = v.heartRate
+                    ? `${v.heartRate} BPM`
+                    : v.systolicBp
+                      ? `${v.systolicBp}/${v.diastolicBp}`
+                      : v.oxygenSaturation
+                        ? `${v.oxygenSaturation}% SpO₂`
+                        : 'Logged';
+                  const timeStr = new Date(v.recordedAt || v.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                  return (
+                    <div key={v.id} className="flex items-center justify-between py-1.5 border-b border-slate-200 dark:border-slate-800/40 last:border-0 text-[11px]">
+                      <span className="text-slate-600 dark:text-slate-300 font-medium">Vitals Recorded</span>
+                      <div className="flex gap-2.5 items-center">
+                        <span className="font-bold text-teal-600 dark:text-teal-400">{summary}</span>
+                        <span className="text-[10px] text-slate-500">{timeStr}</span>
+                      </div>
                     </div>
-                    <div className="flex-1 flex justify-between items-center text-[11px]">
-                       <span className="text-slate-600 dark:text-slate-300 font-medium tracking-wide">{a.label}</span>
-                       <div className="flex gap-2.5 text-right items-center">
-                          <span className={`font-bold tracking-wide ${a.valColor}`}>{a.val}</span>
-                          <span className="text-[10px] text-slate-500 font-medium w-10 tracking-wide">{a.time}</span>
-                       </div>
-                    </div>
-                 </div>
-               ))}
-             </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         </div>
       </div>
 
       {/* 5. MEDICATION ADHERENCE & APPOINTMENT ANALYTICS */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start font-sans">
-        {/* MEDICATION ADHERENCE (LEFT 6 COLS) */}
+        {/* MEDICATION ADHERENCE */}
         <div className="lg:col-span-6 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-6 space-y-6 shadow-sm">
           <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
             <div className="flex items-center gap-2">
@@ -817,36 +1117,37 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
           <div className="grid grid-cols-3 gap-3 bg-white dark:bg-slate-950 p-4 rounded-2xl border border-slate-100 dark:border-slate-800 text-center text-xs font-sans shadow-sm">
             <div className="border-r border-slate-100 dark:border-slate-800">
               <span className="text-slate-600 dark:text-slate-400 text-[10px] block font-medium">Today</span>
-              <span className="font-sans font-extrabold text-slate-800 dark:text-slate-200 text-lg">71%</span>
+              <span className="font-sans font-extrabold text-slate-800 dark:text-slate-200 text-lg">{todayAdherence}%</span>
             </div>
             <div className="border-r border-slate-100 dark:border-slate-800">
               <span className="text-slate-600 dark:text-slate-400 text-[10px] block font-medium">This Week</span>
-              <span className="font-sans font-extrabold text-[#00a896] dark:text-teal-400 text-lg">XXX</span>
+              <span className="font-sans font-extrabold text-[#00a896] dark:text-teal-400 text-lg">{weekAdherence}%</span>
             </div>
             <div>
-              <span className="text-slate-600 dark:text-slate-400 text-[10px] block font-medium">This Month</span>
-              <span className="font-sans font-extrabold text-[#00a896] dark:text-teal-400 text-lg">92%</span>
+              <span className="text-slate-600 dark:text-slate-400 text-[10px] block font-medium">Overall</span>
+              <span className="font-sans font-extrabold text-[#00a896] dark:text-teal-400 text-lg">{adherenceRate}%</span>
             </div>
           </div>
 
           {/* WEEKLY ADHERENCE BARS */}
           <div className="space-y-3">
-            <span className="text-[10px] font-bold text-slate-900 dark:text-white">Weekly adherence (In)</span>
+            <span className="text-[10px] font-bold text-slate-900 dark:text-white">Weekly adherence (%)</span>
             <div className="grid grid-cols-7 gap-2 items-end h-24 bg-white dark:bg-slate-950 p-2 text-center">
-              {MOCK_WEEKLY_ADHERENCE.map((day) => (
-                <div key={day.day} className="flex flex-col items-center gap-2 h-full justify-end">
+              {weeklyAdherenceBars.map((day, idx) => (
+                <div key={`${day.day}-${idx}`} className="flex flex-col items-center gap-2 h-full justify-end">
                   <div
-                    style={{ height: `${day.percentage}%` }}
+                    style={{ height: `${Math.max(4, day.percentage)}%` }}
                     className="w-4 rounded-t-sm bg-[#00a896] dark:bg-teal-400"
+                    title={`${day.day}: ${day.percentage}%`}
                   />
-                  <span className="text-[9px] font-medium text-slate-500 dark:text-slate-400 uppercase">{day.day.substring(0,3)}</span>
+                  <span className="text-[9px] font-medium text-slate-500 dark:text-slate-400 uppercase">{day.day}</span>
                 </div>
               ))}
             </div>
           </div>
         </div>
 
-        {/* APPOINTMENT & CONSULTATION ANALYTICS (RIGHT 6 COLS) */}
+        {/* APPOINTMENT & CONSULTATION ANALYTICS */}
         <div className="lg:col-span-6 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-6 space-y-6 shadow-sm">
           <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
             <div className="flex items-center gap-2">
@@ -857,7 +1158,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
               onClick={() => onNavigate('appointments')}
               className="px-4 py-1.5 rounded-full bg-teal-50 dark:bg-teal-900/30 hover:bg-teal-100 dark:hover:bg-teal-900/50 text-[#00a896] dark:text-teal-400 text-xs font-bold border border-teal-100 dark:border-teal-800 flex items-center gap-1 cursor-pointer transition-all"
             >
-              <span>View appointment</span>
+              <span>View appointments</span>
               <ExternalLink className="w-3 h-3" />
             </button>
           </div>
@@ -865,32 +1166,24 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
           <div className="grid grid-cols-3 gap-3 bg-white dark:bg-slate-950 p-4 rounded-2xl border border-slate-100 dark:border-slate-800 text-center text-xs shadow-sm">
             <div className="border-r border-slate-100 dark:border-slate-800">
               <span className="text-slate-600 dark:text-slate-400 text-[10px] block font-medium">Completed</span>
-              <span className="font-sans font-extrabold text-[#00a896] dark:text-teal-400 text-lg">12</span>
+              <span className="font-sans font-extrabold text-[#00a896] dark:text-teal-400 text-lg">{completedApts}</span>
             </div>
             <div className="border-r border-slate-100 dark:border-slate-800">
-              <span className="text-slate-600 dark:text-slate-400 text-[10px] block font-medium">Pending</span>
-              <div className="flex justify-center mt-1">
-                <div className="w-5 h-5 rounded-full border border-amber-500 flex items-center justify-center text-amber-500">
-                  <span className="w-1.5 h-1.5 bg-amber-500 rounded-full"></span>
-                </div>
-              </div>
+              <span className="text-slate-600 dark:text-slate-400 text-[10px] block font-medium">Upcoming</span>
+              <span className="font-sans font-extrabold text-amber-500 text-lg">{pendingApts}</span>
             </div>
             <div>
               <span className="text-slate-600 dark:text-slate-400 text-[10px] block font-medium">Cancelled</span>
-              <div className="flex justify-center mt-1">
-                <div className="w-5 h-5 rounded-full border border-rose-500 flex items-center justify-center text-rose-500 font-bold text-xs">
-                  ×
-                </div>
-              </div>
+              <span className="font-sans font-extrabold text-rose-500 text-lg">{cancelledApts}</span>
             </div>
           </div>
 
           <div className="p-5 rounded-2xl bg-slate-50 dark:bg-slate-950 border border-slate-100 dark:border-slate-800 space-y-3 text-xs shadow-inner">
             <h4 className="font-bold text-slate-800 dark:text-slate-200">Appointment summary</h4>
             <div className="space-y-2 text-slate-600 dark:text-slate-400 font-medium">
-              <div className="flex justify-between items-center"><span className="text-[11px]">Total Tele-Consultations</span><span className="font-extrabold text-rose-500 text-[10px]">121 sessions</span></div>
-              <div className="flex justify-between items-center"><span className="text-[11px]">Video calls</span><span className="font-extrabold text-[#00a896] dark:text-teal-400 text-[10px]">8 calls</span></div>
-              <div className="flex justify-between items-center"><span className="text-[11px]">In-person visits</span><span className="font-extrabold text-teal-600 dark:text-teal-500 text-[10px]">4 visits</span></div>
+              <div className="flex justify-between items-center"><span className="text-[11px]">Total Consultations</span><span className="font-extrabold text-slate-900 dark:text-white text-[10px]">{appointments.length} sessions</span></div>
+              <div className="flex justify-between items-center"><span className="text-[11px]">Video calls</span><span className="font-extrabold text-[#00a896] dark:text-teal-400 text-[10px]">{videoApts} calls</span></div>
+              <div className="flex justify-between items-center"><span className="text-[11px]">In-person visits</span><span className="font-extrabold text-teal-600 dark:text-teal-500 text-[10px]">{inPersonApts} visits</span></div>
             </div>
           </div>
         </div>
@@ -901,7 +1194,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
         <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 border-b border-slate-200 dark:border-slate-800 pb-4">
           <div>
             <h3 className="text-base font-extrabold text-slate-900 dark:text-white">Health Activity Timeline & Calendar</h3>
-            <p className="text-xs text-slate-500 dark:text-slate-400 font-medium">Health activity records on filled by date or view monthly calendar</p>
+            <p className="text-xs text-slate-500 dark:text-slate-400 font-medium">Live health activity log synchronized from MySQL records</p>
           </div>
 
           <div className="flex items-center gap-2 w-full sm:w-auto">
@@ -925,43 +1218,52 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-          {/* ACTIVITY STREAM TIMELINE (LEFT 7 COLS) */}
+          {/* ACTIVITY STREAM TIMELINE */}
           <div className="lg:col-span-7 space-y-0 relative">
-            <div className="absolute left-[19px] top-4 bottom-4 w-px bg-slate-200 dark:bg-slate-800 z-0"></div>
-            {filteredActivities.map((act) => (
-              <div key={act.id} className="relative z-10 flex items-start gap-4 py-3">
-                <div className="w-10 h-10 shrink-0 rounded-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-[#00a896] dark:text-teal-400 flex items-center justify-center shadow-sm">
-                  <Activity className="w-4 h-4" />
-                </div>
-                <div className="flex-1 border-b border-slate-100 dark:border-slate-800 pb-3 flex items-center justify-between">
-                  <div>
-                    <h4 className="font-extrabold text-slate-800 dark:text-slate-200 text-xs">{act.title}</h4>
-                    <p className="text-[10px] text-slate-500 dark:text-slate-400 font-medium">{act.subtitle}</p>
-                  </div>
-                  <div className="text-right shrink-0 font-mono">
-                    <span className="text-[10px] text-slate-500 dark:text-slate-400 dark:text-slate-500 block font-medium">Today</span>
-                    <span className="text-[10px] font-bold text-[#00a896] dark:text-teal-400">{act.time}</span>
-                  </div>
-                </div>
+            {filteredActivities.length === 0 ? (
+              <div className="py-10 text-center text-xs text-slate-500 dark:text-slate-400">
+                No health activity logged yet.
               </div>
-            ))}
+            ) : (
+              <>
+                <div className="absolute left-[19px] top-4 bottom-4 w-px bg-slate-200 dark:bg-slate-800 z-0"></div>
+                {filteredActivities.slice(0, 8).map((act) => (
+                  <div key={act.id} className="relative z-10 flex items-start gap-4 py-3">
+                    <div className="w-10 h-10 shrink-0 rounded-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-[#00a896] dark:text-teal-400 flex items-center justify-center shadow-sm">
+                      <Activity className="w-4 h-4" />
+                    </div>
+                    <div className="flex-1 border-b border-slate-100 dark:border-slate-800 pb-3 flex items-center justify-between gap-2">
+                      <div className="min-w-0">
+                        <h4 className="font-extrabold text-slate-800 dark:text-slate-200 text-xs truncate">{act.title}</h4>
+                        <p className="text-[10px] text-slate-500 dark:text-slate-400 font-medium truncate">{act.subtitle}</p>
+                      </div>
+                      <div className="text-right shrink-0 font-mono">
+                        <span className="text-[10px] text-slate-500 block font-medium">{act.date}</span>
+                        <span className="text-[10px] font-bold text-[#00a896] dark:text-teal-400">{act.time}</span>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </>
+            )}
           </div>
 
-          {/* COMPACT INTERACTIVE MONTHLY CALENDAR (RIGHT 5 COLS) */}
+          {/* COMPACT INTERACTIVE MONTHLY CALENDAR */}
           <div className="lg:col-span-5 bg-slate-50/50 dark:bg-slate-900/50 p-5 rounded-3xl border border-slate-100 dark:border-slate-800 space-y-4 shadow-sm">
             <div className="flex justify-between items-center text-xs">
-              <span className="font-extrabold text-slate-900 dark:text-white">August 2023</span>
-              <span className="font-sans text-[10px] text-slate-500 font-medium">27 Aug 2023</span>
+              <span className="font-extrabold text-slate-900 dark:text-white">{currentMonthLabel}</span>
+              <span className="font-sans text-[10px] text-slate-500 font-medium">{selectedCalendarDate}</span>
             </div>
 
             <div className="grid grid-cols-7 gap-1.5 text-center text-[10px] font-sans">
-              {['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((d, idx) => (
+              {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((d, idx) => (
                 <span key={idx} className="font-bold text-slate-500 dark:text-slate-400 py-1">{d}</span>
               ))}
-              {Array.from({ length: 31 }, (_, i) => i + 1).map((d) => {
-                const dateStr = `${d.toString().padStart(2, '0')} Aug 2026`;
-                const isSelected = selectedCalendarDate.startsWith(d.toString());
-                const hasDot = d === 20 || d === 22 || d === 24;
+              {Array.from({ length: daysInCurrentMonth }, (_, i) => i + 1).map((d) => {
+                const monthShort = now.toLocaleDateString('en-GB', { month: 'short' });
+                const dateStr = `${d.toString().padStart(2, '0')} ${monthShort} ${now.getFullYear()}`;
+                const isSelected = selectedCalendarDate === dateStr;
+                const hasDot = activeDaysSet.has(d);
                 return (
                   <button
                     key={d}
@@ -989,7 +1291,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
             <Target className="w-5 h-5 text-[#00a896] dark:text-teal-400" />
             <div>
               <h3 className="text-base font-extrabold text-slate-900 dark:text-white">{t('analytics.health_goals', 'Personal Health Goals')}</h3>
-              <p className="text-xs text-slate-500 dark:text-slate-400 font-medium">wait continuous health target goals</p>
+              <p className="text-xs text-slate-500 dark:text-slate-400 font-medium">Track active wellness targets persisted to MySQL</p>
             </div>
           </div>
 
@@ -1002,30 +1304,35 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
           </button>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-          {goals.map((g) => (
-            <div key={g.id} className="bg-slate-50 dark:bg-slate-950 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-4 shadow-sm">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-bold text-slate-800 dark:text-slate-200">{g.title}</span>
-                <span className="text-[10px] font-sans font-bold text-[#00a896] dark:text-teal-400">{g.progress}%</span>
-              </div>
+        {goals.length === 0 ? (
+          <div className="py-8 text-center text-xs text-slate-500 dark:text-slate-400">
+            No personal health goals created yet. Click "Add Goal" to start tracking.
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            {goals.map((g) => (
+              <div key={g.id} className="bg-slate-50 dark:bg-slate-950 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-4 shadow-sm">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-slate-800 dark:text-slate-200">{g.title}</span>
+                  <span className="text-[10px] font-sans font-bold text-[#00a896] dark:text-teal-400">{g.progress}%</span>
+                </div>
 
-              <div className="w-full h-1.5 rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
-                <div style={{ width: `${g.progress}%` }} className="h-full bg-[#00a896] dark:bg-teal-400" />
-              </div>
+                <div className="w-full h-1.5 rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
+                  <div style={{ width: `${g.progress}%` }} className="h-full bg-[#00a896] dark:bg-teal-400" />
+                </div>
 
-              <div className="flex justify-between items-baseline text-[10px] font-sans">
-                <span className="text-slate-500 dark:text-slate-400 font-medium">Target: <strong className="text-slate-700 dark:text-slate-300">{g.target} {g.unit}</strong></span>
-                <span className="text-slate-500 dark:text-slate-400 font-medium">Current: <strong className="text-slate-700 dark:text-slate-300">{g.current}</strong></span>
+                <div className="flex justify-between items-baseline text-[10px] font-sans">
+                  <span className="text-slate-500 dark:text-slate-400 font-medium">Target: <strong className="text-slate-700 dark:text-slate-300">{g.target} {g.unit}</strong></span>
+                  <span className="text-slate-500 dark:text-slate-400 font-medium">Current: <strong className="text-slate-700 dark:text-slate-300">{g.current}</strong></span>
+                </div>
               </div>
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        )}
       </div>
 
-      {/* 8. NEUTRAL INSIGHTS & MONTHLY COMPARISON */}
+      {/* 8. INSIGHTS & MONTHLY COMPARISON */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start font-sans">
-        {/* INSIGHTS (LEFT 6 COLS) */}
         <div className="lg:col-span-6 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-6 space-y-4 shadow-sm">
           <div className="flex items-center gap-2 border-b border-slate-200 dark:border-slate-800 pb-3">
             <Sparkles className="w-5 h-5 text-[#00a896] dark:text-cyan-400" />
@@ -1035,20 +1342,32 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
           <div className="space-y-3 text-xs font-medium">
             <div className="p-4 rounded-2xl bg-white dark:bg-slate-950 border border-slate-100 dark:border-slate-800 space-y-1 shadow-sm">
               <h4 className="font-bold text-[#00a896] dark:text-teal-400">Medication Health Tracking</h4>
-              <p className="text-slate-500 dark:text-slate-400">Medication tracking was completed on 6 of the last 7 days.</p>
+              <p className="text-slate-500 dark:text-slate-400">
+                {doseHistory.length > 0
+                  ? `${adherenceRate}% overall adherence across ${doseHistory.length} logged dose${doseHistory.length === 1 ? '' : 's'}.`
+                  : 'No medication dose logs recorded yet.'}
+              </p>
             </div>
             <div className="p-4 rounded-2xl bg-white dark:bg-slate-950 border border-slate-100 dark:border-slate-800 space-y-1 shadow-sm">
               <h4 className="font-bold text-[#00a896] dark:text-teal-400">Appointment History</h4>
-              <p className="text-slate-500 dark:text-slate-400">Your appointment activity increased compared with the previous period.</p>
+              <p className="text-slate-500 dark:text-slate-400">
+                {appointments.length > 0
+                  ? `${appointments.length} total appointment${appointments.length === 1 ? '' : 's'} (${completedApts} completed, ${pendingApts} upcoming).`
+                  : 'No doctor appointments scheduled yet.'}
+              </p>
             </div>
             <div className="p-4 rounded-2xl bg-white dark:bg-slate-950 border border-slate-100 dark:border-slate-800 space-y-1 shadow-sm">
               <h4 className="font-bold text-[#00a896] dark:text-teal-400">Medical Records Synced</h4>
-              <p className="text-slate-500 dark:text-slate-400">You added 4 medical records to your health journal this month.</p>
+              <p className="text-slate-500 dark:text-slate-400">
+                {records.length > 0
+                  ? `${records.length} medical document${records.length === 1 ? '' : 's'} securely stored in your ABDM vault.`
+                  : 'Upload medical reports to build your longitudinal health record.'}
+              </p>
             </div>
           </div>
         </div>
 
-        {/* MONTHLY COMPARISON TABLE (RIGHT 6 COLS) */}
+        {/* MONTHLY COMPARISON TABLE */}
         <div className="lg:col-span-6 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-6 space-y-4 shadow-sm">
           <div className="flex items-center gap-2 border-b border-slate-200 dark:border-slate-800 pb-3">
             <BarChart3 className="w-5 h-5 text-purple-500 dark:text-purple-400" />
@@ -1056,14 +1375,14 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
           </div>
 
           <div className="space-y-3 text-xs">
-            {MOCK_MONTHLY_COMPARISONS.map((comp, i) => (
+            {monthlyComparisons.map((comp, i) => (
               <div key={i} className="py-2 flex items-center justify-between border-b border-slate-100 dark:border-slate-800 last:border-0">
                 <div>
                   <h4 className="font-bold text-slate-800 dark:text-slate-200">{comp.label}</h4>
-                  <span className="text-[10px] text-slate-500 dark:text-slate-400 font-medium">Current: {comp.currentValue} vs {comp.previousValue}</span>
+                  <span className="text-[10px] text-slate-500 dark:text-slate-400 font-medium">Current: {comp.currentValue} vs Previous: {comp.previousValue}</span>
                 </div>
                 <span className="font-sans font-bold text-[#00a896] dark:text-teal-400 text-[10px] bg-teal-50 dark:bg-teal-900/30 px-3 py-1 rounded-full border border-teal-100 dark:border-teal-800">
-                  {comp.change.replace('+', '+ ')}
+                  {comp.change}
                 </span>
               </div>
             ))}
@@ -1082,6 +1401,17 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
         isOpen={reportModalOpen}
         onClose={() => setReportModalOpen(false)}
         dateRange={globalDateRange}
+        reportData={{
+          patientName: patientProfile?.fullName || user?.name || 'Patient',
+          abhaId: patientProfile?.user?.abhaId || patientProfile?.abhaId || user?.abhaId || 'Not Linked',
+          healthScore,
+          adherencePct: adherenceRate,
+          totalAppointments: appointments.length,
+          videoConsultations: videoApts,
+          totalRecords: records.length,
+          vitals,
+          doseHistory,
+        }}
       />
 
       <AnalyticsFilterDrawer

@@ -19,19 +19,19 @@ const router = Router();
 router.use(authenticate);
 
 // 1. Patient / User: Generate Temporary Secure QR Token
-router.post('/generate-qr', requireRole('PATIENT', 'DOCTOR', 'ADMIN', 'SUPER_ADMIN', 'CAREGIVER'), generateQRTokenController);
+router.post('/generate-qr', requireRole('PATIENT', 'ADMIN', 'SUPER_ADMIN', 'CAREGIVER'), generateQRTokenController);
 
 // 2. Doctor: Validate Scanned QR Token (Basic ID only)
-router.post('/validate-qr', requireRole('DOCTOR', 'PATIENT', 'ADMIN', 'SUPER_ADMIN', 'NURSE'), validateQRTokenController);
+router.post('/validate-qr', requireRole('DOCTOR', 'ADMIN', 'SUPER_ADMIN'), validateQRTokenController);
 
 // 3. Doctor: Create Access Request (Status = PENDING)
-router.post('/access-requests', requireRole('DOCTOR', 'PATIENT', 'ADMIN', 'SUPER_ADMIN', 'NURSE'), createAccessRequestController);
+router.post('/access-requests', requireRole('DOCTOR', 'ADMIN', 'SUPER_ADMIN'), createAccessRequestController);
 
 // 4. Patient: List My Access Requests
-router.get('/access-requests/patient', requireRole('PATIENT', 'DOCTOR', 'ADMIN', 'SUPER_ADMIN', 'CAREGIVER'), getPatientAccessRequestsController);
+router.get('/access-requests/patient', requireRole('PATIENT', 'ADMIN', 'SUPER_ADMIN', 'CAREGIVER'), getPatientAccessRequestsController);
 
 // 5. Doctor: List My Access Requests
-router.get('/access-requests/doctor', requireRole('DOCTOR', 'PATIENT', 'ADMIN', 'SUPER_ADMIN'), getDoctorAccessRequestsController);
+router.get('/access-requests/doctor', requireRole('DOCTOR', 'ADMIN', 'SUPER_ADMIN'), getDoctorAccessRequestsController);
 
 // 6. Patient: Approve Access Request
 router.post('/access-requests/:id/approve', requireRole('PATIENT', 'ADMIN', 'SUPER_ADMIN', 'CAREGIVER'), approveAccessRequestController);
@@ -43,6 +43,6 @@ router.post('/access-requests/:id/reject', requireRole('PATIENT', 'ADMIN', 'SUPE
 router.post('/access-sessions/:id/revoke', requireRole('PATIENT', 'ADMIN', 'SUPER_ADMIN', 'CAREGIVER'), revokeAccessController);
 
 // 9. Doctor: Get Patient 360° Data (Strict Session & Scope Validation)
-router.get('/patient-360/:patientId', requireRole('DOCTOR', 'ADMIN', 'SUPER_ADMIN', 'NURSE'), getPatient360DataController);
+router.get('/patient-360/:patientId', requireRole('DOCTOR', 'ADMIN', 'SUPER_ADMIN'), getPatient360DataController);
 
 export default router;

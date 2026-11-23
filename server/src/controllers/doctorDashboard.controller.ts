@@ -4,16 +4,20 @@ import { AppointmentStatus, ConsultationStatus } from '@prisma/client';
 
 export const getDashboardData = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    // Determine the doctor
-    // Fallback temporary pattern as per plan: get the first doctor
-    const doctor = await prisma.doctor.findFirst({
-      include: {
-        user: true
-      }
-    });
+    // Resolve authenticated doctor strictly from JWT userId
+    let doctor = req.user?.id
+      ? await prisma.doctor.findUnique({
+          where: { userId: req.user.id },
+          include: { user: true },
+        })
+      : null;
+
+    if (!doctor && (req.user?.role === 'ADMIN' || req.user?.role === 'SUPER_ADMIN')) {
+      doctor = await prisma.doctor.findFirst({ include: { user: true } });
+    }
 
     if (!doctor) {
-      return res.status(404).json({ success: false, message: 'Doctor not found' });
+      return res.status(404).json({ success: false, message: 'Doctor profile not found' });
     }
 
     // Calculate today's boundaries (start of day to end of day)
@@ -31,7 +35,9 @@ export const getDashboardData = async (req: Request, res: Response, next: NextFu
         }
       },
       include: {
-        patient: true,
+        patient: {
+          include: { vitals: { orderBy: { recordedAt: 'desc' }, take: 1 } },
+        },
         consultation: true
       },
       orderBy: {
@@ -47,7 +53,9 @@ export const getDashboardData = async (req: Request, res: Response, next: NextFu
         // Active consultations might have started today, or we just rely on status.
       },
       include: {
-        patient: true,
+        patient: {
+          include: { vitals: { orderBy: { recordedAt: 'desc' }, take: 1 } },
+        },
         appointment: true
       }
     });
@@ -77,6 +85,17 @@ export const getDashboardData = async (req: Request, res: Response, next: NextFu
     // 4. Format Today's Schedule and Active Queue
     const activeQueueIds = new Set<string>();
     
+    const formatLatestVital = (vitals?: any[]) => {
+      const v = vitals?.[0];
+      if (!v) return 'No vitals recorded';
+      const parts = [
+        v.systolicBp && v.diastolicBp ? `BP ${v.systolicBp}/${v.diastolicBp}` : '',
+        v.heartRate ? `HR ${v.heartRate}` : '',
+        v.oxygenSaturation ? `SpO2 ${v.oxygenSaturation}%` : '',
+      ].filter(Boolean);
+      return parts.length > 0 ? parts.join(' • ') : 'No vitals recorded';
+    };
+
     // Add IN_PROGRESS consultations to active queue
     const formattedQueue = activeConsultations.map(consult => {
       activeQueueIds.add(consult.appointmentId);
@@ -91,12 +110,12 @@ export const getDashboardData = async (req: Request, res: Response, next: NextFu
         age,
         gender: consult.patient.gender || 'Unknown',
         time: consult.appointment.slotTime,
-        date: 'Today',
+        date: new Date(consult.appointment.appointmentDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
         type: consult.appointment.type === 'VIDEO' ? 'Tele-Consultation' : 'OPD In-Clinic',
         status: 'In Consultation',
         reason: consult.appointment.reason || 'Consultation',
         isTele: consult.appointment.type === 'VIDEO',
-        vitals: 'Waiting for vitals',
+        vitals: formatLatestVital((consult.patient as any).vitals),
         statusColor: 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30'
       };
     });
@@ -125,12 +144,12 @@ export const getDashboardData = async (req: Request, res: Response, next: NextFu
         age,
         gender: apt.patient.gender || 'Unknown',
         time: apt.slotTime,
-        date: 'Today',
+        date: new Date(apt.appointmentDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
         type: apt.type === 'VIDEO' ? 'Tele-Consultation' : 'OPD In-Clinic',
         status: statusLabel,
         reason: apt.reason || 'Checkup',
         isTele: apt.type === 'VIDEO',
-        vitals: 'Pending', 
+        vitals: formatLatestVital((apt.patient as any).vitals), 
         statusColor: statusColor
       };
 

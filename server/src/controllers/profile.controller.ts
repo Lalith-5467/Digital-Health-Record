@@ -256,3 +256,119 @@ export const updateInsuranceProfile = async (
     next(error);
   }
 };
+
+// ==========================================
+// USER PREFERENCES (ALL ROLES) & ADMIN PROFILE
+// ==========================================
+export const getUserPreferences = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const data = await ProfileService.getUserPreferences(req.user!.id);
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const updateUserPreferences = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const data = await ProfileService.updateUserPreferences(req.user!.id, req.body, req.ip);
+    res.status(200).json({ success: true, message: 'Preferences saved successfully', data });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const updateAdminAccountProfile = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const targetUserId = getTargetUserId(req);
+    const data = await ProfileService.updateAdminAccountProfile(
+      targetUserId,
+      req.body,
+      req.user!.id,
+      req.ip
+    );
+    res.status(200).json({ success: true, message: 'Account profile updated successfully', data });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const patchCurrentUserProfile = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const role = req.user!.role;
+    if (role === Role.PATIENT) return updatePatientProfile(req, res, next);
+    if (role === Role.DOCTOR) return updateDoctorProfile(req, res, next);
+    if (role === Role.NURSE) return updateNurseProfile(req, res, next);
+    if (role === Role.PHARMACIST) return updatePharmacistProfile(req, res, next);
+    if (role === Role.CAREGIVER) return updateCaregiverProfile(req, res, next);
+    if (role === Role.INSURANCE_PROVIDER) return updateInsuranceProfile(req, res, next);
+    return updateAdminAccountProfile(req, res, next);
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const updateDoctorAvailability = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const { prisma } = await import('../config/prisma');
+    const targetUserId = getTargetUserId(req);
+    const doctor = await prisma.doctor.findUnique({ where: { userId: targetUserId } });
+    if (!doctor) {
+      res.status(404).json({ success: false, message: 'Doctor profile not found' });
+      return;
+    }
+
+    const dayMap: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+    const workingDays: string[] = Array.isArray(req.body.workingDays) ? req.body.workingDays : [];
+    const startTime = String(req.body.opdStartTime || req.body.startTime || '09:00');
+    const endTime = String(req.body.opdEndTime || req.body.endTime || '17:00');
+    const [lunchStart, lunchEnd] = String(req.body.lunchTime || '13:00 - 14:00').split('-').map((s: string) => s.trim());
+    const slotDurationMin = parseInt(String(req.body.consultDuration || req.body.slotDurationMin || 20), 10) || 20;
+
+    await prisma.$transaction(async (tx) => {
+      await tx.doctorAvailability.deleteMany({ where: { doctorId: doctor.id } });
+      for (const dayName of workingDays) {
+        const dayNum = typeof dayName === 'number' ? dayName : dayMap[dayName];
+        if (dayNum === undefined) continue;
+        await tx.doctorAvailability.create({
+          data: {
+            doctorId: doctor.id,
+            dayOfWeek: dayNum,
+            startTime,
+            endTime,
+            lunchStart: lunchStart || null,
+            lunchEnd: lunchEnd || null,
+            slotDurationMin,
+            isTelemedicine: false,
+            isActive: true,
+          },
+        });
+      }
+    });
+
+    const saved = await prisma.doctorAvailability.findMany({ where: { doctorId: doctor.id } });
+    res.status(200).json({ success: true, message: 'Doctor availability saved to database', data: saved });
+  } catch (error) {
+    next(error);
+  }
+};

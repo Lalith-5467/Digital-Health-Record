@@ -24,113 +24,70 @@ export const formatDoctorName = (name?: string | null): string => {
 
 export class HealthShareService {
   /**
+   * Strict ownership & consent authority guard:
+   * Only the target patient, an ACTIVE linked caregiver of that patient, or ADMIN/SUPER_ADMIN may manage consent.
+   */
+  private static async assertPatientConsentAuthority(actorUserId: string, targetPatientId: string) {
+    const actor = await prisma.user.findUnique({
+      where: { id: actorUserId },
+      select: { id: true, role: true },
+    });
+    if (!actor) {
+      throw new AppError('Authentication required', 401);
+    }
+    if (actor.role === 'ADMIN' || actor.role === 'SUPER_ADMIN') {
+      return;
+    }
+
+    const targetPatient = await prisma.patient.findUnique({
+      where: { id: targetPatientId },
+      select: { id: true, userId: true },
+    });
+    if (targetPatient && targetPatient.userId === actorUserId) {
+      return;
+    }
+
+    if (actor.role === 'CAREGIVER') {
+      const caregiver = await prisma.caregiver.findUnique({
+        where: { userId: actorUserId },
+        include: {
+          patientLinks: { where: { patientId: targetPatientId } },
+          patients: { where: { id: targetPatientId }, select: { id: true } },
+        },
+      });
+      if (caregiver) {
+        const link = caregiver.patientLinks[0];
+        if (link) {
+          if (link.consentStatus === 'ACTIVE') return;
+        } else if (caregiver.patients.length > 0) {
+          return;
+        }
+      }
+    }
+
+    throw new AppError('Forbidden: You do not have permission to manage consent for this patient', 403);
+  }
+
+  /**
    * 1. PATIENT: Generate a secure, cryptographically random temporary QR token
    * The token contains NO PHI / medical data.
    */
   static async generateQRToken(
     userId: string,
     durationMinutes = 30,
-    patientHint?: { patientId?: string; patientName?: string; abhaId?: string }
+    _patientHint?: { patientId?: string; patientName?: string; abhaId?: string }
   ) {
-    let patient: any = null;
-
-    // 0. If authenticated user is a patient, prioritize their own patient profile
-    if (userId) {
-      patient = await prisma.patient.findFirst({
-        where: {
-          OR: [{ userId }, { id: userId }],
-        },
-        include: { user: true },
-      });
+    if (!userId) {
+      throw new AppError('Authentication required to generate QR token', 401);
     }
 
-    // 1. Try finding patient by hint ID if provided
-    if (patientHint?.patientId) {
-      patient = await prisma.patient.findFirst({
-        where: {
-          OR: [{ id: patientHint.patientId }, { userId: patientHint.patientId }],
-        },
-        include: { user: true },
-      });
-    }
-
-    // 2. Try finding patient by Patient Name hint (e.g. Lalith Velarasi)
-    if (!patient && patientHint?.patientName && patientHint.patientName.trim()) {
-      const cleanName = patientHint.patientName.trim();
-      patient = await prisma.patient.findFirst({
-        where: {
-          fullName: {
-            contains: cleanName,
-          },
-        },
-        include: { user: true },
-      });
-    }
-
-    // 3. Try finding patient by ABHA ID hint
-    if (!patient && patientHint?.abhaId) {
-      const cleanAbha = patientHint.abhaId.replace(/@abdm$/i, '').trim();
-      patient = await prisma.patient.findFirst({
-        where: {
-          user: {
-            abhaId: { contains: cleanAbha },
-          },
-        },
-        include: { user: true },
-      });
-    }
-
-    // 4. Try finding patient by authenticated user's ID
-    if (!patient && userId) {
-      patient = await prisma.patient.findUnique({
-        where: { userId },
-        include: { user: true },
-      });
-    }
-
-    // 5. Try finding patient by authenticated user's email
-    if (!patient && userId) {
-      const authUser = await prisma.user.findUnique({ where: { id: userId } });
-      if (authUser?.email) {
-        patient = await prisma.patient.findFirst({
-          where: {
-            user: { email: authUser.email },
-          },
-          include: { user: true },
-        });
-      }
-    }
-
-    // 6. If patientHint.patientName is provided but not in DB, create new profile dynamically
-    if (!patient && patientHint?.patientName && patientHint.patientName.trim()) {
-      const cleanName = patientHint.patientName.trim();
-      const email = `${cleanName.toLowerCase().replace(/[^a-z0-9]/g, '')}@health.com`;
-      const newUser = await prisma.user.create({
-        data: {
-          email,
-          passwordHash: '$2b$10$BtHIMsaTbw.ccggOb6ZjmeFDk0oM2kBSMXA/tHIfCeoxqA7iL3EKi',
-          role: 'PATIENT',
-          abhaId: patientHint.abhaId || `${Math.floor(10 + Math.random() * 89)}-${Math.floor(1000 + Math.random() * 8999)}-${Math.floor(1000 + Math.random() * 8999)}-${Math.floor(1000 + Math.random() * 8999)}`,
-        },
-      });
-      patient = await prisma.patient.create({
-        data: {
-          userId: newUser.id,
-          fullName: cleanName,
-          gender: 'Not Specified',
-          bloodGroup: 'O+',
-        },
-        include: { user: true },
-      });
-    }
-
-    // 7. Ultimate fallback
-    if (!patient) {
-      patient = await prisma.patient.findFirst({ include: { user: true } });
-    }
+    const patient = await prisma.patient.findFirst({
+      where: { OR: [{ userId }, { id: userId }] },
+      include: { user: true },
+    });
 
     if (!patient) {
-      throw new AppError('Patient profile not found', 404);
+      throw new AppError('Patient profile not found for authenticated user', 404);
     }
 
     // Invalidate existing active tokens for this patient to ensure 1 fresh token
@@ -171,25 +128,17 @@ export class HealthShareService {
    * Returns NO medical records, NO prescriptions, NO vitals.
    */
   static async validateQRToken(doctorUserId: string, token: string, ipAddress?: string) {
-    let doctor = await prisma.doctor.findFirst({
-      where: {
-        OR: [{ userId: doctorUserId }, { id: doctorUserId }],
-      },
+    const doctor = await prisma.doctor.findFirst({
+      where: { OR: [{ userId: doctorUserId }, { id: doctorUserId }] },
       include: { user: true },
     });
 
     if (!doctor) {
-      doctor = await prisma.doctor.findFirst({
-        include: { user: true },
-      });
-    }
-
-    if (!doctor) {
-      throw new AppError('Doctor profile not found', 403);
+      throw new AppError('Doctor profile not found for authenticated user', 403);
     }
 
     const cleanToken = token.trim();
-    let shareToken = await prisma.healthShareToken.findUnique({
+    const shareToken = await prisma.healthShareToken.findUnique({
       where: { token: cleanToken },
       include: {
         patient: {
@@ -201,60 +150,6 @@ export class HealthShareService {
         },
       },
     });
-
-    // Fallback: If scanned token is not yet in healthShareToken table (e.g. ABHA ID or client-generated test token)
-    if (!shareToken) {
-      let patientMatch = await prisma.patient.findFirst({
-        where: {
-          OR: [
-            { user: { abhaId: cleanToken } },
-            { user: { abhaId: cleanToken.replace(/@abdm$/i, '') } },
-            { id: cleanToken },
-            { user: { phoneNumber: cleanToken } },
-            { user: { email: cleanToken } },
-          ],
-        },
-        include: {
-          user: {
-            select: { abhaId: true, phoneNumber: true },
-          },
-        },
-      });
-
-      // If token starts with MED-QR- or is any valid scanned/entered test QR, link to primary demo patient
-      if (!patientMatch && (cleanToken.startsWith('MED-QR-') || cleanToken.length >= 6)) {
-        patientMatch = await prisma.patient.findFirst({
-          include: {
-            user: {
-              select: { abhaId: true, phoneNumber: true },
-            },
-          },
-        });
-      }
-
-      if (patientMatch) {
-        // Persist valid active token in database for this patient
-        const expiresAt = new Date(Date.now() + 60 * 60 * 1000);
-        shareToken = await prisma.healthShareToken.create({
-          data: {
-            token: cleanToken,
-            patientId: patientMatch.id,
-            durationMinutes: 60,
-            expiresAt,
-            isRevoked: false,
-          },
-          include: {
-            patient: {
-              include: {
-                user: {
-                  select: { abhaId: true, phoneNumber: true },
-                },
-              },
-            },
-          },
-        });
-      }
-    }
 
     if (!shareToken) {
       throw new AppError('Invalid or expired QR token. Please ask the patient to generate a new QR.', 404);
@@ -340,7 +235,7 @@ export class HealthShareService {
     },
     ipAddress?: string
   ) {
-    let doctor = await prisma.doctor.findFirst({
+    const doctor = await prisma.doctor.findFirst({
       where: {
         OR: [{ userId: doctorUserId }, { id: doctorUserId }],
       },
@@ -348,52 +243,17 @@ export class HealthShareService {
     });
 
     if (!doctor) {
-      doctor = await prisma.doctor.findFirst({
-        include: { user: true },
-      });
-    }
-
-    if (!doctor) {
-      throw new AppError('Doctor profile not found', 403);
+      throw new AppError('Doctor profile not found for authenticated user', 403);
     }
 
     const cleanToken = payload.token.trim();
-    let shareToken = await prisma.healthShareToken.findUnique({
+    const shareToken = await prisma.healthShareToken.findUnique({
       where: { token: cleanToken },
       include: { patient: { include: { user: true } } },
     });
 
-    if (!shareToken) {
-      const patientMatch = await prisma.patient.findFirst({
-        where: {
-          OR: [
-            { user: { abhaId: cleanToken } },
-            { user: { abhaId: cleanToken.replace(/@abdm$/i, '') } },
-            { id: cleanToken },
-            { user: { phoneNumber: cleanToken } },
-            { user: { email: cleanToken } },
-          ],
-        },
-        include: { user: true },
-      });
-
-      if (patientMatch) {
-        const expiresAt = new Date(Date.now() + 60 * 60 * 1000);
-        shareToken = await prisma.healthShareToken.create({
-          data: {
-            token: cleanToken,
-            patientId: patientMatch.id,
-            durationMinutes: 60,
-            expiresAt,
-            isRevoked: false,
-          },
-          include: { patient: { include: { user: true } } },
-        });
-      }
-    }
-
     if (!shareToken || shareToken.isRevoked || new Date() > shareToken.expiresAt) {
-      throw new AppError('Invalid or expired QR token', 400);
+      throw new AppError('Invalid or expired QR token. Please ask the patient to generate a fresh QR code.', 400);
     }
 
     const patient = shareToken.patient;
@@ -615,30 +475,31 @@ export class HealthShareService {
       if (!patientIds.includes(m.id)) patientIds.push(m.id);
     });
 
-    let requests = await prisma.patientAccessRequest.findMany({
-      where: patientIds.length > 0 ? { patientId: { in: patientIds } } : {},
+    // Also include active wards if the caller is a CAREGIVER
+    const caregiver = await prisma.caregiver.findUnique({
+      where: { userId: patientUserId },
+      include: {
+        patientLinks: { where: { consentStatus: 'ACTIVE' }, select: { patientId: true } },
+      },
+    });
+    if (caregiver) {
+      caregiver.patientLinks.forEach((l) => {
+        if (!patientIds.includes(l.patientId)) patientIds.push(l.patientId);
+      });
+    }
+
+    if (patientIds.length === 0) {
+      return [];
+    }
+
+    const requests = await prisma.patientAccessRequest.findMany({
+      where: { patientId: { in: patientIds } },
       include: {
         doctor: true,
       },
       orderBy: { requestedAt: 'desc' },
       take: 30,
     });
-
-    // If patient has 0 requests matching their exact ID, include recent active, pending, or history requests
-    // (e.g. created within the last 24 hours from scanned temporary tokens), so multi-tab and demo workflows never drop requests
-    if (requests.length === 0) {
-      const recent = await prisma.patientAccessRequest.findMany({
-        where: {
-          requestedAt: { gte: new Date(Date.now() - 24 * 60 * 60 * 1000) },
-        },
-        include: { doctor: true },
-        orderBy: { requestedAt: 'desc' },
-        take: 20,
-      });
-      if (recent.length > 0) {
-        requests = recent;
-      }
-    }
 
     const now = new Date();
 
@@ -693,15 +554,11 @@ export class HealthShareService {
    * 5. DOCTOR: Get doctor's sent access requests & active sessions
    */
   static async getDoctorAccessRequests(doctorUserId: string) {
-    let doctor = await prisma.doctor.findFirst({
+    const doctor = await prisma.doctor.findFirst({
       where: {
         OR: [{ userId: doctorUserId }, { id: doctorUserId }],
       },
     });
-
-    if (!doctor) {
-      doctor = await prisma.doctor.findFirst();
-    }
 
     if (!doctor) {
       return [];
@@ -773,28 +630,6 @@ export class HealthShareService {
     durationMinutes = 60,
     ipAddress?: string
   ) {
-    let patient = await prisma.patient.findFirst({
-      where: {
-        OR: [{ userId: patientUserId }, { id: patientUserId }],
-      },
-      include: { user: true },
-    });
-
-    if (!patient && patientUserId) {
-      const user = await prisma.user.findUnique({ where: { id: patientUserId } });
-      if (user?.email) {
-        patient = await prisma.patient.findFirst({
-          where: {
-            OR: [
-              { user: { email: user.email } },
-              { fullName: { contains: user.email.split('@')[0] } },
-            ],
-          },
-          include: { user: true },
-        });
-      }
-    }
-
     const accessRequest = await prisma.patientAccessRequest.findUnique({
       where: { id: requestId },
       include: { doctor: { include: { user: true } }, patient: { include: { user: true } } },
@@ -804,19 +639,8 @@ export class HealthShareService {
       throw new AppError('Access request not found', 404);
     }
 
-    if (!patient) {
-      patient = accessRequest.patient;
-    }
-
-    if (
-      accessRequest.patientId !== patient.id &&
-      accessRequest.patient?.userId !== patientUserId &&
-      accessRequest.patient?.user?.email !== patient.user?.email &&
-      patient.user?.role !== 'ADMIN' &&
-      patient.user?.role !== 'SUPER_ADMIN'
-    ) {
-      throw new AppError('Unauthorized: You do not have permission to approve this access request', 403);
-    }
+    await this.assertPatientConsentAuthority(patientUserId, accessRequest.patientId);
+    const patient = accessRequest.patient;
 
     if (accessRequest.status === 'APPROVED') {
       // Idempotent return: If already approved, return active approval state cleanly
@@ -918,28 +742,6 @@ export class HealthShareService {
    * 7. PATIENT: Reject Access Request
    */
   static async rejectAccessRequest(patientUserId: string, requestId: string, ipAddress?: string) {
-    let patient = await prisma.patient.findFirst({
-      where: {
-        OR: [{ userId: patientUserId }, { id: patientUserId }],
-      },
-      include: { user: true },
-    });
-
-    if (!patient && patientUserId) {
-      const user = await prisma.user.findUnique({ where: { id: patientUserId } });
-      if (user?.email) {
-        patient = await prisma.patient.findFirst({
-          where: {
-            OR: [
-              { user: { email: user.email } },
-              { fullName: { contains: user.email.split('@')[0] } },
-            ],
-          },
-          include: { user: true },
-        });
-      }
-    }
-
     const accessRequest = await prisma.patientAccessRequest.findUnique({
       where: { id: requestId },
       include: { doctor: { include: { user: true } }, patient: { include: { user: true } } },
@@ -949,19 +751,8 @@ export class HealthShareService {
       throw new AppError('Access request not found', 404);
     }
 
-    if (!patient) {
-      patient = accessRequest.patient;
-    }
-
-    if (
-      accessRequest.patientId !== patient.id &&
-      accessRequest.patient?.userId !== patientUserId &&
-      accessRequest.patient?.user?.email !== patient.user?.email &&
-      patient.user?.role !== 'ADMIN' &&
-      patient.user?.role !== 'SUPER_ADMIN'
-    ) {
-      throw new AppError('Unauthorized: You do not have permission to reject this access request', 403);
-    }
+    await this.assertPatientConsentAuthority(patientUserId, accessRequest.patientId);
+    const patient = accessRequest.patient;
 
     const now = new Date();
     const updated = await prisma.patientAccessRequest.update({
@@ -1017,12 +808,6 @@ export class HealthShareService {
    * 8. PATIENT: Revoke Active Access Session
    */
   static async revokeAccess(patientUserId: string, requestId: string, ipAddress?: string) {
-    let patient = await prisma.patient.findFirst({
-      where: {
-        OR: [{ userId: patientUserId }, { id: patientUserId }],
-      },
-    });
-
     const accessRequest = await prisma.patientAccessRequest.findUnique({
       where: { id: requestId },
       include: { doctor: { include: { user: true } }, patient: true },
@@ -1031,6 +816,9 @@ export class HealthShareService {
     if (!accessRequest) {
       throw new AppError('Access session not found', 404);
     }
+
+    await this.assertPatientConsentAuthority(patientUserId, accessRequest.patientId);
+    const patient = accessRequest.patient;
 
     const now = new Date();
     const updated = await prisma.patientAccessRequest.update({
@@ -1089,15 +877,11 @@ export class HealthShareService {
    */
   static async getPatient360Data(doctorUserId: string, patientId: string, ipAddress?: string) {
     // 1. Authenticated user must be a Doctor
-    let doctor = await prisma.doctor.findFirst({
+    const doctor = await prisma.doctor.findFirst({
       where: {
         OR: [{ userId: doctorUserId }, { id: doctorUserId }],
       },
     });
-
-    if (!doctor) {
-      doctor = await prisma.doctor.findFirst();
-    }
 
     if (!doctor) {
       throw new AppError('Only authenticated doctors can access clinical 360 data', 403);
@@ -1130,37 +914,13 @@ export class HealthShareService {
       });
     }
 
-    // If patientId is '1' or dummy, resolve to the most recent approved request patient
-    if (!patient && (patientId === '1' || patientId === 'default')) {
-      const recentApproved = await prisma.patientAccessRequest.findFirst({
-        where: {
-          status: 'APPROVED',
-          expiresAt: { gt: new Date() },
-        },
-        orderBy: { grantedAt: 'desc' },
-        include: {
-          patient: {
-            include: {
-              user: {
-                select: { abhaId: true, phoneNumber: true, email: true },
-              },
-            },
-          },
-        },
-      });
-
-      if (recentApproved?.patient) {
-        patient = recentApproved.patient;
-      }
-    }
-
     if (!patient) {
       throw new AppError('Patient not found', 404);
     }
 
-    // 3. Strict Authorization Check: Active, Approved, Non-Expired, Non-Revoked Request
+    // 3. Strict Authorization Check: Active, Approved, Non-Expired, Non-Revoked Request for THIS Doctor
     const now = new Date();
-    let activeSession = await prisma.patientAccessRequest.findFirst({
+    const activeSession = await prisma.patientAccessRequest.findFirst({
       where: {
         patientId: patient.id,
         doctorId: doctor.id,
@@ -1169,18 +929,6 @@ export class HealthShareService {
       },
       orderBy: { grantedAt: 'desc' },
     });
-
-    // Check if approved session exists under any clinical doctor or facility
-    if (!activeSession) {
-      activeSession = await prisma.patientAccessRequest.findFirst({
-        where: {
-          patientId: patient.id,
-          status: 'APPROVED',
-          expiresAt: { gt: now },
-        },
-        orderBy: { grantedAt: 'desc' },
-      });
-    }
 
     if (!activeSession) {
       throw new AppError('Active patient consent required. Access is not approved, has expired, or was revoked by the patient.', 403);

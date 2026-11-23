@@ -20,6 +20,7 @@ import {
 } from 'lucide-react';
 import { useLanguage } from '../../context/LanguageContext';
 import { healthShortsApi, type DynamicHealthShort } from '../../services/healthShortsApi';
+import { healthShortsEngagementApi } from '../../services/dhrApis';
 
 export interface HealthShortsViewProps {
   onClose: () => void;
@@ -487,12 +488,16 @@ export const HealthShortsView: React.FC<HealthShortsViewProps> = ({
 
   const handleToggleLike = (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    setLikedMap(prev => ({ ...prev, [id]: !prev[id] }));
+    const nextLiked = !likedMap[id];
+    setLikedMap((prev) => ({ ...prev, [id]: nextLiked }));
+    healthShortsEngagementApi.upsertInteraction(id, { isLiked: nextLiked }).catch(() => {});
   };
 
   const handleToggleSave = (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    setSavedMap(prev => ({ ...prev, [id]: !prev[id] }));
+    const nextSaved = !savedMap[id];
+    setSavedMap((prev) => ({ ...prev, [id]: nextSaved }));
+    healthShortsEngagementApi.upsertInteraction(id, { isSaved: nextSaved }).catch(() => {});
   };
 
   const handleShare = (video: DynamicHealthShort, e: React.MouseEvent) => {

@@ -1,7 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { Pill, Calendar, FileText, Sparkles, Check } from 'lucide-react';
 import { useLanguage } from '../../context/LanguageContext';
+import { medicineApi, appointmentApi, recordApi } from '../../services/dhrApis';
 
 interface TodaysFocusGridProps {
   onNavigate: (id: string) => void;
@@ -10,11 +11,60 @@ interface TodaysFocusGridProps {
 
 export const TodaysFocusGrid: React.FC<TodaysFocusGridProps> = ({ onNavigate, onToast }) => {
   const { t } = useLanguage();
+  const [nextDose, setNextDose] = useState<any | null>(null);
   const [medTaken, setMedTaken] = useState(false);
+  const [takingMed, setTakingMed] = useState(false);
+  const [nextAppointment, setNextAppointment] = useState<any | null>(null);
+  const [latestRecord, setLatestRecord] = useState<any | null>(null);
 
-  const handleTakeMed = () => {
-    setMedTaken(true);
-    onToast(t('focus.med_taken_toast', '✓ Amoxicillin 500mg marked as taken!'));
+  const loadFocusData = async () => {
+    const [medsRes, aptsRes, recsRes] = await Promise.all([
+      medicineApi.getActiveMedications().catch(() => ({ data: { medications: [], todayDoses: [] } })),
+      appointmentApi.getAppointments().catch(() => ({ data: [] })),
+      recordApi.getMedicalRecords().catch(() => ({ data: [] })),
+    ]);
+
+    const todayDoses = Array.isArray(medsRes?.data?.todayDoses) ? medsRes.data.todayDoses : [];
+    const upcomingDose =
+      todayDoses.find((d: any) => d.status === 'Upcoming' || d.status === 'Due Now' || d.status === 'upcoming') ||
+      todayDoses[0] ||
+      null;
+    setNextDose(upcomingDose);
+    setMedTaken(upcomingDose ? upcomingDose.status === 'Taken' || upcomingDose.status === 'taken' : false);
+
+    const apts = Array.isArray(aptsRes?.data) ? aptsRes.data : [];
+    const upcomingApt =
+      apts.find((a: any) => a.status !== 'CANCELLED' && a.status !== 'COMPLETED') || null;
+    setNextAppointment(upcomingApt);
+
+    const recs = Array.isArray(recsRes?.data) ? recsRes.data : [];
+    setLatestRecord(recs[0] || null);
+  };
+
+  useEffect(() => {
+    loadFocusData();
+    const handleRefresh = () => loadFocusData();
+    window.addEventListener('health_workflow_updated', handleRefresh);
+    return () => window.removeEventListener('health_workflow_updated', handleRefresh);
+  }, []);
+
+  const handleTakeMed = async () => {
+    if (!nextDose || medTaken || takingMed) return;
+    setTakingMed(true);
+    try {
+      await medicineApi.recordDoseLog({
+        doseId: nextDose.id,
+        medicineId: nextDose.medicineId || nextDose.id,
+        status: 'taken',
+      });
+      setMedTaken(true);
+      window.dispatchEvent(new Event('health_workflow_updated'));
+      onToast(`✓ ${nextDose.medicineName} marked as taken!`);
+    } catch (err: any) {
+      onToast(err?.message || 'Failed to record dose');
+    } finally {
+      setTakingMed(false);
+    }
   };
 
   return (
@@ -48,31 +98,41 @@ export const TodaysFocusGrid: React.FC<TodaysFocusGridProps> = ({ onNavigate, on
             </div>
             <span className="text-[10px] font-extrabold px-2.5 py-0.5 rounded-full whitespace-nowrap"
               style={{ background: 'rgba(245,158,11,.12)', color: '#92400e', border: '1px solid rgba(245,158,11,.25)' }}>
-              12:00 PM
+              {nextDose?.scheduledTime || 'No Doses'}
             </span>
           </div>
 
           <div className="my-2.5 space-y-0.5 relative z-10">
-            <h4 className="text-xs sm:text-sm font-extrabold text-slate-900 dark:text-white leading-snug">
-              Amoxicillin 500mg
+            <h4 className="text-xs sm:text-sm font-extrabold text-slate-900 dark:text-white leading-snug truncate">
+              {nextDose ? nextDose.medicineName : 'No Scheduled Doses'}
             </h4>
-            <p className="text-[11px] text-slate-500 dark:text-slate-400 font-medium">
-              {t('focus.dose_instruction', '1 Capsule after lunch')}
+            <p className="text-[11px] text-slate-500 dark:text-slate-400 font-medium truncate">
+              {nextDose ? (nextDose.dosage || 'Scheduled dose') : 'Add active medicines to track today'}
             </p>
           </div>
 
-          <button
-            onClick={handleTakeMed}
-            disabled={medTaken}
-            className="w-full py-2 px-3 rounded-xl text-xs font-extrabold transition-all flex items-center justify-center gap-1.5 cursor-pointer relative z-10"
-            style={medTaken
-              ? { background: 'rgba(16,185,129,.12)', color: '#059669', border: '1px solid rgba(16,185,129,.25)' }
-              : { background: 'linear-gradient(135deg,#f59e0b,#d97706)', color: '#1c1917', boxShadow: '0 3px 10px rgba(245,158,11,.3)' }}
-          >
-            {medTaken
-              ? <><Check className="w-3.5 h-3.5" /><span>{t('focus.taken_done', 'Taken ✓')}</span></>
-              : <span>{t('focus.take_dose', 'Take Dose Now')}</span>}
-          </button>
+          {nextDose ? (
+            <button
+              onClick={handleTakeMed}
+              disabled={medTaken || takingMed}
+              className="w-full py-2 px-3 rounded-xl text-xs font-extrabold transition-all flex items-center justify-center gap-1.5 cursor-pointer relative z-10 disabled:opacity-75"
+              style={medTaken
+                ? { background: 'rgba(16,185,129,.12)', color: '#059669', border: '1px solid rgba(16,185,129,.25)' }
+                : { background: 'linear-gradient(135deg,#f59e0b,#d97706)', color: '#1c1917', boxShadow: '0 3px 10px rgba(245,158,11,.3)' }}
+            >
+              {medTaken
+                ? <><Check className="w-3.5 h-3.5" /><span>{t('focus.taken_done', 'Taken ✓')}</span></>
+                : <span>{takingMed ? 'Recording...' : t('focus.take_dose', 'Take Dose Now')}</span>}
+            </button>
+          ) : (
+            <button
+              onClick={() => onNavigate('medicines')}
+              className="w-full py-2 px-3 rounded-xl text-xs font-extrabold transition-all flex items-center justify-center gap-1.5 cursor-pointer relative z-10"
+              style={{ background: 'linear-gradient(135deg,#f59e0b,#d97706)', color: '#1c1917', boxShadow: '0 3px 10px rgba(245,158,11,.3)' }}
+            >
+              <span>Manage Medicines</span>
+            </button>
+          )}
         </motion.div>
 
         {/* CARD 2: APPOINTMENT */}
@@ -90,25 +150,27 @@ export const TodaysFocusGrid: React.FC<TodaysFocusGridProps> = ({ onNavigate, on
             </div>
             <span className="text-[10px] font-extrabold px-2.5 py-0.5 rounded-full whitespace-nowrap"
               style={{ background: 'rgba(59,130,246,.12)', color: '#1e40af', border: '1px solid rgba(59,130,246,.25)' }}>
-              10:30 AM
+              {nextAppointment?.slotTime || 'Unscheduled'}
             </span>
           </div>
 
           <div className="my-2.5 space-y-0.5 relative z-10">
-            <h4 className="text-xs sm:text-sm font-extrabold text-slate-900 dark:text-white leading-snug">
-              Dr. Rajesh Kumar
+            <h4 className="text-xs sm:text-sm font-extrabold text-slate-900 dark:text-white leading-snug truncate">
+              {nextAppointment ? (nextAppointment.doctor?.fullName || 'Scheduled Consultation') : 'No Upcoming Visits'}
             </h4>
-            <p className="text-[11px] text-slate-500 dark:text-slate-400 font-medium">
-              {t('focus.cardiology_consult', 'Cardiology Tele-Consult')}
+            <p className="text-[11px] text-slate-500 dark:text-slate-400 font-medium truncate">
+              {nextAppointment
+                ? `${nextAppointment.doctor?.speciality || 'Consultation'} · ${nextAppointment.type === 'VIDEO' ? 'Video' : 'In-Person'}`
+                : 'Book a specialist consultation anytime'}
             </p>
           </div>
 
           <button
             onClick={() => onNavigate('appointments')}
-            className="w-full py-2 px-3 rounded-xl text-slate-900 dark:text-white text-xs font-extrabold transition-all flex items-center justify-center cursor-pointer relative z-10"
+            className="w-full py-2 px-3 rounded-xl text-white text-xs font-extrabold transition-all flex items-center justify-center cursor-pointer relative z-10"
             style={{ background: 'linear-gradient(135deg,#3b82f6,#1d4ed8)', boxShadow: '0 3px 10px rgba(59,130,246,.3)' }}
           >
-            {t('focus.view_appointment', 'View Appointment')}
+            {nextAppointment ? t('focus.view_appointment', 'View Appointment') : 'Book Appointment'}
           </button>
         </motion.div>
 
@@ -127,25 +189,27 @@ export const TodaysFocusGrid: React.FC<TodaysFocusGridProps> = ({ onNavigate, on
             </div>
             <span className="text-[10px] font-extrabold px-2.5 py-0.5 rounded-full whitespace-nowrap"
               style={{ background: 'rgba(34,197,94,.12)', color: '#166534', border: '1px solid rgba(34,197,94,.25)' }}>
-              {t('focus.new_report', 'New Report')}
+              {latestRecord ? (latestRecord.status || 'Synced') : 'Empty Vault'}
             </span>
           </div>
 
           <div className="my-2.5 space-y-0.5 relative z-10">
-            <h4 className="text-xs sm:text-sm font-extrabold text-slate-900 dark:text-white leading-snug">
-              {t('focus.cbc_blood', 'CBC & Blood Panel')}
+            <h4 className="text-xs sm:text-sm font-extrabold text-slate-900 dark:text-white leading-snug truncate">
+              {latestRecord ? latestRecord.title : 'No Records Uploaded'}
             </h4>
-            <p className="text-[11px] text-slate-500 dark:text-slate-400 font-medium">
-              {t('focus.lab_ready', 'Lab Results Ready to View')}
+            <p className="text-[11px] text-slate-500 dark:text-slate-400 font-medium truncate">
+              {latestRecord
+                ? `${latestRecord.hospital || latestRecord.type || 'Medical Record'}`
+                : 'Upload or scan lab reports to vault'}
             </p>
           </div>
 
           <button
             onClick={() => onNavigate('records')}
-            className="w-full py-2 px-3 rounded-xl text-slate-900 dark:text-white text-xs font-extrabold transition-all flex items-center justify-center cursor-pointer relative z-10"
+            className="w-full py-2 px-3 rounded-xl text-white text-xs font-extrabold transition-all flex items-center justify-center cursor-pointer relative z-10"
             style={{ background: 'linear-gradient(135deg,#00a896,#059669)', boxShadow: '0 3px 10px rgba(0,168,150,.3)' }}
           >
-            {t('focus.view_lab', 'View Lab Report')}
+            {latestRecord ? t('focus.view_lab', 'View Medical Record') : 'Open Health Vault'}
           </button>
         </motion.div>
 

@@ -39,9 +39,9 @@ export const AdminLoginPage: React.FC<AdminLoginPageProps> = ({
   const [selectedRole, setSelectedRole] = useState<'Admin' | 'Super Admin'>('Super Admin');
   const [isRoleDropdownOpen, setIsRoleDropdownOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
-  const [email, setEmail] = useState('superadmin@dhr-medicare.in');
-  const [password, setPassword] = useState('Admin@123');
-  const [securityKey, setSecurityKey] = useState('SUPER-ROOT-001');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [securityKey, setSecurityKey] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -56,19 +56,10 @@ export const AdminLoginPage: React.FC<AdminLoginPageProps> = ({
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  // Role preset credentials helper
+  // Role selector helper
   const handleSelectRole = (role: 'Admin' | 'Super Admin') => {
     setSelectedRole(role);
     setErrorMsg(null);
-    if (role === 'Super Admin') {
-      setEmail('superadmin@dhr-medicare.in');
-      setPassword('Admin@123');
-      setSecurityKey('SUPER-ROOT-001');
-    } else {
-      setEmail('admin.kavita@dhr-medicare.in');
-      setPassword('Admin@123');
-      setSecurityKey('ADM-EXEC-442');
-    }
   };
 
   const handleLoginSubmit = async (e: React.FormEvent) => {
@@ -80,7 +71,8 @@ export const AdminLoginPage: React.FC<AdminLoginPageProps> = ({
       const res = await authApi.login({
         email: email.trim().toLowerCase(),
         password,
-      });
+        ...(securityKey.trim() ? { securityKey: securityKey.trim() } : {}),
+      } as any);
 
       if (res && res.data && res.data.token) {
         const { user, token } = res.data;
@@ -92,6 +84,11 @@ export const AdminLoginPage: React.FC<AdminLoginPageProps> = ({
             `This account (${user.email}) is registered as "${user.role}". Only ADMIN or SUPER_ADMIN accounts can access the Admin Console.`
           );
         }
+        if (selectedRole === 'Super Admin' && upperRole !== 'SUPER_ADMIN') {
+          throw new Error(
+            `This account (${user.email}) has role "ADMIN", not "SUPER_ADMIN". Please select "Admin" or sign in with a Super Admin account.`
+          );
+        }
 
         setAuthToken(token);
         safeLocalStorageSet('token', token);
@@ -101,10 +98,10 @@ export const AdminLoginPage: React.FC<AdminLoginPageProps> = ({
         const resolvedRole: 'Admin' | 'Super Admin' = user.role === 'SUPER_ADMIN' ? 'Super Admin' : 'Admin';
         const userPayload = {
           id: user.id,
-          name: profile.fullName || (resolvedRole === 'Super Admin' ? 'Vikramaditya Rao' : 'Kavita Sundaram'),
+          name: (user as any).fullName || profile.fullName || user.email.split('@')[0],
           email: user.email,
           role: resolvedRole,
-          department: resolvedRole === 'Super Admin' ? 'National Health Directorate' : 'Hospital Executive Admin',
+          department: (user as any).department || (resolvedRole === 'Super Admin' ? 'National Health Directorate' : 'System Administration'),
         };
 
         safeLocalStorageSet('app_user', JSON.stringify(userPayload));
@@ -170,7 +167,7 @@ export const AdminLoginPage: React.FC<AdminLoginPageProps> = ({
               {selectedRole === 'Super Admin' ? 'Super Admin Directorate' : 'Executive Authentication'}
             </h2>
             <p className="text-xs text-slate-500 dark:text-slate-400 font-medium">
-              {selectedRole === 'Super Admin' ? 'Root master clearance & security overrides' : 'Authorized login for Hospital Admins'}
+              {selectedRole === 'Super Admin' ? 'Root master clearance & security overrides' : 'Authorized login for System Administrators'}
             </p>
           </div>
 
@@ -267,7 +264,7 @@ export const AdminLoginPage: React.FC<AdminLoginPageProps> = ({
                   required
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  placeholder="admin@dhr-medicare.in"
+                  placeholder={selectedRole === 'Super Admin' ? 'superadmin@dhr-medicare.in' : 'admin@dhr-medicare.in'}
                   className="w-full h-11 pl-10 pr-4 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-bold text-slate-900 dark:text-white focus:outline-none focus:border-[#00a896] focus:ring-1 focus:ring-[#00a896]"
                 />
               </div>

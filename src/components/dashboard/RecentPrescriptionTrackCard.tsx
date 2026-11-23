@@ -1,9 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { FileText, ShoppingBag, ArrowRight, CheckCircle2, Clock, Check, Eye } from 'lucide-react';
-import { getPrescriptions, getPharmacyOrders } from '../../utils/healthWorkflowStorage';
-import type { StructuredPrescription } from '../../utils/prescriptionExtractor';
-import type { ExtendedPharmacyOrder } from '../../utils/healthWorkflowStorage';
+import { prescriptionApi, type PrescriptionEntity } from '../../services/dhrApis';
+import { fetchPatientPharmacyOrders, type BackendPharmacyOrder } from '../../services/pharmacyOrderApi';
 import { useLanguage } from '../../context/LanguageContext';
 
 interface RecentPrescriptionTrackCardProps {
@@ -18,48 +17,34 @@ export const RecentPrescriptionTrackCard: React.FC<RecentPrescriptionTrackCardPr
   isShortsOpen = false
 }) => {
   const { t } = useLanguage();
-  const [latestPrescription, setLatestPrescription] = useState<StructuredPrescription | null>(null);
-  const [linkedOrder, setLinkedOrder] = useState<ExtendedPharmacyOrder | null>(null);
+  const [latestPrescription, setLatestPrescription] = useState<PrescriptionEntity | null>(null);
+  const [linkedOrder, setLinkedOrder] = useState<BackendPharmacyOrder | null>(null);
 
-  const loadData = () => {
-    const prescriptions = getPrescriptions();
-    const orders = getPharmacyOrders();
+  const loadData = async () => {
+    try {
+      const [rxRes, liveOrders] = await Promise.all([
+        prescriptionApi.getPrescriptions().catch(() => ({ data: [] })),
+        fetchPatientPharmacyOrders().catch(() => [] as BackendPharmacyOrder[]),
+      ]);
 
-    if (prescriptions.length > 0) {
-      const latest = prescriptions[prescriptions.length - 1];
-      setLatestPrescription(latest);
+      const prescriptions = Array.isArray(rxRes?.data) ? rxRes.data : [];
+      if (prescriptions.length > 0) {
+        const sorted = [...prescriptions].sort(
+          (a, b) => new Date(b.issuedAt || 0).getTime() - new Date(a.issuedAt || 0).getTime()
+        );
+        const latest = sorted[0];
+        setLatestPrescription(latest);
 
-      // Find matching pharmacy order
-      const match = orders.find(
-        (o) => o.sourcePrescriptionId === latest.id || o.id.includes(latest.id.replace('RX-DOC-', ''))
-      );
-      setLinkedOrder(match || null);
-
-      // Live backend check for real-time order & payment status
-      import('../../services/pharmacyOrderApi').then(({ fetchPatientPharmacyOrders }) => {
-        fetchPatientPharmacyOrders()
-          .then((liveOrders) => {
-            if (liveOrders && liveOrders.length > 0) {
-              const liveMatch = liveOrders.find(
-                (o) =>
-                  (match && o.id === match.id) ||
-                  o.prescriptionId === latest.id ||
-                  (match?.sourcePrescriptionId && o.prescriptionId === match.sourcePrescriptionId)
-              );
-              if (liveMatch) {
-                setLinkedOrder((prev: any) => ({
-                  ...prev,
-                  id: liveMatch.id,
-                  status: liveMatch.status,
-                  paymentStatus: liveMatch.paymentStatus,
-                  totalAmount: Number(liveMatch.totalAmount) || prev?.totalAmount || 0,
-                }));
-              }
-            }
-          })
-          .catch(() => {});
-      }).catch(() => {});
-    } else {
+        const match =
+          liveOrders.find((o) => o.prescriptionId === latest.id) ||
+          liveOrders[0] ||
+          null;
+        setLinkedOrder(match);
+      } else {
+        setLatestPrescription(null);
+        setLinkedOrder(null);
+      }
+    } catch {
       setLatestPrescription(null);
       setLinkedOrder(null);
     }
@@ -73,10 +58,9 @@ export const RecentPrescriptionTrackCard: React.FC<RecentPrescriptionTrackCardPr
   }, []);
 
   if (!latestPrescription) {
-    return null; // Do not show if no verified prescription exists yet
+    return null;
   }
 
-  // Format Pharmacy Status Display
   const getPharmacyStatusBadge = () => {
     const rawStatus = (linkedOrder?.status || 'PENDING').toString().toUpperCase();
 
@@ -124,7 +108,6 @@ export const RecentPrescriptionTrackCard: React.FC<RecentPrescriptionTrackCardPr
       );
     }
 
-    // Default: Waiting for Pharmacy / Submitted
     return (
       <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-black bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/30">
         <Clock className="w-3.5 h-3.5" />
@@ -132,6 +115,13 @@ export const RecentPrescriptionTrackCard: React.FC<RecentPrescriptionTrackCardPr
       </span>
     );
   };
+
+  const rxItems = Array.isArray(latestPrescription.items) ? latestPrescription.items : [];
+  const issuedDate = latestPrescription.issuedAt
+    ? new Date(latestPrescription.issuedAt).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
+    : 'Recent';
+  const doctorName = latestPrescription.doctor?.fullName || 'Attending Physician';
+  const clinicName = latestPrescription.doctor?.hospital || 'Medical Clinic';
 
   return (
     <motion.div
@@ -154,11 +144,11 @@ export const RecentPrescriptionTrackCard: React.FC<RecentPrescriptionTrackCardPr
                 {t('card.recent_verified_prescription', 'Recent Verified Prescription')}
               </h3>
               <span className="text-xs font-mono font-bold text-[#00a896] dark:text-cyan-400">
-                #{latestPrescription.id}
+                #{latestPrescription.id.slice(-8)}
               </span>
             </div>
             <p className="text-xs text-slate-500 dark:text-slate-400 font-medium">
-              {latestPrescription.doctorName} • {latestPrescription.clinicName} • {latestPrescription.prescriptionDate}
+              {doctorName} • {clinicName} • {issuedDate}
             </p>
           </div>
         </div>
@@ -167,9 +157,9 @@ export const RecentPrescriptionTrackCard: React.FC<RecentPrescriptionTrackCardPr
         <div className="flex items-center gap-2 flex-wrap">
           <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-black bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30">
             <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
-            <span>{t('card.verified', 'Verified')}</span>
+            <span>{latestPrescription.status || t('card.verified', 'Verified')}</span>
           </span>
-          {getPharmacyStatusBadge()}
+          {linkedOrder && getPharmacyStatusBadge()}
           {linkedOrder && (
             linkedOrder.paymentStatus === 'PAID' ? (
               <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-black bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30 font-mono">
@@ -192,15 +182,15 @@ export const RecentPrescriptionTrackCard: React.FC<RecentPrescriptionTrackCardPr
           <div className="text-xs font-bold text-slate-700 dark:text-slate-300 flex items-center gap-2">
             <span>{t('card.prescription_details', 'Prescription Details')}:</span>
             <span className="font-extrabold text-slate-900 dark:text-white">
-              {latestPrescription.medicines.length} {t('presc.formulations', 'prescribed formulations')}
+              {rxItems.length} {t('presc.formulations', 'prescribed formulations')}
             </span>
           </div>
           <div className="text-xs text-slate-600 dark:text-slate-400 font-mono line-clamp-1">
-            Rx: {latestPrescription.medicines.map((m) => `${m.name} (${m.dosage})`).join(', ')}
+            Rx: {rxItems.length > 0 ? rxItems.map((m) => `${m.medicineName} (${m.dosage}${m.unit || ''})`).join(', ') : (latestPrescription.diagnosis || 'Prescription')}
           </div>
           {linkedOrder && (
             <p className="text-[11px] text-slate-500 dark:text-slate-400">
-              {t('presc.connected_order', 'Connected Pharmacy Order')}: <strong className="text-[#00a896] dark:text-cyan-300">#{linkedOrder.id}</strong> • {t('presc.fulfillment_method', 'Fulfillment Method')}: <strong>{linkedOrder.deliveryMethod}</strong>
+              {t('presc.connected_order', 'Connected Pharmacy Order')}: <strong className="text-[#00a896] dark:text-cyan-300">#{linkedOrder.id.slice(-8)}</strong> • {t('presc.fulfillment_method', 'Fulfillment Method')}: <strong>{linkedOrder.deliveryType || 'Home Delivery'}</strong>
             </p>
           )}
         </div>

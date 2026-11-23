@@ -137,29 +137,26 @@ export const ConsultationView: React.FC<ConsultationViewProps> = ({
     });
   };
 
-  const handleEndCallConfirmed = (durationSeconds: number, notesText: string) => {
+  const handleEndCallConfirmed = async (durationSeconds: number, notesText: string) => {
     setEndedDurationSeconds(durationSeconds);
     setFinalNotesText(notesText);
 
+    if (currentConsultationId) {
+      await videoConsultationApi.endConsultation(currentConsultationId).catch(console.error);
+    }
     teleConsultationService.endCall();
 
     try {
-      const existing = localStorage.getItem('user_medical_records');
-      const records = existing ? JSON.parse(existing) : [];
-      const newConsultationRecord = {
-        id: `REC-${Date.now().toString().slice(-4)}`,
+      const { recordApi } = await import('../../services/dhrApis');
+      await recordApi.createMedicalRecord({
         title: `${appointment.doctor.name} - Consultation Summary`,
-        type: 'Consultation',
-        category: 'Consultation',
-        doctor: appointment.doctor.name,
+        type: 'CONSULTATION',
         hospital: appointment.doctor.hospital,
-        date: new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }),
-        notes: notesText || `Video consultation with ${appointment.doctor.name} completed successfully.`,
-        tags: ['Teleconsultation', appointment.doctor.speciality, 'Video Call']
-      };
-      localStorage.setItem('user_medical_records', JSON.stringify([newConsultationRecord, ...records]));
+        status: 'Reviewed',
+        notes: notesText || `Video consultation with ${appointment.doctor.name} (${durationSeconds}s) completed.`,
+      });
     } catch (e) {
-      console.error(e);
+      console.error('Failed to save consultation summary to database:', e);
     }
 
     setStage('ended');

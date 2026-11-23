@@ -14,60 +14,39 @@ interface DocumentInfoFormProps {
 
 export const DocumentInfoForm: React.FC<DocumentInfoFormProps> = ({
   imageSrc,
-  fileName = 'Scanned_Document_Aug2026.pdf',
-  fileSize = '2.4 MB',
+  fileName = 'Scanned_Document.pdf',
+  fileSize = '0.5 MB',
   onBack,
   onSave,
   isSaving,
 }) => {
   const { t } = useLanguage();
-  // OCR DEMO STATE
-  const [ocrAnalyzing, setOcrAnalyzing] = useState(true);
+  const [ocrAnalyzing, setOcrAnalyzing] = useState(false);
 
-  // FORM FIELDS
-  const [title, setTitle] = useState('CBC Blood Test Report');
+  // FORM FIELDS (clean defaults — no demo persona pre-fills)
+  const [title, setTitle] = useState(() => {
+    if (!fileName || fileName.startsWith('Scanned_Document')) return '';
+    return fileName.replace(/\.[^/.]+$/, '').replace(/[_-]+/g, ' ');
+  });
   const [recordType, setRecordType] = useState<MedicalRecordItem['type']>('Lab Report');
-  const [doctor, setDoctor] = useState('Dr. Rajesh Kumar');
-  const [hospital, setHospital] = useState('Apollo Hospital');
-  const [date, setDate] = useState('2026-08-23');
-  const [notes, setNotes] = useState('Blood vitals within normal parameters. Hemoglobin: 14.2 g/dL, Platelets: 245,000 /µL.');
-
-  const patientDisplayName = React.useMemo(() => {
-    try {
-      const custom = localStorage.getItem('patient_user_name');
-      if (custom && custom.trim()) return custom.trim();
-      const prof = localStorage.getItem('user_profile_data');
-      if (prof) {
-        const parsed = JSON.parse(prof);
-        if (parsed?.name && parsed.name.trim()) return parsed.name.trim();
-      }
-      const appUser = localStorage.getItem('app_user');
-      if (appUser) {
-        const parsed = JSON.parse(appUser);
-        if (parsed?.name && parsed.name.trim()) return parsed.name.trim();
-      }
-    } catch {}
-    return 'Ragul Kumar';
-  }, []);
-
-  React.useEffect(() => {
-    const timer1 = setTimeout(() => {
-      setOcrAnalyzing(false);
-    }, 1200);
-    return () => clearTimeout(timer1);
-  }, []);
+  const [doctor, setDoctor] = useState('');
+  const [hospital, setHospital] = useState('');
+  const [date, setDate] = useState(() => new Date().toISOString().split('T')[0]);
+  const [notes, setNotes] = useState('');
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     onSave({
-      title: title || 'Untitled Medical Record',
+      title: title.trim() || 'Untitled Medical Record',
       type: recordType,
-      doctor: doctor || 'General Practitioner',
-      hospital: hospital || 'General Healthcare',
-      date: date ? new Date(date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : '23 Aug 2026',
+      doctor: doctor.trim() || 'Attending Physician',
+      hospital: hospital.trim() || 'Medical Center',
+      date: date
+        ? new Date(date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
+        : new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }),
       fileName: fileName,
       fileSize: fileSize,
-      notes: notes,
+      notes: notes.trim(),
       status: 'Normal',
       isImportant: true
     });
@@ -84,16 +63,11 @@ export const DocumentInfoForm: React.FC<DocumentInfoFormProps> = ({
           <div>
             <div className="flex items-center gap-2">
               <h4 className="text-sm font-extrabold text-slate-900 dark:text-white">
-                {ocrAnalyzing ? 'AI Document Recognition in Progress...' : '✓ Document Information Recognized'}
+                {ocrAnalyzing ? 'Preparing Document...' : '✓ Ready for Record Entry'}
               </h4>
-              <span className="px-2 py-0.5 text-[10px] font-extrabold bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/30 rounded-full font-mono">
-                DEMO OCR
-              </span>
             </div>
             <p className="text-xs text-slate-600 dark:text-slate-300 mt-0.5 font-medium">
-              {ocrAnalyzing
-                ? 'Scanning document text and structure for instant field pre-population...'
-                : 'Smart fields pre-filled below. Review and edit any information before saving.'}
+              Review and enter accurate metadata below before saving to your Medical Records database.
             </p>
           </div>
         </div>
@@ -136,40 +110,10 @@ export const DocumentInfoForm: React.FC<DocumentInfoFormProps> = ({
                   />
                 )
               ) : (
-                <div className="w-full h-full bg-white text-slate-900 p-6 rounded-xl overflow-y-auto text-xs font-sans border border-slate-200 shadow-inner">
-                  <div className="border-b-2 border-[#00a896] pb-3 mb-4 flex justify-between items-start">
-                    <div>
-                      <h4 className="font-extrabold text-sm text-[#00a896]">APOLLO HOSPITAL LABS</h4>
-                      <p className="text-[10px] text-slate-500">Diagnostic Center & Pathology</p>
-                    </div>
-                    <div className="text-right text-[10px] text-slate-500">
-                      <div>23 Aug 2026</div>
-                      <div>Ref: #LAB-84920</div>
-                    </div>
-                  </div>
-                  <div className="space-y-3">
-                    <div className="bg-slate-100 p-2 rounded text-[11px] font-semibold">
-                      Patient: {patientDisplayName} | Age: 34 M
-                    </div>
-                    <div className="font-bold underline text-slate-900">COMPLETE BLOOD COUNT</div>
-                    <div className="space-y-1 text-[11px]">
-                      <div className="flex justify-between">
-                        <span>Hemoglobin:</span>
-                        <span className="font-bold text-teal-700">14.2 g/dL</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span>WBC Count:</span>
-                        <span className="font-bold text-teal-700">7,200 /µL</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span>Platelets:</span>
-                        <span className="font-bold text-teal-700">245,000 /µL</span>
-                      </div>
-                    </div>
-                    <div className="pt-4 border-t border-slate-200 text-right text-[10px]">
-                      Doctor: Dr. Rajesh Kumar, MD
-                    </div>
-                  </div>
+                <div className="w-full h-full flex flex-col items-center justify-center text-center p-6 text-slate-500 dark:text-slate-400 space-y-2">
+                  <FileText className="w-10 h-10 opacity-40" />
+                  <p className="text-xs font-bold">No visual preview available</p>
+                  <p className="text-[11px] opacity-80">Enter document details on the right to save this record to your database.</p>
                 </div>
               )}
             </div>
@@ -256,7 +200,7 @@ export const DocumentInfoForm: React.FC<DocumentInfoFormProps> = ({
                     type="text"
                     value={doctor}
                     onChange={(e) => setDoctor(e.target.value)}
-                    placeholder="e.g. Dr. Rajesh Kumar"
+                    placeholder="Enter consulting doctor name"
                     className="w-full px-4 py-3 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none focus:border-[#00a896] text-sm font-semibold transition-colors font-sans"
                   />
                 </div>
@@ -269,7 +213,7 @@ export const DocumentInfoForm: React.FC<DocumentInfoFormProps> = ({
                     type="text"
                     value={hospital}
                     onChange={(e) => setHospital(e.target.value)}
-                    placeholder="e.g. Apollo Hospital"
+                    placeholder="Enter hospital or lab name"
                     className="w-full px-4 py-3 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none focus:border-[#00a896] text-sm font-semibold transition-colors font-sans"
                   />
                 </div>

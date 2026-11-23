@@ -44,31 +44,31 @@ interface DoctorProfileSettingsViewProps {
 export const DoctorProfileSettingsView: React.FC<DoctorProfileSettingsViewProps> = ({ user }) => {
   const { t } = useLanguage();
   const [profile, setProfile] = useState({
-    name: user?.name ? (user.name.startsWith('Dr') ? user.name : `Dr. ${user.name}`) : 'Dr. Sarah Jenkins',
-    regNumber: 'MCI-TN-2015-84920',
-    specialty: 'Internal Medicine & Preventive Cardiology',
-    department: 'Cardiology',
-    hospital: 'Apollo Central Health City',
-    yearsExperience: '12',
+    name: user?.name ? (user.name.startsWith('Dr') ? user.name : `Dr. ${user.name}`) : '',
+    regNumber: '',
+    specialty: '',
+    department: '',
+    hospital: '',
+    yearsExperience: '0',
     
     // Consultation Preferences
     videoConsultationEnabled: true,
     audioConsultationEnabled: false,
-    consultDuration: '15',
+    consultDuration: '20',
     followUpDuration: '10',
-    onlineFee: '800',
-    inPersonFee: '1000',
+    onlineFee: '500',
+    inPersonFee: '500',
     
     // Availability
-    workingDays: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'],
+    workingDays: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'],
     opdStartTime: '09:00',
     opdEndTime: '17:00',
     lunchTime: '13:00 - 14:00',
     telemedicineHours: '18:00 - 20:00',
-    emergencyAvail: true,
+    emergencyAvail: false,
     
     // Alerts
-    autoAcceptEmergency: true,
+    autoAcceptEmergency: false,
     appointmentNotifs: true,
     newPatientNotifs: true,
     labReportNotifs: true,
@@ -76,11 +76,103 @@ export const DoctorProfileSettingsView: React.FC<DoctorProfileSettingsViewProps>
   });
 
   const [saved, setSaved] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
 
-  const handleSave = (e: React.FormEvent) => {
+  const hydrateDoctorProfile = React.useCallback(async () => {
+    try {
+      const { profileApi } = await import('../../../services/dhrApis');
+      const res = await profileApi.getDoctorProfile();
+      const d = res?.data;
+      if (!d) return;
+      const revDayMap: Record<number, string> = { 0: 'Sun', 1: 'Mon', 2: 'Tue', 3: 'Wed', 4: 'Thu', 5: 'Fri', 6: 'Sat' };
+      const availList = Array.isArray(d.availabilities) ? d.availabilities : [];
+      const notifPrefs = d.notificationPrefsJson ? (() => { try { return JSON.parse(d.notificationPrefsJson); } catch { return {}; } })() : {};
+      setProfile((prev) => ({
+        ...prev,
+        name: d.fullName || prev.name,
+        regNumber: d.licenseNumber || '',
+        specialty: d.speciality || '',
+        department: d.department || d.speciality || '',
+        hospital: d.hospital || '',
+        yearsExperience: String(d.experienceYears ?? 0),
+        videoConsultationEnabled: d.teleConsultReady ?? true,
+        audioConsultationEnabled: notifPrefs.audioConsultationEnabled ?? prev.audioConsultationEnabled,
+        consultDuration: String(d.consultDurationMin ?? 20),
+        followUpDuration: String(notifPrefs.followUpDuration ?? prev.followUpDuration),
+        onlineFee: String(d.onlineFee ?? d.consultationFee ?? 500),
+        inPersonFee: String(d.inPersonFee ?? d.consultationFee ?? 500),
+        telemedicineHours: notifPrefs.telemedicineHours || prev.telemedicineHours,
+        emergencyAvail: Boolean(d.emergencyAvailable),
+        workingDays: availList.length > 0 ? availList.map((a: any) => revDayMap[a.dayOfWeek]).filter(Boolean) : prev.workingDays,
+        opdStartTime: availList[0]?.startTime || prev.opdStartTime,
+        opdEndTime: availList[0]?.endTime || prev.opdEndTime,
+        lunchTime: availList[0]?.lunchStart && availList[0]?.lunchEnd ? `${availList[0].lunchStart} - ${availList[0].lunchEnd}` : prev.lunchTime,
+        autoAcceptEmergency: notifPrefs.autoAcceptEmergency ?? prev.autoAcceptEmergency,
+        appointmentNotifs: notifPrefs.appointmentNotifs ?? prev.appointmentNotifs,
+        newPatientNotifs: notifPrefs.newPatientNotifs ?? prev.newPatientNotifs,
+        labReportNotifs: notifPrefs.labReportNotifs ?? prev.labReportNotifs,
+        prescriptionAlerts: notifPrefs.prescriptionAlerts ?? prev.prescriptionAlerts,
+      }));
+    } catch (err) {
+      console.error('Failed to load doctor profile from MySQL:', err);
+    }
+  }, []);
+
+  React.useEffect(() => {
+    hydrateDoctorProfile();
+  }, [hydrateDoctorProfile]);
+
+  const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
-    setSaved(true);
-    setTimeout(() => setSaved(false), 3000);
+    setSaving(true);
+    setSaveError(null);
+    try {
+      const [{ profileApi }, { apiClient }] = await Promise.all([
+        import('../../../services/dhrApis'),
+        import('../../../services/apiClient'),
+      ]);
+      await profileApi.updateDoctorProfile({
+        fullName: profile.name,
+        speciality: profile.specialty || 'General Medicine',
+        department: profile.department,
+        licenseNumber: profile.regNumber || undefined,
+        hospital: profile.hospital,
+        experienceYears: parseInt(profile.yearsExperience, 10) || 0,
+        consultationFee: parseFloat(profile.inPersonFee) || 500,
+        onlineFee: parseFloat(profile.onlineFee) || 500,
+        inPersonFee: parseFloat(profile.inPersonFee) || 500,
+        consultDurationMin: parseInt(profile.consultDuration, 10) || 20,
+        teleConsultReady: profile.videoConsultationEnabled,
+        emergencyAvailable: profile.emergencyAvail,
+        notificationPrefsJson: JSON.stringify({
+          audioConsultationEnabled: profile.audioConsultationEnabled,
+          followUpDuration: profile.followUpDuration,
+          telemedicineHours: profile.telemedicineHours,
+          autoAcceptEmergency: profile.autoAcceptEmergency,
+          appointmentNotifs: profile.appointmentNotifs,
+          newPatientNotifs: profile.newPatientNotifs,
+          labReportNotifs: profile.labReportNotifs,
+          prescriptionAlerts: profile.prescriptionAlerts,
+        }),
+      });
+      await apiClient.put('/profile/doctor/availability', {
+        workingDays: profile.workingDays,
+        opdStartTime: profile.opdStartTime,
+        opdEndTime: profile.opdEndTime,
+        lunchTime: profile.lunchTime,
+        consultDuration: profile.consultDuration,
+      });
+      await hydrateDoctorProfile();
+      setSaved(true);
+      setTimeout(() => setSaved(false), 3000);
+    } catch (err: any) {
+      console.error('Failed to save doctor profile to MySQL:', err);
+      setSaveError(err?.message || 'Failed to save doctor profile changes.');
+      setTimeout(() => setSaveError(null), 4000);
+    } finally {
+      setSaving(false);
+    }
   };
 
   const toggleDay = (day: string) => {
@@ -106,6 +198,14 @@ export const DoctorProfileSettingsView: React.FC<DoctorProfileSettingsViewProps>
           </div>
         </div>
       )}
+      {saveError && (
+        <div className="fixed top-5 left-1/2 -translate-x-1/2 z-50 flex flex-col items-center pointer-events-none select-none max-w-md w-full px-4 animate-in fade-in slide-in-from-top-4 duration-200">
+          <div className="pointer-events-auto select-auto px-5 py-3 rounded-2xl bg-rose-600 text-white font-black text-xs shadow-2xl flex items-center gap-2">
+            <ShieldAlert className="w-4 h-4" />
+            <span>{saveError}</span>
+          </div>
+        </div>
+      )}
 
       {/* HEADER */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -119,10 +219,11 @@ export const DoctorProfileSettingsView: React.FC<DoctorProfileSettingsViewProps>
         </div>
         <button
           onClick={handleSave}
-          className="px-6 py-2.5 bg-gradient-to-r from-teal-600 to-cyan-600 hover:from-teal-500 hover:to-cyan-500 text-white font-bold rounded-xl transition-all shadow-lg shadow-teal-500/20 text-sm cursor-pointer flex items-center justify-center gap-2 shrink-0"
+          disabled={saving}
+          className="px-6 py-2.5 bg-gradient-to-r from-teal-600 to-cyan-600 hover:from-teal-500 hover:to-cyan-500 disabled:opacity-60 text-white font-bold rounded-xl transition-all shadow-lg shadow-teal-500/20 text-sm cursor-pointer flex items-center justify-center gap-2 shrink-0"
         >
           <Save className="w-4 h-4" />
-          <span>{t("doctor.profile.save_changes", "Save Changes")}</span>
+          <span>{saving ? 'Saving...' : t("doctor.profile.save_changes", "Save Changes")}</span>
         </button>
       </div>
 

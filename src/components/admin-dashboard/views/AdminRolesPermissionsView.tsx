@@ -4,7 +4,6 @@ import {
   KeyRound, ShieldCheck, Check, X, Lock, Save, RefreshCw, 
   Sparkles, CheckCircle2, ShieldAlert, Loader2
 } from 'lucide-react';
-import { DEFAULT_PERMISSION_MATRIX } from '../../../utils/adminMockStorage';
 import { settingsApi } from '../../../services/dhrApis';
 
 interface AdminRolesPermissionsViewProps {
@@ -12,8 +11,9 @@ interface AdminRolesPermissionsViewProps {
 }
 
 export const AdminRolesPermissionsView: React.FC<AdminRolesPermissionsViewProps> = ({ currentRole }) => {
-  const [matrix, setMatrix] = useState<Record<string, Record<string, boolean>>>(DEFAULT_PERMISSION_MATRIX);
+  const [matrix, setMatrix] = useState<Record<string, Record<string, boolean>>>({});
   const [loading, setLoading] = useState(true);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
 
@@ -26,17 +26,17 @@ export const AdminRolesPermissionsView: React.FC<AdminRolesPermissionsViewProps>
 
   const fetchMatrix = async () => {
     setLoading(true);
+    setErrorMsg(null);
     try {
       const res = await settingsApi.getRbacMatrix();
-      if (res && res.data) {
+      if (res && res.data && typeof res.data === 'object') {
         setMatrix(res.data);
+      } else {
+        setMatrix({});
       }
     } catch (err: any) {
-      console.warn('Could not load RBAC matrix from backend, falling back to cached baseline:', err);
-      try {
-        const saved = localStorage.getItem('medicare_rbac_matrix');
-        if (saved) setMatrix(JSON.parse(saved));
-      } catch {}
+      setMatrix({});
+      setErrorMsg(err?.message || 'Failed to load RBAC permission matrix from database.');
     } finally {
       setLoading(false);
     }
@@ -75,12 +75,10 @@ export const AdminRolesPermissionsView: React.FC<AdminRolesPermissionsViewProps>
     setIsSaving(true);
     try {
       await settingsApi.updateRbacMatrix(matrix);
-      try {
-        localStorage.setItem('medicare_rbac_matrix', JSON.stringify(matrix));
-      } catch {}
-      showToast('Role permissions matrix saved successfully.');
+      await fetchMatrix();
+      showToast('Role permissions matrix persisted to MySQL.');
     } catch (err: any) {
-      showToast(err.message || 'Failed to save permission matrix.');
+      showToast(err?.message || 'Failed to save permission matrix.');
     } finally {
       setIsSaving(false);
     }
@@ -143,9 +141,23 @@ export const AdminRolesPermissionsView: React.FC<AdminRolesPermissionsViewProps>
             </h3>
             <p className="text-xs text-slate-400">Click any checkbox to grant or revoke real-time feature authorization.</p>
           </div>
-          <span className="text-xs font-mono font-bold text-slate-400">8 Roles • 11 Permissions</span>
+          <span className="text-xs font-mono font-bold text-slate-400">
+            {ROLES.length} Roles • {Object.keys(matrix).length} Permissions
+          </span>
         </div>
 
+        {loading ? (
+          <div className="p-12 flex items-center justify-center gap-2 text-xs font-bold text-slate-500">
+            <Loader2 className="w-5 h-5 animate-spin text-[#00a896]" /> Loading RBAC matrix from database...
+          </div>
+        ) : errorMsg ? (
+          <div className="p-12 text-center space-y-3">
+            <p className="text-xs font-bold text-rose-600 dark:text-rose-400">{errorMsg}</p>
+            <button onClick={fetchMatrix} className="px-4 py-2 rounded-xl bg-[#00a896] text-white text-xs font-bold cursor-pointer">
+              Retry
+            </button>
+          </div>
+        ) : (
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse">
             <thead>
@@ -165,34 +177,43 @@ export const AdminRolesPermissionsView: React.FC<AdminRolesPermissionsViewProps>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60 text-xs font-bold">
-              {Object.keys(matrix).map((permKey) => (
-                <tr key={permKey} className="hover:bg-slate-50/60 dark:hover:bg-slate-800/30 transition-colors">
-                  <td className="py-3.5 px-5 font-black text-slate-900 dark:text-white flex items-center gap-2">
-                    <span className="w-1.5 h-1.5 rounded-full bg-[#00a896]" />
-                    {permKey}
+              {Object.keys(matrix).length === 0 ? (
+                <tr>
+                  <td colSpan={ROLES.length + 1} className="py-10 text-center text-slate-400 font-bold">
+                    No permissions configured yet.
                   </td>
-                  {ROLES.map(role => {
-                    const isGranted = matrix[permKey]?.[role];
-                    return (
-                      <td key={role} className="py-3.5 px-3 text-center">
-                        <button
-                          onClick={() => handleToggle(permKey, role)}
-                          className={`w-6 h-6 rounded-lg flex items-center justify-center mx-auto transition-all cursor-pointer ${
-                            isGranted
-                              ? 'bg-emerald-500 text-white shadow-xs'
-                              : 'bg-slate-100 dark:bg-slate-800 text-slate-300 dark:text-slate-600 hover:bg-slate-200'
-                          }`}
-                        >
-                          {isGranted ? <Check className="w-3.5 h-3.5 stroke-[3]" /> : <X className="w-3.5 h-3.5" />}
-                        </button>
-                      </td>
-                    );
-                  })}
                 </tr>
-              ))}
+              ) : (
+                Object.keys(matrix).map((permKey) => (
+                  <tr key={permKey} className="hover:bg-slate-50/60 dark:hover:bg-slate-800/30 transition-colors">
+                    <td className="py-3.5 px-5 font-black text-slate-900 dark:text-white flex items-center gap-2">
+                      <span className="w-1.5 h-1.5 rounded-full bg-[#00a896]" />
+                      {permKey}
+                    </td>
+                    {ROLES.map(role => {
+                      const isGranted = matrix[permKey]?.[role];
+                      return (
+                        <td key={role} className="py-3.5 px-3 text-center">
+                          <button
+                            onClick={() => handleToggle(permKey, role)}
+                            className={`w-6 h-6 rounded-lg flex items-center justify-center mx-auto transition-all cursor-pointer ${
+                              isGranted
+                                ? 'bg-emerald-500 text-white shadow-xs'
+                                : 'bg-slate-100 dark:bg-slate-800 text-slate-300 dark:text-slate-600 hover:bg-slate-200'
+                            }`}
+                          >
+                            {isGranted ? <Check className="w-3.5 h-3.5 stroke-[3]" /> : <X className="w-3.5 h-3.5" />}
+                          </button>
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))
+              )}
             </tbody>
           </table>
         </div>
+        )}
       </div>
 
     </div>

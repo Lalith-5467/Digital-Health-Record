@@ -15,6 +15,11 @@ import {
   updateCaregiverProfile,
   getInsuranceProfile,
   updateInsuranceProfile,
+  getUserPreferences,
+  updateUserPreferences,
+  updateAdminAccountProfile,
+  patchCurrentUserProfile,
+  updateDoctorAvailability,
 } from '../controllers/profile.controller';
 
 const router = Router();
@@ -22,8 +27,13 @@ const router = Router();
 // All profile routes require authentication
 router.use(authenticate);
 
-// 1. Current user generic profile
+// 1. Current user generic profile & preferences
 router.get('/', getCurrentUserProfile);
+router.get('/me', getCurrentUserProfile);
+router.patch('/', patchCurrentUserProfile);
+router.get('/preferences', getUserPreferences);
+router.put('/preferences', updateUserPreferences);
+router.put('/admin', requireRole('ADMIN', 'SUPER_ADMIN'), updateAdminAccountProfile);
 
 // 2. Patient Profile (accessible by Patient, Doctor, Nurse, Caregiver, Pharmacist, Insurance, Admin)
 router.get(
@@ -40,6 +50,7 @@ router.get(
   getDoctorProfile
 );
 router.put('/doctor', requireRole('DOCTOR', 'ADMIN', 'SUPER_ADMIN'), updateDoctorProfile);
+router.put('/doctor/availability', requireRole('DOCTOR', 'ADMIN', 'SUPER_ADMIN'), updateDoctorAvailability);
 
 // 4. Nurse Profile
 router.get(

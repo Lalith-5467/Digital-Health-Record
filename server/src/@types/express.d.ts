@@ -6,6 +6,13 @@ export interface AuthUser {
   role: Role;
   abhaId?: string | null;
   phoneNumber?: string | null;
+  jti?: string;
+  isOriginalSuperAdmin?: boolean;
+  isViewOnly?: boolean;
+  managedHospitalId?: string;
+  managedHospitalName?: string;
+  managedHospitalCode?: string;
+  isHospitalAdmin?: boolean;
 }
 
 declare global {

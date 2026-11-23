@@ -224,9 +224,11 @@ const DashboardPageInner: React.FC<DashboardPageProps> = ({
       name: resolvedName,
       email: user?.email || livePatientProfile?.user?.email || '',
       role: 'Patient',
-      abhaId: livePatientProfile?.abhaId || user?.abhaId || '91-8472-9104-5821@abdm',
-      bloodGroup: livePatientProfile?.bloodGroup || user?.bloodGroup || 'O+',
-      age: user?.age || 30,
+      abhaId: livePatientProfile?.abhaId || livePatientProfile?.user?.abhaId || user?.abhaId || 'Not Linked',
+      bloodGroup: livePatientProfile?.bloodGroup || user?.bloodGroup || 'Not Recorded',
+      age: livePatientProfile?.dateOfBirth
+        ? Math.max(1, new Date().getFullYear() - new Date(livePatientProfile.dateOfBirth).getFullYear())
+        : (user?.age || 0),
     };
   }, [user, livePatientProfile]);
 

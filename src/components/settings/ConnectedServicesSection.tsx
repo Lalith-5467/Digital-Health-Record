@@ -30,8 +30,12 @@ export const ConnectedServicesSection: React.FC<ConnectedServicesSectionProps> =
                 <h4 className="font-extrabold text-slate-900 dark:text-white text-sm font-sans">{serv.name}</h4>
               </div>
 
-              <span className="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30 font-sans">
-                {serv.status}
+              <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-extrabold border font-sans ${
+                serv.enabled
+                  ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/30'
+                  : 'bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-400 border-slate-300 dark:border-slate-700'
+              }`}>
+                {serv.enabled ? serv.status : 'Disabled'}
               </span>
             </div>
 

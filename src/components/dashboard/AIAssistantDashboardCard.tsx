@@ -1,32 +1,61 @@
-import React from 'react';
-import { Sparkles, ArrowRight, Moon, Heart, Droplets, Brain, FileText, BookOpen, Pill } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Sparkles, ArrowRight, Moon, Heart, Pill, FileText, BookOpen } from 'lucide-react';
 import { useLanguage } from '../../context/LanguageContext';
+import { vitalApi, patientClinicalApi, medicineApi, recordApi } from '../../services/dhrApis';
 
 interface AIAssistantDashboardCardProps {
   onNavigate: (id: string) => void;
 }
 
-const liveTelemetry = [
-  { icon: Moon, label: 'Sleep +8%', value: 'Optimal', color: '#818cf8', bg: 'rgba(129,140,248,.12)', border: 'rgba(129,140,248,.25)' },
-  { icon: Heart, label: 'Heart Rate', value: '72 BPM', color: '#34d399', bg: 'rgba(52,211,153,.12)', border: 'rgba(52,211,153,.25)' },
-  { icon: Droplets, label: 'Hydration', value: 'Goal 80%', color: '#38bdf8', bg: 'rgba(56,189,248,.12)', border: 'rgba(56,189,248,.25)' },
-  { icon: Brain, label: 'Focus Vitals', value: 'Score 85', color: '#c084fc', bg: 'rgba(192,132,252,.12)', border: 'rgba(192,132,252,.25)' },
-];
-
-const promptActions = [
-  { icon: FileText, label: 'Prepare for Appointment', color: '#7dd3fc', bg: 'rgba(56,189,248,.08)', border: 'rgba(56,189,248,.2)' },
-  { icon: BookOpen, label: 'Explain Medical Term', color: '#d8b4fe', bg: 'rgba(192,132,252,.08)', border: 'rgba(192,132,252,.2)' },
-  { icon: Pill, label: 'Medicine & Side Effects', color: '#6ee7b7', bg: 'rgba(52,211,153,.08)', border: 'rgba(52,211,153,.2)' },
-];
-
 export const AIAssistantDashboardCard: React.FC<AIAssistantDashboardCardProps> = ({ onNavigate }) => {
   const { t } = useLanguage();
+  const [telemetry, setTelemetry] = useState({
+    sleepValue: 'Not Recorded',
+    heartRateValue: 'Not Recorded',
+    activeMedsValue: '0 Active',
+    recordsValue: '0 Synced',
+  });
+
+  useEffect(() => {
+    let mounted = true;
+    const loadTelemetry = async () => {
+      const [vitalsRes, wellnessRes, medsRes, recsRes] = await Promise.all([
+        vitalApi.getVitals().catch(() => ({ data: [] })),
+        patientClinicalApi.getWellnessLogs().catch(() => ({ data: [] })),
+        medicineApi.getActiveMedications().catch(() => ({ data: { medications: [], todayDoses: [] } })),
+        recordApi.getMedicalRecords().catch(() => ({ data: [] })),
+      ]);
+
+      if (!mounted) return;
+
+      const vitals = Array.isArray(vitalsRes?.data) ? vitalsRes.data : [];
+      const wellness = Array.isArray(wellnessRes?.data) ? wellnessRes.data : [];
+      const meds = Array.isArray(medsRes?.data?.medications) ? medsRes.data.medications : [];
+      const recs = Array.isArray(recsRes?.data) ? recsRes.data : [];
+
+      const latestVital = vitals[0];
+      const latestWellness = wellness[0];
+      const activeMedsCount = meds.filter((m: any) => !m.status || m.status === 'Active' || m.status === 'ACTIVE').length;
+
+      setTelemetry({
+        sleepValue: latestWellness?.sleepHours != null ? `${Number(latestWellness.sleepHours).toFixed(1)} hrs` : 'Not Recorded',
+        heartRateValue: latestVital?.heartRate != null ? `${latestVital.heartRate} BPM` : 'Not Recorded',
+        activeMedsValue: `${activeMedsCount} Active`,
+        recordsValue: `${recs.length} Record${recs.length === 1 ? '' : 's'}`,
+      });
+    };
+
+    loadTelemetry();
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
   const liveTelemetry = [
-    { icon: Moon, label: t('ai_card.sleep_stat', 'Sleep +8%'), value: t('score.status_optimal', 'Optimal'), color: '#818cf8', bg: 'rgba(129,140,248,.12)', border: 'rgba(129,140,248,.25)' },
-    { icon: Heart, label: t('card.heart_rate', 'Heart Rate'), value: '72 BPM', color: '#34d399', bg: 'rgba(52,211,153,.12)', border: 'rgba(52,211,153,.25)' },
-    { icon: Droplets, label: t('ai_card.hydration', 'Hydration'), value: t('ai_card.goal_80', 'Goal 80%'), color: '#38bdf8', bg: 'rgba(56,189,248,.12)', border: 'rgba(56,189,248,.25)' },
-    { icon: Brain, label: t('ai_card.focus_vitals', 'Focus Vitals'), value: t('ai_card.score_85', 'Score 85'), color: '#c084fc', bg: 'rgba(192,132,252,.12)', border: 'rgba(192,132,252,.25)' },
+    { icon: Moon, label: t('card.sleep_avg', 'Sleep Log'), value: telemetry.sleepValue, color: '#818cf8', bg: 'rgba(129,140,248,.12)', border: 'rgba(129,140,248,.25)' },
+    { icon: Heart, label: t('card.heart_rate', 'Heart Rate'), value: telemetry.heartRateValue, color: '#34d399', bg: 'rgba(52,211,153,.12)', border: 'rgba(52,211,153,.25)' },
+    { icon: Pill, label: t('card.active_medicines', 'Medications'), value: telemetry.activeMedsValue, color: '#38bdf8', bg: 'rgba(56,189,248,.12)', border: 'rgba(56,189,248,.25)' },
+    { icon: FileText, label: t('nav.records', 'Health Vault'), value: telemetry.recordsValue, color: '#c084fc', bg: 'rgba(192,132,252,.12)', border: 'rgba(192,132,252,.25)' },
   ];
 
   const promptActions = [

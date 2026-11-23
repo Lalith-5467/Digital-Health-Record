@@ -1,14 +1,15 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { profileApi } from '../../../services/dhrApis';
 import { motion } from 'framer-motion';
-import { 
-  Settings, 
-  Bell, 
-  MapPin, 
-  ShieldCheck, 
-  Volume2, 
-  Smartphone, 
-  Moon, 
-  Save, 
+import {
+  Settings,
+  Bell,
+  MapPin,
+  ShieldCheck,
+  Volume2,
+  Smartphone,
+  Moon,
+  Save,
   CheckCircle2,
   Sliders,
   Database
@@ -29,15 +30,34 @@ export const NurseSettingsView: React.FC = () => {
 
   const [saved, setSaved] = useState(false);
 
-  const handleSave = (e: React.FormEvent) => {
+  useEffect(() => {
+    profileApi
+      .getPreferences()
+      .then((res) => {
+        const extra = res?.data?.extraJson ? JSON.parse(res.data.extraJson) : null;
+        if (extra?.nurseStationSettings) {
+          setSettings((prev) => ({ ...prev, ...extra.nurseStationSettings }));
+        }
+      })
+      .catch(() => { });
+  }, []);
+
+  const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
-    setSaved(true);
-    setTimeout(() => setSaved(false), 3000);
+    try {
+      await profileApi.updatePreferences({
+        extraJson: JSON.stringify({ nurseStationSettings: settings }),
+      });
+      setSaved(true);
+      setTimeout(() => setSaved(false), 3000);
+    } catch (err) {
+      console.error('Failed to save nurse station settings:', err);
+    }
   };
 
   return (
     <div className="space-y-6 pb-16 font-sans select-none">
-      
+
       {/* SAVED TOAST */}
       {saved && (
         <div className="fixed top-5 left-1/2 -translate-x-1/2 z-50 flex flex-col items-center pointer-events-none select-none max-w-md w-full px-4 animate-in fade-in slide-in-from-top-4 duration-200">
@@ -65,7 +85,7 @@ export const NurseSettingsView: React.FC = () => {
 
       {/* SETTINGS FORM */}
       <form onSubmit={handleSave} className="space-y-6">
-        
+
         {/* 1. DISPATCH & TRAVEL PREFERENCES */}
         <div className="bg-white dark:bg-slate-900 rounded-3xl p-6 sm:p-8 border border-slate-200 dark:border-slate-800 shadow-sm space-y-5">
           <h3 className="text-sm font-black uppercase tracking-wider text-slate-900 dark:text-white flex items-center gap-2">

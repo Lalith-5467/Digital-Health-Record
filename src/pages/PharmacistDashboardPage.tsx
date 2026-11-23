@@ -15,10 +15,9 @@ import { PharmacyBillingView } from '../components/pharmacist/PharmacyBillingVie
 import { PharmacySettingsView } from '../components/pharmacist/PharmacySettingsView';
 import { PharmacistNotificationPopover } from '../components/pharmacist/PharmacistNotificationPopover';
 import { DashboardAnnouncementBanner } from '../components/common/DashboardAnnouncementBanner';
-import { notificationApi } from '../services/dhrApis';
+import { notificationApi, pharmacyOpsApi } from '../services/dhrApis';
+import { fetchPharmacistOrders, type BackendPharmacyOrder } from '../services/pharmacyOrderApi';
 import { showGlobalToast } from '../components/common/GlobalToastManager';
-import { getPharmacyOrders } from '../utils/healthWorkflowStorage';
-import { INITIAL_MEDICINE_STOCK, getPharmacyStock } from '../components/pharmacy/pharmacyData';
 
 interface PharmacistDashboardPageProps {
   user?: {
@@ -155,62 +154,97 @@ export const PharmacistDashboardPage: React.FC<PharmacistDashboardPageProps> = (
 
   const [searchQuery, setSearchQuery] = useState('');
   const [searchFocused, setSearchFocused] = useState(false);
+  const [liveOrders, setLiveOrders] = useState<BackendPharmacyOrder[]>([]);
+  const [liveInventory, setLiveInventory] = useState<any[]>([]);
+  const [liveInteractions, setLiveInteractions] = useState<any[]>([]);
 
-  // Real-time live query results from storage and catalogs
+  const loadSearchCatalog = React.useCallback(async () => {
+    try {
+      const [ordersList, invRes, interRes] = await Promise.all([
+        fetchPharmacistOrders().catch(() => []),
+        pharmacyOpsApi.getInventory(effectiveUser.pharmacyId).catch(() => null),
+        pharmacyOpsApi.getDrugInteractions().catch(() => null),
+      ]);
+      setLiveOrders(Array.isArray(ordersList) ? ordersList : []);
+      setLiveInventory(Array.isArray(invRes?.data) ? invRes.data : []);
+      setLiveInteractions(Array.isArray(interRes?.data) ? interRes.data : []);
+    } catch (err) {
+      console.warn('Failed to load live pharmacist search catalog:', err);
+    }
+  }, [effectiveUser.pharmacyId]);
+
+  useEffect(() => {
+    loadSearchCatalog();
+    const handleSync = () => loadSearchCatalog();
+    window.addEventListener('notifications_updated', handleSync);
+    window.addEventListener('medicare_pharmacy_sync', handleSync);
+    return () => {
+      window.removeEventListener('notifications_updated', handleSync);
+      window.removeEventListener('medicare_pharmacy_sync', handleSync);
+    };
+  }, [loadSearchCatalog]);
+
+  // Real-time live query results from MySQL APIs
   const searchResults = React.useMemo(() => {
     if (!searchQuery.trim()) return { orders: [], medicines: [], interactions: [], patients: [], totalCount: 0 };
     const q = searchQuery.toLowerCase().trim();
 
-    // 1. Matched Orders
-    const allOrders = getPharmacyOrders();
-    const matchedOrders = allOrders.filter((o) => {
-      const pName = (o.patientName || (o as any).patient?.fullName || '').toLowerCase();
+    // 1. Matched Orders from MySQL
+    const matchedOrders = liveOrders.filter((o) => {
+      const pName = (o.patientName || o.patient?.fullName || '').toLowerCase();
       const id = (o.id || '').toLowerCase();
       const items = (o.items || []).map((i: any) => (i.name || i.medicineName || '').toLowerCase()).join(' ');
       return pName.includes(q) || id.includes(q) || items.includes(q);
     }).slice(0, 3);
 
-    // 2. Matched Medicines (scoped strictly to this pharmacy's stock)
-    const pharmacyStock = getPharmacyStock(effectiveUser.pharmacyId);
-    const matchedMedicines = pharmacyStock.filter((m: any) => {
-      return m.medicineName.toLowerCase().includes(q) || m.dosage.toLowerCase().includes(q);
-    }).slice(0, 3);
+    // 2. Matched Medicines from MySQL inventory
+    const matchedMedicines = liveInventory
+      .map((m: any) => ({
+        id: m.id,
+        medicineName: m.medicineName || m.name || '',
+        dosage: m.dosage || m.strength || '',
+        stockLevel: m.status || (Number(m.quantity ?? m.currentQuantity ?? 0) <= Number(m.reorderLevel ?? 10) ? 'Low Stock' : 'In Stock'),
+        currentQuantity: Number(m.quantity ?? m.currentQuantity ?? 0),
+        unit: m.unit || 'units',
+      }))
+      .filter((m) => m.medicineName.toLowerCase().includes(q) || m.dosage.toLowerCase().includes(q))
+      .slice(0, 3);
 
-    // 3. Matched Interactions
-    const knownInteractions = [
-      { name: 'Warfarin + Aspirin', hazard: 'Major Hemorrhage Hazard' },
-      { name: 'Metformin + Radiocontrast', hazard: 'Lactic Acidosis Risk' },
-      { name: 'Atorvastatin + Clarithromycin', hazard: 'Rhabdomyolysis Risk' },
-      { name: 'Ciprofloxacin + Antacids', hazard: 'Absorption Chelation' },
-      { name: 'Telmisartan + Spironolactone', hazard: 'Hyperkalemia Risk' }
-    ].filter(i => i.name.toLowerCase().includes(q) || i.hazard.toLowerCase().includes(q)).slice(0, 2);
+    // 3. Matched Interactions from MySQL
+    const matchedInteractions = liveInteractions
+      .map((i: any) => ({
+        name: i.drugPair || `${i.drugA || ''} + ${i.drugB || ''}`.trim() || i.name || '',
+        hazard: i.clinicalEffect || i.description || i.severity || 'Clinical Interaction',
+      }))
+      .filter((i) => i.name.toLowerCase().includes(q) || i.hazard.toLowerCase().includes(q))
+      .slice(0, 2);
 
-    // 4. Matched Patients (extracted only from real orders belonging to this pharmacy)
+    // 4. Matched Patients (extracted from live MySQL orders)
     const patientMap = new Map<string, { name: string; abha: string; blood: string }>();
-    allOrders.forEach((o: any) => {
+    liveOrders.forEach((o: any) => {
       const pName = o.patient?.fullName || o.patientName;
       if (pName && !patientMap.has(pName)) {
         patientMap.set(pName, {
           name: pName,
-          abha: o.patient?.abhaId || o.sourcePrescriptionId || 'Verified',
-          blood: o.patient?.bloodGroup || 'ABDM Verified'
+          abha: o.patient?.abhaId || o.prescriptionId || 'Verified',
+          blood: o.patient?.bloodGroup || 'ABDM Verified',
         });
       }
     });
     const matchedPatients = Array.from(patientMap.values())
-      .filter(p => p.name.toLowerCase().includes(q) || p.abha.toLowerCase().includes(q))
+      .filter((p) => p.name.toLowerCase().includes(q) || p.abha.toLowerCase().includes(q))
       .slice(0, 2);
 
-    const total = matchedOrders.length + matchedMedicines.length + knownInteractions.length + matchedPatients.length;
+    const total = matchedOrders.length + matchedMedicines.length + matchedInteractions.length + matchedPatients.length;
 
     return {
       orders: matchedOrders,
       medicines: matchedMedicines,
-      interactions: knownInteractions,
+      interactions: matchedInteractions,
       patients: matchedPatients,
-      totalCount: total
+      totalCount: total,
     };
-  }, [searchQuery]);
+  }, [searchQuery, liveOrders, liveInventory, liveInteractions]);
 
   const handleSearchSubmit = (e: React.FormEvent) => {
     e.preventDefault();

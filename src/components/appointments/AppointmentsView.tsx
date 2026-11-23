@@ -25,7 +25,6 @@ import {
   X
 } from 'lucide-react';
 import type { Appointment, Doctor } from './appointmentsData';
-import { INITIAL_APPOINTMENTS, MOCK_DOCTORS } from './appointmentsData';
 import { BookingModal } from './BookingModal';
 import { DoctorProfileDrawer } from './DoctorProfileDrawer';
 import { AppointmentDetailsDrawer } from './AppointmentDetailsDrawer';
@@ -33,11 +32,7 @@ import { CalendarViewModal } from './CalendarViewModal';
 import { RescheduleModal } from './RescheduleModal';
 import { CancelConfirmModal } from './CancelConfirmModal';
 import { ReminderModal } from './ReminderModal';
-import {
-  getReminders as getStoredReminders,
-  updateReminderFollowUpStatus
-} from '../../utils/healthWorkflowStorage';
-import { appointmentApi } from '../../services/dhrApis';
+import { appointmentApi, reminderApi } from '../../services/dhrApis';
 import { useLanguage } from '../../context/LanguageContext';
 
 interface UserProfile {
@@ -62,7 +57,7 @@ const calculateTimeLeft = (apt?: Appointment | null) => {
     try {
       const parsed = new Date(`${apt.date} ${apt.time}`).getTime();
       if (!isNaN(parsed)) targetMs = parsed;
-    } catch {}
+    } catch { }
   }
 
   if (!targetMs) return { hours: 0, minutes: 0, seconds: 0, formatted: '00h : 00m : 00s', isReady: true, hasFutureTime: false };
@@ -93,8 +88,9 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
   const [_loading, setLoading] = useState(true);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
-  // APPOINTMENTS STATE (Live from MySQL)
-  const [appointments, setAppointments] = useState<Appointment[]>(INITIAL_APPOINTMENTS);
+  // APPOINTMENTS & DOCTORS STATE (Live from MySQL)
+  const [appointments, setAppointments] = useState<Appointment[]>([]);
+  const [doctors, setDoctors] = useState<Doctor[]>([]);
 
   const nextAppointment = useMemo(() => {
     return appointments.find(
@@ -122,21 +118,81 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
   const [declineConfirmTarget, setDeclineConfirmTarget] = useState<any | null>(null);
   const [pendingDetailTarget, setPendingDetailTarget] = useState<any | null>(null);
 
-  const loadRequests = () => {
-    const loadedReminders = getStoredReminders();
-    const pending = loadedReminders.filter((r: any) => r.followUpStatus === 'Pending');
-    setPendingRequests(pending);
+  const loadDoctors = async () => {
+    try {
+      const res = await appointmentApi.getDoctors();
+      if (res?.data && Array.isArray(res.data)) {
+        const mapped: Doctor[] = res.data.map((d: any) => ({
+          id: d.id,
+          name: d.fullName,
+          speciality: d.speciality || 'General Physician',
+          experienceYears: Number(d.experienceYears) || 0,
+          hospital: d.hospital || 'Medical Center',
+          rating: Number(d.rating) || 4.8,
+          reviewCount: Number(d.reviewCount) || 0,
+          consultationCount: Number(d.consultationCount) || 0,
+          fee: Number(d.onlineFee || d.consultationFee) || 500,
+          photoUrl: d.photoUrl || '',
+          availability: 'Available Today' as Doctor['availability'],
+          languages: d.languagesJson ? (() => { try { return JSON.parse(d.languagesJson); } catch { return ['English']; } })() : ['English'],
+          gender: (d.gender || 'Male') as Doctor['gender'],
+          about: d.about || 'Verified specialist.',
+        }));
+        setDoctors(mapped);
+      }
+    } catch {
+      setDoctors([]);
+    }
+  };
+
+  const resolveDoctorForAppointment = (apt: Appointment): Doctor => {
+    const found = doctors.find((d) => d.id === apt.doctorId || d.name === apt.doctorName);
+    if (found) return found;
+    return {
+      id: apt.doctorId,
+      name: apt.doctorName,
+      speciality: apt.speciality,
+      experienceYears: 0,
+      hospital: apt.hospital,
+      rating: 4.8,
+      reviewCount: 0,
+      consultationCount: 0,
+      fee: apt.fee,
+      photoUrl: apt.doctorPhoto,
+      availability: 'Available Today',
+      languages: ['English'],
+      gender: 'Male',
+      about: `${apt.speciality} at ${apt.hospital}`,
+    };
+  };
+
+  const loadRequests = async () => {
+    try {
+      const res = await reminderApi.getReminders();
+      const list = Array.isArray(res?.data) ? res.data : [];
+      const pending = list
+        .filter((r: any) => r.followUpStatus === 'Pending')
+        .map((r: any) => ({
+          ...r,
+          date: r.followUpDate
+            ? new Date(r.followUpDate).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
+            : r.startDate
+              ? new Date(r.startDate).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
+              : 'Scheduled',
+          time: r.scheduledTime || '10:00 AM',
+        }));
+      setPendingRequests(pending);
+    } catch {
+      setPendingRequests([]);
+    }
   };
 
   const fetchLiveAppointments = async () => {
     try {
       const res = await appointmentApi.getAppointments();
-      if (res && res.data && res.data.length > 0) {
+      if (res && Array.isArray(res.data)) {
         const mapped: Appointment[] = res.data.map((item: any) => {
-          const docPhoto =
-            item.doctor?.photoUrl ||
-            MOCK_DOCTORS.find((d) => d.id === item.doctorId || d.name === item.doctor?.fullName)?.photoUrl ||
-            MOCK_DOCTORS[0]?.photoUrl;
+          const docPhoto = item.doctor?.photoUrl || '';
           const dObj = new Date(item.appointmentDate);
           const cancellationTimestamp = item.updatedAt ? new Date(item.updatedAt) : new Date();
           const cancellationDateStr = !isNaN(cancellationTimestamp.getTime())
@@ -146,18 +202,18 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
           return {
             id: item.id,
             doctorId: item.doctorId,
-            doctorName: item.doctor?.fullName || 'Dr. Rajesh Varma',
+            doctorName: item.doctor?.fullName || 'Assigned Doctor',
             doctorPhoto: docPhoto,
-            speciality: item.doctor?.speciality || 'Cardiologist & General Physician',
+            speciality: item.doctor?.speciality || 'General Physician',
             date: isNaN(dObj.getTime())
-              ? '08 Sep 2026'
+              ? new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
               : dObj.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }),
             time: item.slotTime || '10:30 AM',
             timestamp: !isNaN(dObj.getTime()) ? dObj.getTime() : Date.now(),
             type: item.type === 'VIDEO' ? 'Video' : 'In-Person',
             status: item.status === 'CANCELLED' ? 'Cancelled' : item.status === 'COMPLETED' ? 'Completed' : 'Confirmed',
-            hospital: item.doctor?.hospital || 'Apollo Multispeciality Hospitals',
-            fee: Number(item.fee) || 750,
+            hospital: item.doctor?.hospital || 'Medical Center',
+            fee: Number(item.fee) || 500,
             meetingLink: item.meetingLink,
             notes: item.notes,
             cancellationDate: item.status === 'CANCELLED' ? (item.cancellationDate || cancellationDateStr) : undefined,
@@ -165,20 +221,21 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
           };
         });
         setAppointments(mapped);
-        localStorage.setItem('user_appointments', JSON.stringify(mapped));
       }
     } catch (err) {
-      console.log('Using cached/local appointments:', err);
+      console.error('Failed to load appointments from database:', err);
+      setAppointments([]);
     } finally {
       setLoading(false);
     }
   };
 
-  // COUNTDOWN TIMER STATE (Accurately calculates real remaining time)
-  const [timeLeft, setTimeLeft] = useState(() => calculateTimeLeft(INITIAL_APPOINTMENTS[0]));
+  // COUNTDOWN TIMER STATE
+  const [timeLeft, setTimeLeft] = useState(() => calculateTimeLeft(null));
 
   // Load from MySQL Backend API on mount
   useEffect(() => {
+    loadDoctors();
     loadRequests();
     fetchLiveAppointments();
 
@@ -191,7 +248,7 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
           setSelectedDoctorForBooking(parsed);
           setBookingModalOpen(true);
         }
-      } catch {}
+      } catch { }
       localStorage.removeItem('pending_booking_doctor');
     }
 
@@ -225,68 +282,29 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
     setTimeout(() => setToastMessage(null), 3000);
   };
 
-  // Helper to persist appointments
-  const saveAppointments = (newApts: Appointment[]) => {
-    setAppointments(newApts);
-    localStorage.setItem('user_appointments', JSON.stringify(newApts));
-  };
-
   const handleAcceptFollowUp = async (id: string) => {
-    const remindersList = getStoredReminders();
-    const target = remindersList.find(r => r.id === id);
-    if (!target) return;
-
-    const docName = target.doctorName || 'Dr. Arun Kumar';
-
-    // 1. Update status in workflow storage (updates followUpStatus and active reminder)
-    updateReminderFollowUpStatus(id, 'Accepted');
+    const target = pendingRequests.find((r) => r.id === id);
+    const docName = target?.doctorName || 'Attending Physician';
 
     try {
-      await appointmentApi.createAppointment({
-        doctorId: target.id || 'DOC-FLW',
-        appointmentDate: new Date().toISOString(),
-        slotTime: target.time || '10:30 AM',
-        type: 'IN_PERSON',
-        reason: target.title || 'Follow-up Consultation',
-      });
-      await fetchLiveAppointments();
-    } catch {
-      // Create local fallback appointment if needed
-      const newApt: Appointment = {
-        id: `APT-FLW-${Date.now().toString().slice(-4)}`,
-        doctorId: target.id || 'DOC-FLW',
-        doctorName: docName,
-        doctorPhoto: MOCK_DOCTORS[0]?.photoUrl || '',
-        speciality: target.clinicName || 'General Medicine',
-        date: target.date,
-        time: target.time,
-        timestamp: Date.now() + 86400000,
-        type: 'In-Person',
-        status: 'Confirmed',
-        hospital: target.clinicName || 'General Medicine Clinic',
-        fee: 0
-      };
-
-      const saved = localStorage.getItem('user_appointments');
-      let currentApts: Appointment[] = INITIAL_APPOINTMENTS;
-      if (saved) {
-        try { currentApts = JSON.parse(saved); } catch (e) { console.error(e); }
-      }
-      const updated = [newApt, ...currentApts];
-      saveAppointments(updated);
+      await reminderApi.updateFollowUpStatus(id, 'Accepted');
+      await Promise.all([loadRequests(), fetchLiveAppointments()]);
+      window.dispatchEvent(new Event('health_workflow_updated'));
+      showToast(`✓ Appointment confirmed\nYour appointment with ${docName} has been confirmed.`);
+    } catch (err: any) {
+      showToast(err?.message || 'Failed to confirm follow-up appointment');
     }
-
-    // Reload local requests state
-    loadRequests();
-    window.dispatchEvent(new Event('health_workflow_updated'));
-    showToast(`✓ Appointment confirmed\nYour appointment with ${docName} has been confirmed.`);
   };
 
-  const handleDeclineFollowUpConfirm = (id: string) => {
-    updateReminderFollowUpStatus(id, 'Declined');
-    loadRequests();
-    window.dispatchEvent(new Event('health_workflow_updated'));
-    showToast(`Appointment declined\nThe appointment request has been declined.`);
+  const handleDeclineFollowUpConfirm = async (id: string) => {
+    try {
+      await reminderApi.updateFollowUpStatus(id, 'Declined');
+      await loadRequests();
+      window.dispatchEvent(new Event('health_workflow_updated'));
+      showToast('Appointment declined\nThe appointment request has been declined.');
+    } catch (err: any) {
+      showToast(err?.message || 'Failed to decline appointment request');
+    }
   };
 
   const handleConfirmNewBooking = async (newApt: Partial<Appointment>) => {
@@ -299,8 +317,13 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
         }
       }
 
+      if (!newApt.doctorId) {
+        showToast('Please select a valid specialist before booking.');
+        return;
+      }
+
       const res = await appointmentApi.createAppointment({
-        doctorId: newApt.doctorId || 'DOC-101',
+        doctorId: newApt.doctorId,
         appointmentDate: appointmentDateIso,
         slotTime: newApt.time || '10:30 AM',
         type: newApt.type === 'In-Person' ? 'IN_PERSON' : 'VIDEO',
@@ -309,6 +332,7 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
 
       if (res && res.data) {
         await fetchLiveAppointments();
+        window.dispatchEvent(new Event('health_workflow_updated'));
         showToast(`✓ Appointment booked with ${newApt.doctorName || 'doctor'}`);
       }
     } catch (e: any) {
@@ -324,21 +348,11 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
         slotTime: newTime,
       });
       await fetchLiveAppointments();
-    } catch {
-      const updated = appointments.map((apt) => {
-        if (apt.id === aptId) {
-          return {
-            ...apt,
-            date: newDate,
-            time: newTime,
-            status: 'Confirmed' as const
-          };
-        }
-        return apt;
-      });
-      saveAppointments(updated);
+      window.dispatchEvent(new Event('health_workflow_updated'));
+      showToast('✓ Appointment rescheduled successfully');
+    } catch (err: any) {
+      showToast(err?.message || 'Failed to reschedule appointment');
     }
-    showToast('✓ Appointment rescheduled successfully');
   };
 
   const handleConfirmCancel = async (aptId: string, reason: string) => {
@@ -350,7 +364,6 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
 
       await fetchLiveAppointments();
 
-      // Ensure local state reflects cancellation with the authentic cancellation date
       setAppointments((prev) =>
         prev.map((apt) => {
           if (apt.id === aptId) {
@@ -364,6 +377,7 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
           return apt;
         })
       );
+      window.dispatchEvent(new Event('health_workflow_updated'));
       showToast('✓ Appointment cancelled');
     } catch (err: any) {
       console.error('Failed to cancel appointment on backend:', err);
@@ -371,18 +385,29 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
     }
   };
 
-  const handleSaveReminder = (aptId: string, offset: string) => {
-    const updated = appointments.map((apt) => {
-      if (apt.id === aptId) {
-        return {
-          ...apt,
-          reminderOffset: offset
-        };
-      }
-      return apt;
-    });
-    saveAppointments(updated);
-    showToast(`✓ Reminder set for ${offset}`);
+  const handleSaveReminder = async (aptId: string, offset: string) => {
+    const target = appointments.find((a) => a.id === aptId);
+    if (!target) return;
+    try {
+      await reminderApi.createReminder({
+        title: `Appointment with ${target.doctorName}`,
+        type: 'APPOINTMENT',
+        scheduledTime: target.time || '10:00 AM',
+        frequency: 'Once',
+        startDate: new Date(target.timestamp || Date.now()).toISOString(),
+        notes: `Reminder set for ${offset} before ${target.type} consultation at ${target.hospital}`,
+        doctorName: target.doctorName,
+        clinicName: target.hospital,
+        priority: 'Important',
+      });
+      setAppointments((prev) =>
+        prev.map((apt) => (apt.id === aptId ? { ...apt, reminderOffset: offset } : apt))
+      );
+      window.dispatchEvent(new Event('notifications_updated'));
+      showToast(`✓ Reminder saved to database (${offset})`);
+    } catch (err: any) {
+      showToast(err?.message || 'Failed to save appointment reminder');
+    }
   };
 
   // COUNTS
@@ -391,6 +416,13 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
   ).length;
   const completedCount = appointments.filter((a) => a.status === 'Completed').length;
   const cancelledCount = appointments.filter((a) => a.status === 'Cancelled').length;
+  const thisMonthCount = useMemo(() => {
+    const now = new Date();
+    return appointments.filter((a) => {
+      const d = new Date(a.timestamp);
+      return !isNaN(d.getTime()) && d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
+    }).length;
+  }, [appointments]);
 
   // FILTERED LIST
   const filteredAppointments = appointments.filter((apt) => {
@@ -478,15 +510,21 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
 
           <div className="flex items-start gap-4 relative z-10">
             <div className="relative">
-              <img
-                src={nextAppointment.doctorPhoto}
-                alt={nextAppointment.doctorName}
-                className="w-16 h-16 sm:w-20 sm:h-20 rounded-2xl object-cover border-2 border-[#00a896]/30 dark:border-teal-400/60 shadow-md shrink-0 cursor-pointer hover:scale-105 transition-transform"
-                onClick={() => {
-                  const doc = MOCK_DOCTORS.find((d) => d.id === nextAppointment.doctorId) || MOCK_DOCTORS[0];
-                  setDoctorDrawerTarget(doc);
-                }}
-              />
+              {nextAppointment.doctorPhoto ? (
+                <img
+                  src={nextAppointment.doctorPhoto}
+                  alt={nextAppointment.doctorName}
+                  className="w-16 h-16 sm:w-20 sm:h-20 rounded-2xl object-cover border-2 border-[#00a896]/30 dark:border-teal-400/60 shadow-md shrink-0 cursor-pointer hover:scale-105 transition-transform"
+                  onClick={() => setDoctorDrawerTarget(resolveDoctorForAppointment(nextAppointment))}
+                />
+              ) : (
+                <div
+                  onClick={() => setDoctorDrawerTarget(resolveDoctorForAppointment(nextAppointment))}
+                  className="w-16 h-16 sm:w-20 sm:h-20 rounded-2xl bg-gradient-to-br from-teal-500 to-cyan-600 text-white font-black text-xl flex items-center justify-center border-2 border-[#00a896]/30 shadow-md shrink-0 cursor-pointer hover:scale-105 transition-transform"
+                >
+                  {nextAppointment.doctorName.charAt(0).toUpperCase()}
+                </div>
+              )}
               <span className="absolute -bottom-1 -right-1 w-4 h-4 bg-emerald-500 border-2 border-white dark:border-slate-900 rounded-full animate-pulse" title="Doctor Online" />
             </div>
 
@@ -591,7 +629,7 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
         <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-5 rounded-3xl flex items-center justify-between shadow-xs hover:border-purple-500/30 transition-all">
           <div>
             <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider block font-mono">{t('apt.this_month', 'This Month')}</span>
-            <span className="text-2xl font-black text-purple-600 dark:text-purple-400 mt-1 block font-mono">5</span>
+            <span className="text-2xl font-black text-purple-600 dark:text-purple-400 mt-1 block font-mono">{thisMonthCount}</span>
           </div>
           <div className="w-12 h-12 rounded-2xl bg-purple-500/10 border border-purple-500/20 flex items-center justify-center text-purple-600 dark:text-purple-400">
             <Clock className="w-6 h-6" />
@@ -632,7 +670,7 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
                       </span>
                     </div>
                     <div className="text-xs font-semibold text-slate-800 dark:text-slate-200">
-                      {req.doctorName || 'Dr. Arun Kumar'}
+                      {req.doctorName || 'Attending Physician'}
                     </div>
                     <div className="flex items-center gap-2 text-[11px] font-medium text-slate-500 mt-1 flex-wrap">
                       <span>{req.clinicName || 'General Medicine'}</span>
@@ -680,16 +718,14 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
             <button
               key={tab.id}
               onClick={() => setActiveTab(tab.id as any)}
-              className={`flex-1 sm:flex-none px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center justify-center gap-2 font-sans ${
-                activeTab === tab.id
-                  ? 'bg-[#00a896] text-white shadow-xs'
-                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-              }`}
+              className={`flex-1 sm:flex-none px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center justify-center gap-2 font-sans ${activeTab === tab.id
+                ? 'bg-[#00a896] text-white shadow-xs'
+                : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                }`}
             >
               <span>{tab.label}</span>
-              <span className={`px-2 py-0.5 rounded-full text-[10px] font-mono font-bold ${
-                activeTab === tab.id ? 'bg-white/20 text-white' : 'bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-400'
-              }`}>
+              <span className={`px-2 py-0.5 rounded-full text-[10px] font-mono font-bold ${activeTab === tab.id ? 'bg-white/20 text-white' : 'bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-400'
+                }`}>
                 {tab.count}
               </span>
             </button>
@@ -702,32 +738,29 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
           <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-950 p-1 rounded-xl border border-slate-200 dark:border-slate-800 text-xs font-bold w-full sm:w-auto">
             <button
               onClick={() => setSelectedTypeFilter('all')}
-              className={`px-3 py-1.5 rounded-lg transition-colors cursor-pointer text-[11px] ${
-                selectedTypeFilter === 'all'
-                  ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-2xs'
-                  : 'text-slate-500 hover:text-slate-800 dark:hover:text-white'
-              }`}
+              className={`px-3 py-1.5 rounded-lg transition-colors cursor-pointer text-[11px] ${selectedTypeFilter === 'all'
+                ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-2xs'
+                : 'text-slate-500 hover:text-slate-800 dark:hover:text-white'
+                }`}
             >
               {t('apt.all_types', 'All Types')}
             </button>
             <button
               onClick={() => setSelectedTypeFilter('video')}
-              className={`px-3 py-1.5 rounded-lg transition-colors cursor-pointer text-[11px] flex items-center gap-1 ${
-                selectedTypeFilter === 'video'
-                  ? 'bg-white dark:bg-slate-800 text-teal-600 dark:text-cyan-400 shadow-2xs font-bold'
-                  : 'text-slate-500 hover:text-slate-800 dark:hover:text-white'
-              }`}
+              className={`px-3 py-1.5 rounded-lg transition-colors cursor-pointer text-[11px] flex items-center gap-1 ${selectedTypeFilter === 'video'
+                ? 'bg-white dark:bg-slate-800 text-teal-600 dark:text-cyan-400 shadow-2xs font-bold'
+                : 'text-slate-500 hover:text-slate-800 dark:hover:text-white'
+                }`}
             >
               <Video className="w-3 h-3" />
               <span>{t('apt.video', 'Video')}</span>
             </button>
             <button
               onClick={() => setSelectedTypeFilter('in-person')}
-              className={`px-3 py-1.5 rounded-lg transition-colors cursor-pointer text-[11px] flex items-center gap-1 ${
-                selectedTypeFilter === 'in-person'
-                  ? 'bg-white dark:bg-slate-800 text-teal-600 dark:text-cyan-400 shadow-2xs font-bold'
-                  : 'text-slate-500 hover:text-slate-800 dark:hover:text-white'
-              }`}
+              className={`px-3 py-1.5 rounded-lg transition-colors cursor-pointer text-[11px] flex items-center gap-1 ${selectedTypeFilter === 'in-person'
+                ? 'bg-white dark:bg-slate-800 text-teal-600 dark:text-cyan-400 shadow-2xs font-bold'
+                : 'text-slate-500 hover:text-slate-800 dark:hover:text-white'
+                }`}
             >
               <Building2 className="w-3 h-3" />
               <span>{t('apt.clinic', 'Clinic')}</span>
@@ -777,33 +810,35 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
               className="bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 border border-slate-200 dark:border-slate-800 hover:border-[#00a896]/40 p-5 rounded-3xl transition-all shadow-xs hover:shadow-md flex flex-col md:flex-row items-start md:items-center justify-between gap-4 group"
             >
               <div className="flex items-center gap-4">
-                <img
-                  src={apt.doctorPhoto}
-                  alt={apt.doctorName}
-                  className="w-14 h-14 rounded-2xl object-cover border-2 border-teal-500/30 shrink-0 cursor-pointer hover:scale-105 transition-transform"
-                  onClick={() => {
-                    const doc = MOCK_DOCTORS.find((d) => d.id === apt.doctorId) || MOCK_DOCTORS[0];
-                    setDoctorDrawerTarget(doc);
-                  }}
-                />
+                {apt.doctorPhoto ? (
+                  <img
+                    src={apt.doctorPhoto}
+                    alt={apt.doctorName}
+                    className="w-14 h-14 rounded-2xl object-cover border-2 border-teal-500/30 shrink-0 cursor-pointer hover:scale-105 transition-transform"
+                    onClick={() => setDoctorDrawerTarget(resolveDoctorForAppointment(apt))}
+                  />
+                ) : (
+                  <div
+                    onClick={() => setDoctorDrawerTarget(resolveDoctorForAppointment(apt))}
+                    className="w-14 h-14 rounded-2xl bg-gradient-to-br from-teal-500 to-cyan-600 text-white font-black text-base flex items-center justify-center border-2 border-teal-500/30 shrink-0 cursor-pointer hover:scale-105 transition-transform"
+                  >
+                    {apt.doctorName.charAt(0).toUpperCase()}
+                  </div>
+                )}
                 <div>
                   <div className="flex items-center gap-2">
                     <h4
-                      onClick={() => {
-                        const doc = MOCK_DOCTORS.find((d) => d.id === apt.doctorId) || MOCK_DOCTORS[0];
-                        setDoctorDrawerTarget(doc);
-                      }}
+                      onClick={() => setDoctorDrawerTarget(resolveDoctorForAppointment(apt))}
                       className="text-base font-extrabold text-slate-900 dark:text-white group-hover:text-[#00a896] dark:group-hover:text-cyan-300 transition-colors cursor-pointer"
                     >
                       {apt.doctorName}
                     </h4>
-                    <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-extrabold ${
-                      apt.status === 'Completed'
-                        ? 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-400 border border-slate-200 dark:border-slate-700'
-                        : apt.status === 'Cancelled'
+                    <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-extrabold ${apt.status === 'Completed'
+                      ? 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-400 border border-slate-200 dark:border-slate-700'
+                      : apt.status === 'Cancelled'
                         ? 'bg-rose-500/15 text-rose-700 dark:text-rose-300 border border-rose-500/30'
                         : 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30'
-                    }`}>
+                      }`}>
                       {t(`status.${apt.status.toLowerCase()}`, apt.status)}
                     </span>
                   </div>
@@ -811,7 +846,7 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
                   <p className="text-xs font-bold text-[#00a896] dark:text-teal-400 mt-0.5">
                     {apt.speciality} • {apt.hospital}
                   </p>
-                  
+
                   <div className="flex items-center gap-3 text-xs text-slate-500 dark:text-slate-400 mt-1 font-medium font-mono">
                     <span className="flex items-center gap-1">
                       <Calendar className="w-3.5 h-3.5 text-[#00a896] dark:text-cyan-400" />
@@ -908,55 +943,70 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
           </button>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          {MOCK_DOCTORS.slice(0, 3).map((doctor) => (
-            <div
-              key={doctor.id}
-              className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 space-y-3 flex flex-col justify-between hover:border-teal-500/40 transition-all shadow-2xs"
-            >
-              <div className="flex items-center gap-3">
-                <img
-                  src={doctor.photoUrl}
-                  alt={doctor.name}
-                  className="w-12 h-12 rounded-xl object-cover border border-teal-500/30 shrink-0 cursor-pointer"
-                  onClick={() => setDoctorDrawerTarget(doctor)}
-                />
-                <div className="min-w-0">
-                  <h4
-                    onClick={() => setDoctorDrawerTarget(doctor)}
-                    className="font-extrabold text-slate-900 dark:text-white text-xs truncate cursor-pointer hover:text-[#00a896]"
-                  >
-                    {doctor.name}
-                  </h4>
-                  <p className="text-[11px] font-bold text-teal-600 dark:text-teal-400 truncate">{doctor.speciality}</p>
-                  <div className="flex items-center gap-1.5 text-[10px] text-slate-500 mt-0.5">
-                    <span className="flex items-center gap-0.5 text-amber-500 font-bold">
-                      <Star className="w-3 h-3 fill-amber-400" /> {doctor.rating}
-                    </span>
-                    <span>•</span>
-                    <span>{doctor.experienceYears} yrs exp</span>
+        {doctors.length === 0 ? (
+          <div className="py-8 text-center text-xs text-slate-500 dark:text-slate-400">
+            No specialists registered in directory yet.
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {doctors.slice(0, 3).map((doctor) => (
+              <div
+                key={doctor.id}
+                className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 space-y-3 flex flex-col justify-between hover:border-teal-500/40 transition-all shadow-2xs"
+              >
+                <div className="flex items-center gap-3">
+                  {doctor.photoUrl ? (
+                    <img
+                      src={doctor.photoUrl}
+                      alt={doctor.name}
+                      className="w-12 h-12 rounded-xl object-cover border border-teal-500/30 shrink-0 cursor-pointer"
+                      onClick={() => setDoctorDrawerTarget(doctor)}
+                    />
+                  ) : (
+                    <div
+                      onClick={() => setDoctorDrawerTarget(doctor)}
+                      className="w-12 h-12 rounded-xl bg-gradient-to-br from-teal-500 to-cyan-600 text-white font-black text-sm flex items-center justify-center border border-teal-500/30 shrink-0 cursor-pointer"
+                    >
+                      {doctor.name.charAt(0).toUpperCase()}
+                    </div>
+                  )}
+                  <div className="min-w-0">
+                    <h4
+                      onClick={() => setDoctorDrawerTarget(doctor)}
+                      className="font-extrabold text-slate-900 dark:text-white text-xs truncate cursor-pointer hover:text-[#00a896]"
+                    >
+                      {doctor.name}
+                    </h4>
+                    <p className="text-[11px] font-bold text-teal-600 dark:text-teal-400 truncate">{doctor.speciality}</p>
+                    <div className="flex items-center gap-1.5 text-[10px] text-slate-500 mt-0.5">
+                      <span className="flex items-center gap-0.5 text-amber-500 font-bold">
+                        <Star className="w-3 h-3 fill-amber-400" /> {doctor.rating}
+                      </span>
+                      <span>•</span>
+                      <span>{doctor.experienceYears} yrs exp</span>
+                    </div>
                   </div>
                 </div>
-              </div>
 
-              <div className="pt-2 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between">
-                <span className="font-mono text-xs font-bold text-slate-800 dark:text-slate-200">
-                  ₹{doctor.fee} <span className="text-[10px] text-slate-500 font-normal font-sans">/ visit</span>
-                </span>
+                <div className="pt-2 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between">
+                  <span className="font-mono text-xs font-bold text-slate-800 dark:text-slate-200">
+                    ₹{doctor.fee} <span className="text-[10px] text-slate-500 font-normal font-sans">/ visit</span>
+                  </span>
 
-                <button
-                  onClick={() => {
-                    setSelectedDoctorForBooking(doctor);
-                    setBookingModalOpen(true);
-                  }}
-                  className="py-1.5 px-3 rounded-lg bg-[#00a896] hover:bg-[#00897b] text-white text-[11px] font-extrabold cursor-pointer transition-all shadow-2xs"
-                >
-                  Book Slot
-                </button>
+                  <button
+                    onClick={() => {
+                      setSelectedDoctorForBooking(doctor);
+                      setBookingModalOpen(true);
+                    }}
+                    className="py-1.5 px-3 rounded-lg bg-[#00a896] hover:bg-[#00897b] text-white text-[11px] font-extrabold cursor-pointer transition-all shadow-2xs"
+                  >
+                    Book Slot
+                  </button>
+                </div>
               </div>
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* MODALS AND DRAWERS */}
@@ -1102,7 +1152,7 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
                   <div className="grid grid-cols-2 gap-4">
                     <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200/60 dark:border-slate-700">
                       <div className="text-[10px] text-slate-500 uppercase tracking-wider font-bold mb-1">Doctor</div>
-                      <div className="text-xs font-extrabold text-slate-950 dark:text-white">{pendingDetailTarget.doctorName || 'Dr. Arun Kumar'}</div>
+                      <div className="text-xs font-extrabold text-slate-950 dark:text-white">{pendingDetailTarget.doctorName || 'Attending Physician'}</div>
                     </div>
                     <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200/60 dark:border-slate-700">
                       <div className="text-[10px] text-slate-500 uppercase tracking-wider font-bold mb-1">Department</div>

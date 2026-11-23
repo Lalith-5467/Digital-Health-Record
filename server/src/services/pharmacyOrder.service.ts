@@ -851,7 +851,10 @@ export class PharmacyOrderService {
 
       return tx.pharmacyOrder.update({
         where: { id: orderId },
-        data: { status: OrderStatus.DECLINED as any },
+        data: {
+          status: OrderStatus.DECLINED as any,
+          declineReason: reason || null,
+        },
         include: {
           items: true,
           pharmacy: true,
@@ -970,6 +973,82 @@ export class PharmacyOrderService {
         },
       });
 
+      // ATOMIC STOCK DEDUCTION, GST INVOICE & SCHEDULE H/H1/X AUDIT ON DISPENSE/COMPLETION
+      const isDispenseCompletion = ['DISPENSED', 'COMPLETED', 'DELIVERED'].includes(nextStatus);
+      const wasAlreadyDispensed = ['DISPENSED', 'COMPLETED', 'DELIVERED'].includes(currentStatus);
+
+      if (isDispenseCompletion && !wasAlreadyDispensed && result.pharmacyId) {
+        const pharmacistRow = await tx.pharmacist.findUnique({ where: { userId: user.id } });
+
+        for (const item of result.items) {
+          const invItem = await tx.pharmacyInventory.findFirst({
+            where: {
+              pharmacyId: result.pharmacyId,
+              OR: [
+                ...(item.medicineId ? [{ medicineId: item.medicineId }] : []),
+                { medicineName: { contains: item.medicineName } },
+              ],
+            },
+            orderBy: { stockQuantity: 'desc' },
+          });
+
+          if (invItem) {
+            const deductQty = Math.min(invItem.stockQuantity, item.quantity || 1);
+            await tx.pharmacyInventory.update({
+              where: { id: invItem.id },
+              data: { stockQuantity: { decrement: deductQty } },
+            });
+
+            if (invItem.scheduleCategory && ['H', 'H1', 'X', 'Schedule H', 'Schedule H1', 'Schedule X'].includes(invItem.scheduleCategory)) {
+              await tx.scheduleDrugLog.create({
+                data: {
+                  logCode: `SCH-${Date.now().toString().slice(-5)}-${item.id.slice(-3).toUpperCase()}`,
+                  pharmacyId: result.pharmacyId,
+                  orderId: result.id,
+                  prescriptionId: result.prescriptionId || null,
+                  patientId: result.patientId,
+                  doctorId: result.prescription?.doctorId || null,
+                  pharmacistId: pharmacistRow?.id || null,
+                  medicineName: item.medicineName,
+                  scheduleClass: invItem.scheduleCategory,
+                  batchNumber: invItem.batchNumber,
+                  quantityDispensed: item.quantity || 1,
+                  verificationState: 'Verified',
+                },
+              });
+            }
+          }
+        }
+
+        const existingInvoice = await tx.pharmacyInvoice.findUnique({ where: { orderId: result.id } });
+        if (!existingInvoice) {
+          const subtotal = Number(result.totalAmount || 0);
+          const taxAmount = Number(result.taxAmount || 0);
+          const deliveryFee = Number(result.deliveryFee || 0);
+          await tx.pharmacyInvoice.create({
+            data: {
+              invoiceNumber: `INV-${Date.now().toString().slice(-6)}-${result.id.slice(-4).toUpperCase()}`,
+              orderId: result.id,
+              pharmacyId: result.pharmacyId,
+              patientId: result.patientId,
+              subtotal,
+              taxAmount,
+              deliveryFee,
+              grandTotal: Number((subtotal + taxAmount + deliveryFee).toFixed(2)),
+              gstin: result.pharmacy?.gstin || null,
+              hsnBreakdownJson: JSON.stringify(
+                result.items.map((it: any) => ({
+                  medicineName: it.medicineName,
+                  quantity: it.quantity,
+                  unitPrice: Number(it.unitPrice),
+                  subtotal: Number(it.subtotal),
+                }))
+              ),
+            },
+          });
+        }
+      }
+
       console.log(`[PharmacyOrder Lifecycle] Confirmed DB status: ${result.status} for Order ID: ${orderId}`);
       return result;
     });
@@ -1027,6 +1106,76 @@ export class PharmacyOrderService {
         },
       });
     }
+
+    return hydrated;
+  }
+
+  /**
+   * Patient / Caregiver cancels their own pharmacy order in MySQL
+   */
+  static async cancelPharmacyOrderByPatient(
+    orderId: string,
+    reason: string | undefined,
+    user: AuthUser,
+    ipAddress?: string
+  ) {
+    const order = await prisma.pharmacyOrder.findUnique({
+      where: { id: orderId },
+      include: { items: true, pharmacy: true, patient: true, prescription: true },
+    });
+    if (!order) {
+      const err: AppError = new Error(`Pharmacy order "${orderId}" not found`);
+      err.statusCode = 404;
+      throw err;
+    }
+
+    if (user.role === Role.PATIENT) {
+      const patient = await prisma.patient.findUnique({ where: { userId: user.id } });
+      if (!patient || order.patientId !== patient.id) {
+        const err: AppError = new Error('You are not authorized to cancel this order');
+        err.statusCode = 403;
+        throw err;
+      }
+    }
+
+    if (['DELIVERED', 'DISPENSED', 'COMPLETED', 'CANCELLED'].includes(order.status)) {
+      const err: AppError = new Error(`Order in status ${order.status} cannot be cancelled`);
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const updated = await prisma.pharmacyOrder.update({
+      where: { id: orderId },
+      data: {
+        status: OrderStatus.CANCELLED,
+        cancellationReason: reason || 'Cancelled by patient',
+        cancelledBy: user.id,
+      },
+      include: { items: true, pharmacy: true, patient: true, prescription: true },
+    });
+
+    await AuditService.log({
+      userId: user.id,
+      action: 'PHARMACY_ORDER_CANCELLED',
+      entityType: 'pharmacy_orders',
+      entityId: updated.id,
+      ipAddress,
+      details: { reason: reason || 'Cancelled by patient', previousStatus: order.status },
+    });
+
+    const hydrated = await this.hydrateOrder(updated);
+    emitOrderStatusUpdate({
+      orderId: hydrated.id,
+      patientId: hydrated.patientId,
+      patientName: hydrated.patient?.fullName,
+      pharmacyId: hydrated.pharmacyId,
+      status: OrderStatus.CANCELLED,
+      previousStatus: order.status,
+      updatedAt: new Date().toISOString(),
+      message: 'Pharmacy order cancelled by patient.',
+      statusTimeline: hydrated.statusTimeline,
+      totalAmount: hydrated.totalAmount,
+    });
 
     return hydrated;
   }

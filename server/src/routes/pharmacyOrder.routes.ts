@@ -11,6 +11,7 @@ import {
   getPharmacyOrderBillController,
   processPharmacyOrderPaymentController,
   confirmCashPaymentController,
+  cancelPharmacyOrderController,
 } from '../controllers/pharmacyOrder.controller';
 
 const router = Router();
@@ -79,6 +80,13 @@ router.patch(
   '/:id/status',
   requireRole('PHARMACIST', 'ADMIN', 'SUPER_ADMIN'),
   updatePharmacyOrderStatusController
+);
+
+// 10. Patient / Caregiver cancels an active pharmacy order
+router.patch(
+  '/:id/cancel',
+  requireRole('PATIENT', 'CAREGIVER', 'ADMIN', 'SUPER_ADMIN'),
+  cancelPharmacyOrderController
 );
 
 export default router;

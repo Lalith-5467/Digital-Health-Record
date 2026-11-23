@@ -11,10 +11,10 @@ import {
 
 const router = Router();
 
-// Speech generation endpoint (public utility for voice notifications)
-router.post('/speech', generateSpeechController);
-
 router.use(authenticate);
+
+// Speech generation endpoint (authenticated utility for voice notifications)
+router.post('/speech', generateSpeechController);
 
 router.get('/', getNotificationsController);
 router.patch('/read-all', markAllNotificationsReadController);

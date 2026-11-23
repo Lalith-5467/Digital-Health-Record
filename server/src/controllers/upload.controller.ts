@@ -10,25 +10,26 @@ if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
 }
 
-const ALLOWED_MIME_TYPES = new Set([
-  'image/jpeg',
-  'image/png',
-  'image/webp',
-  'image/gif',
-  'image/svg+xml',
-  'video/mp4',
-  'video/webm',
-  'video/ogg',
-  'video/quicktime',
-]);
+const MIME_TO_EXT: Record<string, string> = {
+  'image/jpeg': '.jpg',
+  'image/png': '.png',
+  'image/webp': '.webp',
+  'image/gif': '.gif',
+  'application/pdf': '.pdf',
+  'video/mp4': '.mp4',
+  'video/webm': '.webm',
+  'video/ogg': '.ogv',
+  'video/quicktime': '.mov',
+};
+
+const ALLOWED_MIME_TYPES = new Set(Object.keys(MIME_TO_EXT));
 
 const storage = multer.diskStorage({
   destination: (_req, _file, cb) => {
     cb(null, uploadDir);
   },
   filename: (_req, file, cb) => {
-    const ext = path.extname(file.originalname).toLowerCase();
-    const safeExt = ext || (file.mimetype.startsWith('video/') ? '.mp4' : '.png');
+    const safeExt = MIME_TO_EXT[file.mimetype.toLowerCase()] || '.bin';
     const randomHash = crypto.randomBytes(8).toString('hex');
     const timestamp = Date.now();
     cb(null, `${timestamp}-${randomHash}${safeExt}`);
@@ -43,7 +44,7 @@ const fileFilter = (
   if (ALLOWED_MIME_TYPES.has(file.mimetype.toLowerCase())) {
     cb(null, true);
   } else {
-    cb(new Error(`Invalid file type (${file.mimetype}). Allowed types: JPG, PNG, WEBP, GIF, SVG, MP4, WEBM, OGG.`));
+    cb(new Error(`Invalid file type (${file.mimetype}). Allowed types: JPG, PNG, WEBP, GIF, PDF, MP4, WEBM, OGG, MOV.`));
   }
 };
 

@@ -1,14 +1,16 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { motion } from 'framer-motion';
 import { 
-  Calendar, Users, RefreshCw, Bell, AlertTriangle, ChevronRight, Scan, 
-  Stethoscope, Activity, FileText, Pill, Video, CheckCircle2, 
-  ArrowUpRight, HeartPulse, Clock, Sparkles, ShieldCheck, Lock, Check, XCircle, Loader2
+  Calendar, Users, RefreshCw, AlertTriangle, ChevronRight, Scan, 
+  Stethoscope, Activity, FileText, Pill, Video, 
+  ArrowUpRight, HeartPulse, Clock, Sparkles, ShieldCheck, Check
 } from 'lucide-react';
 import { getGreeting } from '../../../utils/greeting';
 import { healthShareApi, type AccessRequestItem } from '../../../services/healthShareApi';
 import { socketService } from '../../../services/socketService';
 import { apiClient } from '../../../services/apiClient';
+import { clinicalApi, profileApi } from '../../../services/dhrApis';
+import type { DoctorPatientRecord } from '../../../utils/doctorWorkflowStorage';
 import { useLanguage } from '../../../context/LanguageContext';
 import { getLocalizedName } from '../../../utils/caregiverDataTranslator';
 
@@ -42,16 +44,20 @@ export const DoctorOverviewView: React.FC<DoctorOverviewViewProps> = ({
   user 
 }) => {
   const { t, language } = useLanguage();
-  const doctorName = user?.name ? (user.name.startsWith('Dr') ? user.name : `Dr. ${user.name}`) : 'Dr. Rajesh Varma';
+  const [doctorProfile, setDoctorProfile] = useState<any>(null);
   const [accessRequests, setAccessRequests] = useState<AccessRequestItem[]>([]);
   const [isLoadingRequests, setIsLoadingRequests] = useState(false);
   const [dashboardData, setDashboardData] = useState<DashboardData | null>(null);
+  const [patients, setPatients] = useState<DoctorPatientRecord[]>([]);
+
+  const rawDoctorName = doctorProfile?.fullName || dashboardData?.doctor?.name || user?.name || 'Doctor';
+  const doctorName = rawDoctorName.startsWith('Dr') ? rawDoctorName : `Dr. ${rawDoctorName}`;
 
   const fetchDoctorRequests = async () => {
     setIsLoadingRequests(true);
     try {
       const data = await healthShareApi.getDoctorRequests();
-      setAccessRequests(data);
+      setAccessRequests(Array.isArray(data) ? data : []);
     } catch (err) {
       console.warn('Failed to load doctor access requests:', err);
     } finally {
@@ -61,9 +67,19 @@ export const DoctorOverviewView: React.FC<DoctorOverviewViewProps> = ({
 
   const fetchDashboardData = async () => {
     try {
-      const result = await apiClient.get("/doctor/dashboard");
-      if (result && result.success) {
-        setDashboardData(result.data);
+      const [dashRes, patientsRes, profileRes] = await Promise.all([
+        apiClient.get('/doctor/dashboard').catch(() => null),
+        clinicalApi.getDoctorPatients().catch(() => null),
+        profileApi.getDoctorProfile().catch(() => null),
+      ]);
+      if (dashRes && dashRes.success && dashRes.data) {
+        setDashboardData(dashRes.data);
+      }
+      if (patientsRes && Array.isArray(patientsRes.data)) {
+        setPatients(patientsRes.data);
+      }
+      if (profileRes && profileRes.data) {
+        setDoctorProfile(profileRes.data);
       }
     } catch (err: any) {
       console.warn('Dashboard data fetch error:', err?.message);
@@ -80,6 +96,7 @@ export const DoctorOverviewView: React.FC<DoctorOverviewViewProps> = ({
     });
     const unsubNotif = socketService.subscribeToNotifications(() => {
       fetchDoctorRequests();
+      fetchDashboardData();
     });
 
     return () => {
@@ -90,19 +107,107 @@ export const DoctorOverviewView: React.FC<DoctorOverviewViewProps> = ({
   }, []);
 
   const statistics = dashboardData?.statistics || {
-    todayAppointments: 6,
-    confirmedAppointments: 4,
-    pendingAppointments: 2,
-    completedAppointments: 1,
-    activeConsultations: 1,
-    totalPatients: 6,
+    todayAppointments: 0,
+    confirmedAppointments: 0,
+    pendingAppointments: 0,
+    completedAppointments: 0,
+    activeConsultations: 0,
+    totalPatients: 0,
   };
 
-  const activeQueue = dashboardData?.activeQueue || [
-    { id: 'apt-1', patientName: 'Abinesh Kumar', patientId: 'PT-10245', age: 28, gender: 'Male', time: '10:30 AM', status: 'Scheduled', type: 'OPD In-Clinic', reason: 'Post-Appendectomy Suture Review' },
-    { id: 'apt-2', patientName: 'Ragul Kumar', patientId: 'PT-10892', age: 45, gender: 'Male', time: '10:45 AM', status: 'Delayed', type: 'Tele-Consultation', reason: 'Hypertension Medication Check' },
-    { id: 'apt-3', patientName: 'Mrs. Meenakshi Sundaram', patientId: 'PT-10331', age: 62, gender: 'Female', time: '11:15 AM', status: 'In Consultation', type: 'Tele-Consultation', reason: 'Diabetes Vitals & Routine Adherence' }
-  ];
+  const activeQueue = dashboardData?.activeQueue || [];
+
+  // Derive real priority clinical alerts from DB patients & access requests
+  const priorityAlerts = useMemo(() => {
+    const alerts: Array<{
+      id: string;
+      severity: 'critical' | 'warning';
+      title: string;
+      time: string;
+      message: string;
+      actionLabel: string;
+      onAction: () => void;
+    }> = [];
+
+    for (const p of patients) {
+      const latestVital = p.vitalsHistory?.[0];
+      if (latestVital && latestVital.bp && latestVital.bp !== 'Not Recorded') {
+        const [sysStr, diaStr] = latestVital.bp.split('/');
+        const sys = parseInt(sysStr, 10);
+        const dia = parseInt(diaStr, 10);
+        if ((!isNaN(sys) && sys >= 140) || (!isNaN(dia) && dia >= 90)) {
+          alerts.push({
+            id: `bp-${p.id}`,
+            severity: sys >= 160 || dia >= 100 ? 'critical' : 'warning',
+            title: `${p.name} · Elevated Blood Pressure`,
+            time: latestVital.date || 'Recent',
+            message: `Latest recorded BP ${latestVital.bp} mmHg requires clinical review.`,
+            actionLabel: t('doctor.overview.review_alerts', 'Review Chart →'),
+            onAction: () => (onSelectPatient ? onSelectPatient(p.id, p.name) : onNavigate('patient-360')),
+          });
+        }
+      }
+      if (latestVital && latestVital.spo2 && latestVital.spo2 !== 'Not Recorded') {
+        const spo2 = parseFloat(latestVital.spo2);
+        if (!isNaN(spo2) && spo2 < 94) {
+          alerts.push({
+            id: `spo2-${p.id}`,
+            severity: 'critical',
+            title: `${p.name} · Low SpO2 Alert`,
+            time: latestVital.date || 'Recent',
+            message: `Oxygen saturation recorded at ${spo2}%. Immediate assessment advised.`,
+            actionLabel: t('doctor.overview.review_alerts', 'Review Chart →'),
+            onAction: () => (onSelectPatient ? onSelectPatient(p.id, p.name) : onNavigate('patient-360')),
+          });
+        }
+      }
+      const criticalLab = p.labReports?.find((l) => l.status === 'Critical' || l.status === 'Elevated');
+      if (criticalLab) {
+        alerts.push({
+          id: `lab-${criticalLab.id}`,
+          severity: criticalLab.status === 'Critical' ? 'critical' : 'warning',
+          title: `${p.name} · ${criticalLab.testName}`,
+          time: criticalLab.date || 'Recent',
+          message: `Lab result flagged ${criticalLab.status}: ${criticalLab.value}`,
+          actionLabel: t('doctor.overview.check_inbox', 'Open Records →'),
+          onAction: () => (onSelectPatient ? onSelectPatient(p.id, p.name) : onNavigate('patient-360')),
+        });
+      }
+    }
+
+    const pendingConsent = accessRequests.filter((r) => r.status === 'PENDING');
+    if (pendingConsent.length > 0 && alerts.length < 3) {
+      alerts.push({
+        id: 'pending-consent',
+        severity: 'warning',
+        title: t('doctor.overview.access_requests', 'Pending ABDM Access Requests'),
+        time: 'Live',
+        message: `${pendingConsent.length} patient record authorization request(s) awaiting patient consent.`,
+        actionLabel: t('doctor.sidebar.scan_qr', 'Scan QR →'),
+        onAction: () => onNavigate('scan'),
+      });
+    }
+
+    return alerts.slice(0, 4);
+  }, [patients, accessRequests, onNavigate, onSelectPatient, t]);
+
+  const criticalAlertCount = priorityAlerts.filter((a) => a.severity === 'critical').length;
+  const totalActiveMedications = useMemo(
+    () => patients.reduce((sum, p) => sum + (p.medications?.length || 0), 0),
+    [patients]
+  );
+  const totalTrackedAllergies = useMemo(
+    () => patients.reduce((sum, p) => sum + (p.allergies?.length || 0), 0),
+    [patients]
+  );
+  const approvedSessionsCount = useMemo(
+    () => accessRequests.filter((r) => r.status === 'APPROVED').length,
+    [accessRequests]
+  );
+  const pendingSessionsCount = useMemo(
+    () => accessRequests.filter((r) => r.status === 'PENDING').length,
+    [accessRequests]
+  );
 
   return (
     <div className="space-y-6 pb-16 max-w-7xl mx-auto">
@@ -116,11 +221,13 @@ export const DoctorOverviewView: React.FC<DoctorOverviewViewProps> = ({
           <div className="flex flex-wrap items-center gap-2">
             <span className="px-3 py-1 text-[11px] font-black uppercase tracking-wider bg-teal-500/20 text-teal-700 dark:text-teal-300 rounded-full border border-teal-400/30 flex items-center gap-1.5 font-mono">
               <span className="w-2 h-2 rounded-full bg-emerald-500 dark:bg-emerald-400 animate-pulse" />
-              {t("doctor.overview.opd_suite", "OPD Suite 402 · Active Duty")}
+              {doctorProfile?.department || doctorProfile?.speciality || t("doctor.overview.opd_suite", "OPD Clinical Duty")}
             </span>
-            <span className="px-3 py-1 text-[11px] font-mono font-bold text-slate-600 dark:text-slate-300 bg-black/5 dark:bg-white/5 rounded-full border border-black/5 dark:border-white/10 backdrop-blur-md">
-              NMC-Reg: 74829-KA
-            </span>
+            {doctorProfile?.licenseNumber && (
+              <span className="px-3 py-1 text-[11px] font-mono font-bold text-slate-600 dark:text-slate-300 bg-black/5 dark:bg-white/5 rounded-full border border-black/5 dark:border-white/10 backdrop-blur-md">
+                Reg: {doctorProfile.licenseNumber}
+              </span>
+            )}
           </div>
 
           <h1 className="text-2xl sm:text-3xl lg:text-4xl font-black tracking-tight text-slate-900 dark:text-white">
@@ -219,7 +326,7 @@ export const DoctorOverviewView: React.FC<DoctorOverviewViewProps> = ({
                       <div>
                         <div className="flex items-center gap-2">
                           <h3 className="font-black text-slate-900 dark:text-white text-sm group-hover:text-teal-600 dark:group-hover:text-cyan-400 transition-colors">{getLocalizedName(apt.patientName, t)}</h3>
-                          <span className="text-[10px] text-slate-500 font-bold px-2 py-0.5 bg-slate-100 dark:bg-slate-800 rounded-md">{apt.age.toString().replace(/years?|yrs?/i, '').trim()} {t("doctor.patients.years", "Yrs")} · {t(`doctor.patients.${apt.gender.toLowerCase()}`, apt.gender)}</span>
+                          <span className="text-[10px] text-slate-500 font-bold px-2 py-0.5 bg-slate-100 dark:bg-slate-800 rounded-md">{apt.age ? `${apt.age.toString().replace(/years?|yrs?/i, '').trim()} ${t("doctor.patients.years", "Yrs")}` : 'N/A'} · {t(`doctor.patients.${String(apt.gender || 'other').toLowerCase()}`, apt.gender || 'N/A')}</span>
                         </div>
                         <p className="text-[11px] text-slate-600 dark:text-slate-400 font-bold mt-1 uppercase tracking-wide">{apt.reason}</p>
                         <p className="text-[11px] font-mono font-bold text-teal-700 dark:text-cyan-300 mt-1.5 flex items-center gap-1.5 bg-teal-50 dark:bg-teal-950/30 w-max px-2 py-1 rounded-md border border-teal-100 dark:border-teal-800/50">
@@ -230,13 +337,17 @@ export const DoctorOverviewView: React.FC<DoctorOverviewViewProps> = ({
                     </div>
 
                     <div className="flex sm:flex-col items-center sm:items-end justify-between gap-3 shrink-0">
-                      <span className={`text-[10px] font-black uppercase tracking-widest px-2.5 py-1 rounded-md border shadow-sm ${apt.statusColor}`}>
+                      <span className={`text-[10px] font-black uppercase tracking-widest px-2.5 py-1 rounded-md border shadow-sm ${apt.statusColor || 'bg-blue-500/15 text-blue-600 border-blue-500/30'}`}>
                         {apt.status === 'Scheduled' ? t("doctor.appointments.scheduled", "Scheduled") : apt.status === 'In Consultation' ? t("doctor.appointments.in_consultation", "In Consultation") : apt.status === 'Completed' ? t("doctor.appointments.completed", "Completed") : apt.status === 'Delayed' ? t("doctor.appointments.delayed", "Delayed") : apt.status}
                       </span>
                       <button 
                         onClick={(e) => {
                           e.stopPropagation();
-                          onNavigate('patient-360');
+                          if (apt.patientId && onSelectPatient) {
+                            onSelectPatient(apt.patientId, apt.patientName);
+                          } else {
+                            onNavigate('patient-360');
+                          }
                         }}
                         className="text-[11px] font-black text-white dark:text-slate-900 bg-gradient-to-r from-teal-500 to-cyan-500 hover:from-teal-400 hover:to-cyan-400 flex items-center gap-1.5 cursor-pointer px-4 py-2 rounded-xl shadow-[0_4px_15px_rgba(20,184,166,0.3)] dark:shadow-teal-500/20 transition-all hover:scale-105"
                       >
@@ -437,7 +548,7 @@ export const DoctorOverviewView: React.FC<DoctorOverviewViewProps> = ({
         {/* RIGHT COLUMN: CLINICAL TRIAGE, AI HIGHLIGHTS & TELEMETRY (5 COLS) */}
         <div className="lg:col-span-5 space-y-6">
           
-          {/* URGENT CLINICAL TRIAGE & ALERTS */}
+          {/* URGENT CLINICAL TRIAGE & ALERTS (DERIVED FROM REAL DB PATIENTS & REQUESTS) */}
           <div className="bg-white dark:bg-slate-900/90 rounded-3xl p-5 sm:p-6 border border-slate-200 dark:border-slate-800 shadow-xs space-y-4">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
@@ -445,79 +556,93 @@ export const DoctorOverviewView: React.FC<DoctorOverviewViewProps> = ({
                 <h3 className="text-sm font-black text-slate-900 dark:text-white">{t("doctor.overview.priority_alerts", "Priority Clinical Alerts")}</h3>
               </div>
               <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-500/20">
-                {t("doctor.overview.critical_count", "2 Critical")}
+                {criticalAlertCount} Critical
               </span>
             </div>
 
             <div className="space-y-3">
-              <div className="p-3.5 rounded-2xl bg-rose-500/5 dark:bg-rose-500/10 border border-rose-500/20 space-y-1.5">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-extrabold text-rose-600 dark:text-rose-400">{t("doctor.overview.system_notification", "System Notification")}</span>
-                  <span className="text-[10px] font-mono font-bold text-slate-400">Now</span>
+              {priorityAlerts.length === 0 ? (
+                <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-700 text-center">
+                  <p className="text-xs font-bold text-slate-600 dark:text-slate-300">No critical clinical alerts at this time.</p>
+                  <p className="text-[11px] text-slate-400 mt-0.5">All synced patient vitals and lab reports are within normal bounds.</p>
                 </div>
-                <p className="text-xs text-slate-700 dark:text-slate-300 font-semibold">{t("doctor.overview.alert_bp_msg", "Elevated Systolic BP warnings detected on telemetry.")}</p>
-                <div className="pt-1 flex items-center gap-2">
-                  <button 
-                    onClick={() => onNavigate('patient-360')}
-                    className="text-[11px] font-black text-rose-600 dark:text-rose-400 hover:underline cursor-pointer"
+              ) : (
+                priorityAlerts.map((alert) => (
+                  <div
+                    key={alert.id}
+                    className={`p-3.5 rounded-2xl border space-y-1.5 ${
+                      alert.severity === 'critical'
+                        ? 'bg-rose-500/5 dark:bg-rose-500/10 border-rose-500/20'
+                        : 'bg-amber-500/5 dark:bg-amber-500/10 border-amber-500/20'
+                    }`}
                   >
-                    {t("doctor.overview.review_alerts", "Review Alerts →")}
-                  </button>
-                </div>
-              </div>
-
-              <div className="p-3.5 rounded-2xl bg-amber-500/5 dark:bg-amber-500/10 border border-amber-500/20 space-y-1.5">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-extrabold text-amber-600 dark:text-amber-400">{t("doctor.overview.lab_reports_avail", "Lab Reports Available")}</span>
-                  <span className="text-[10px] font-mono font-bold text-slate-400">Recent</span>
-                </div>
-                <p className="text-xs text-slate-700 dark:text-slate-300 font-semibold">{t("doctor.overview.alert_lab_msg", "New diagnostic reports uploaded. Prescription review requested.")}</p>
-                <div className="pt-1 flex items-center gap-2">
-                  <button 
-                    onClick={() => onNavigate('prescriptions')}
-                    className="text-[11px] font-black text-amber-600 dark:text-amber-400 hover:underline cursor-pointer"
-                  >
-                    {t("doctor.overview.check_inbox", "Check Inbox →")}
-                  </button>
-                </div>
-              </div>
+                    <div className="flex items-center justify-between">
+                      <span
+                        className={`text-xs font-extrabold ${
+                          alert.severity === 'critical'
+                            ? 'text-rose-600 dark:text-rose-400'
+                            : 'text-amber-600 dark:text-amber-400'
+                        }`}
+                      >
+                        {alert.title}
+                      </span>
+                      <span className="text-[10px] font-mono font-bold text-slate-400">{alert.time}</span>
+                    </div>
+                    <p className="text-xs text-slate-700 dark:text-slate-300 font-semibold">{alert.message}</p>
+                    <div className="pt-1 flex items-center gap-2">
+                      <button
+                        onClick={alert.onAction}
+                        className={`text-[11px] font-black hover:underline cursor-pointer ${
+                          alert.severity === 'critical'
+                            ? 'text-rose-600 dark:text-rose-400'
+                            : 'text-amber-600 dark:text-amber-400'
+                        }`}
+                      >
+                        {alert.actionLabel}
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
             </div>
           </div>
 
-          {/* AI CLINICAL DIAGNOSTIC COPILOT WIDGET */}
+          {/* CLINICAL SUMMARY COPILOT WIDGET (LIVE DB COUNTS) */}
           <div className="bg-gradient-to-br from-teal-50 via-white to-cyan-50 dark:from-teal-950 dark:via-slate-900 dark:to-cyan-950 p-5 sm:p-6 rounded-3xl border border-teal-200 dark:border-teal-500/30 text-slate-900 dark:text-white shadow-lg space-y-3.5 relative overflow-hidden">
             <div className="absolute -top-10 -right-10 w-32 h-32 bg-teal-400/10 dark:bg-teal-400/5 rounded-full blur-2xl pointer-events-none" />
             <div className="flex items-center justify-between relative z-10">
               <div className="flex items-center gap-2">
                 <Sparkles className="w-4 h-4 text-teal-600 dark:text-cyan-300" />
-                <h3 className="text-sm font-black text-slate-900 dark:text-white">{t("doctor.overview.ai_copilot", "MediCare AI Clinical Copilot")}</h3>
+                <h3 className="text-sm font-black text-slate-900 dark:text-white">{t("doctor.overview.ai_copilot", "MediCare Clinical Summary")}</h3>
               </div>
               <span className="text-[9px] font-mono font-bold bg-teal-100 dark:bg-teal-400/20 text-teal-700 dark:text-teal-200 px-2 py-0.5 rounded-md border border-teal-200 dark:border-teal-300/30">
-                {t("doctor.overview.gpt4_health", "GPT-4 Health")}
+                Live EHR
               </span>
             </div>
 
             <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed font-medium relative z-10">
-              {t("doctor.overview.ai_desc", "New diagnostic summaries compiled from ABHA hospital telemetry for your upcoming cases today.")}
+              Tracking <strong className="text-slate-900 dark:text-white">{patients.length}</strong> registered patient chart(s) and <strong className="text-slate-900 dark:text-white">{totalActiveMedications}</strong> active medication entry(s) in MySQL.
             </p>
 
             <div className="p-3 rounded-2xl bg-white/60 dark:bg-white/5 border border-slate-200/60 dark:border-white/10 space-y-1 relative z-10 backdrop-blur-sm">
               <div className="flex items-center gap-1.5 text-xs font-bold text-teal-700 dark:text-teal-300">
                 <HeartPulse className="w-3.5 h-3.5" />
-                <span>{t("doctor.overview.drug_risk_checked", "Drug Interaction Risk Checked")}</span>
+                <span>Allergy & Rx Safety Registry</span>
               </div>
-              <p className="text-[11px] text-slate-600 dark:text-slate-300">{t("doctor.overview.drug_risk_msg", "Zero contra-indications flagged across active patient prescriptions.")}</p>
+              <p className="text-[11px] text-slate-600 dark:text-slate-300">
+                {totalTrackedAllergies} documented allergy record(s) monitored across active patient profiles.
+              </p>
             </div>
 
             <button 
               onClick={() => onNavigate('patient-360')}
               className="w-full relative z-10 py-2.5 rounded-xl bg-gradient-to-r from-teal-500 to-cyan-500 hover:from-teal-400 hover:to-cyan-400 text-white dark:text-slate-950 font-black text-xs shadow-md shadow-teal-500/20 transition-all cursor-pointer"
             >
-              {t("doctor.overview.open_ai_insights", "Open AI Clinical Insights")}
+              {t("doctor.overview.open_ai_insights", "Open Patient 360° Charts")}
             </button>
           </div>
 
-          {/* ABDM TELEMETRY & NETWORK STATUS */}
+          {/* ABDM HEALTH EXCHANGE SESSIONS STATUS (LIVE DB DATA) */}
           <div className="p-5 rounded-3xl bg-white dark:bg-slate-900/90 border border-slate-200 dark:border-slate-800 shadow-xs space-y-3">
             <div className="flex items-center justify-between">
               <span className="text-xs font-black text-slate-900 dark:text-white uppercase tracking-wider">{t("doctor.overview.exchange_status", "Health Exchange Status")}</span>
@@ -529,12 +654,12 @@ export const DoctorOverviewView: React.FC<DoctorOverviewViewProps> = ({
 
             <div className="grid grid-cols-2 gap-2 text-center">
               <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700">
-                <p className="text-sm font-black text-slate-900 dark:text-white">99.98%</p>
-                <p className="text-[9px] text-slate-400 font-bold uppercase">{t("doctor.overview.abdm_gateway", "ABDM Gateway")}</p>
+                <p className="text-sm font-black text-slate-900 dark:text-white">{approvedSessionsCount}</p>
+                <p className="text-[9px] text-slate-400 font-bold uppercase">Approved Sessions</p>
               </div>
               <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700">
-                <p className="text-sm font-black text-slate-900 dark:text-white">&lt; 120ms</p>
-                <p className="text-[9px] text-slate-400 font-bold uppercase">{t("doctor.overview.hl7_relay", "HL7 Fast Relay")}</p>
+                <p className="text-sm font-black text-slate-900 dark:text-white">{pendingSessionsCount}</p>
+                <p className="text-[9px] text-slate-400 font-bold uppercase">Pending Consents</p>
               </div>
             </div>
           </div>

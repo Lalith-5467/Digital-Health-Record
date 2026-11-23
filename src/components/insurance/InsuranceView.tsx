@@ -22,13 +22,6 @@ import type {
   PremiumPaymentRecord,
   InsuranceFilterState
 } from './insuranceData';
-import {
-  INITIAL_POLICIES,
-  INITIAL_CLAIMS,
-  INITIAL_DOCUMENTS,
-  INITIAL_FAMILY_COVERAGE,
-  INITIAL_PAYMENTS
-} from './insuranceData';
 import { PrimaryPolicyHeroCard } from './PrimaryPolicyHeroCard';
 import { CoverageOverviewSection } from './CoverageOverviewSection';
 import { CoverageDetailsModal } from './CoverageDetailsModal';
@@ -49,6 +42,7 @@ import { InsuranceFAQSection } from './InsuranceFAQSection';
 import { InsuranceFilterDrawer } from './InsuranceFilterDrawer';
 import { LiveClaimTimelineTracker } from './LiveClaimTimelineTracker';
 import { useInsuranceWorkflow } from '../../utils/insuranceWorkflowStorage';
+import { insuranceApi, reminderApi } from '../../services/dhrApis';
 
 interface UserProfile {
   name: string;
@@ -72,12 +66,12 @@ export const InsuranceView: React.FC<InsuranceViewProps> = ({
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'overview' | 'claims' | 'family' | 'documents'>('overview');
 
-  // MAIN STATE
-  const [policies, setPolicies] = useState<InsurancePolicy[]>(INITIAL_POLICIES);
-  const [claims, setClaims] = useState<InsuranceClaim[]>(INITIAL_CLAIMS);
-  const [documents, setDocuments] = useState<InsuranceDocument[]>(INITIAL_DOCUMENTS);
-  const [familyMembers, setFamilyMembers] = useState<FamilyMemberCoverage[]>(INITIAL_FAMILY_COVERAGE);
-  const [payments, setPayments] = useState<PremiumPaymentRecord[]>(INITIAL_PAYMENTS);
+  // MAIN STATE (Hydrated from MySQL)
+  const [policies, setPolicies] = useState<InsurancePolicy[]>([]);
+  const [claims, setClaims] = useState<InsuranceClaim[]>([]);
+  const [documents, setDocuments] = useState<InsuranceDocument[]>([]);
+  const [familyMembers, setFamilyMembers] = useState<FamilyMemberCoverage[]>([]);
+  const [payments, setPayments] = useState<PremiumPaymentRecord[]>([]);
 
   // SEARCH & FILTERS
   const [filterDrawerOpen, setFilterDrawerOpen] = useState(false);
@@ -99,39 +93,83 @@ export const InsuranceView: React.FC<InsuranceViewProps> = ({
   const [supportModalOpen, setSupportModalOpen] = useState(false);
   const [payModalOpen, setPayModalOpen] = useState(false);
 
-  const { records, submitPatientClaim } = useInsuranceWorkflow();
+  const { records, submitPatientClaim, refreshRecords } = useInsuranceWorkflow();
 
-  // Load from localStorage & sync with insurance workflow
+  const loadDbInsuranceDetails = async () => {
+    try {
+      const [polRes, docsRes, famRes, payRes] = await Promise.all([
+        insuranceApi.getPolicies().catch(() => null),
+        insuranceApi.getDocuments().catch(() => null),
+        insuranceApi.getFamilyMembers().catch(() => null),
+        insuranceApi.getPremiumPayments().catch(() => null),
+      ]);
+
+      if (polRes?.data && Array.isArray(polRes.data)) {
+        const mappedPols: InsurancePolicy[] = polRes.data.map((p: any, idx: number) => ({
+          id: p.id,
+          providerName: p.provider?.providerName || 'Health Insurance Desk',
+          planName: p.policyName || 'Comprehensive Health Shield',
+          policyNumber: p.policyNumber || p.insuranceId,
+          policyHolder: p.patient?.fullName || user?.name || 'Policy Holder',
+          policyType: 'Family Floater',
+          startDate: p.policyStartDate ? new Date(p.policyStartDate).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : '—',
+          expiryDate: p.policyEndDate ? new Date(p.policyEndDate).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : '—',
+          coverageAmount: Number(p.coverageAmount ?? 1000000),
+          usedAmount: Number(p.usedCoverage ?? 0),
+          remainingAmount: Number(p.remainingCoverage ?? p.coverageAmount ?? 1000000),
+          premiumAmount: 2450,
+          premiumFrequency: 'Monthly',
+          status: (p.policyStatus || 'Active') as any,
+          memberId: p.insuranceId || p.policyNumber,
+          isPrimary: idx === 0,
+        }));
+        setPolicies(mappedPols);
+      }
+
+      if (docsRes?.data && Array.isArray(docsRes.data)) {
+        setDocuments(
+          docsRes.data.map((d: any) => ({
+            id: d.id,
+            fileName: d.title,
+            category: (d.docType || 'Policy Document') as any,
+            dateAdded: d.uploadedAt ? new Date(d.uploadedAt).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : '—',
+            fileSize: d.fileSize || 'PDF',
+          }))
+        );
+      }
+
+      if (famRes?.data && Array.isArray(famRes.data)) {
+        setFamilyMembers(
+          famRes.data.map((m: any) => ({
+            id: m.id,
+            memberName: m.name,
+            relationship: (m.relationship || 'Spouse') as any,
+            status: (m.status || 'Covered') as any,
+            coverageLimit: 500000,
+            usedAmount: 0,
+          }))
+        );
+      }
+
+      if (payRes?.data && Array.isArray(payRes.data)) {
+        setPayments(
+          payRes.data.map((py: any) => ({
+            id: py.id,
+            monthYear: py.paidAt ? new Date(py.paidAt).toLocaleDateString('en-US', { month: 'short', year: 'numeric' }) : 'Paid',
+            amount: Number(py.amount ?? 0),
+            paymentDate: py.paidAt ? new Date(py.paidAt).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : '—',
+            status: (py.status || 'Paid') as any,
+            receiptNumber: py.transactionRef || py.id.slice(-8).toUpperCase(),
+          }))
+        );
+      }
+    } catch (e) {
+      console.error('Failed to load insurance details from MySQL:', e);
+    }
+  };
+
   useEffect(() => {
-    try {
-      const savedPolicies = localStorage.getItem('user_insurance_policies');
-      if (savedPolicies && savedPolicies !== 'undefined') {
-        const parsed = JSON.parse(savedPolicies);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          // Clean out invalid duplicates and align holder name
-          const valid = parsed
-            .filter((p: any) => p.planName && p.providerName)
-            .map((p: any) => ({ ...p, policyHolder: p.policyHolder || user?.name || 'Policy Holder' }));
-          if (valid.length > 0) {
-            setPolicies(valid);
-          }
-        }
-      }
-    } catch (e) {
-      console.error(e);
-    }
-
-    try {
-      const savedClaims = localStorage.getItem('user_insurance_claims');
-      if (savedClaims && savedClaims !== 'undefined') {
-        const parsed = JSON.parse(savedClaims);
-        if (Array.isArray(parsed)) {
-          setClaims(parsed);
-        }
-      }
-    } catch (e) {
-      console.error(e);
-    }
+    loadDbInsuranceDetails();
   }, []);
 
   const showToast = (msg: string) => {
@@ -139,43 +177,49 @@ export const InsuranceView: React.FC<InsuranceViewProps> = ({
     setTimeout(() => setToastMessage(null), 3000);
   };
 
-  const safePolicies = policies && policies.length > 0 ? policies : INITIAL_POLICIES;
-  const primaryPolicy = safePolicies.find((p) => p.isPrimary) || safePolicies[0] || INITIAL_POLICIES[0];
+  const safePolicies = policies;
+  const primaryPolicy: InsurancePolicy | null = safePolicies.find((p) => p.isPrimary) || safePolicies[0] || null;
+  const totalSumInsured = safePolicies.reduce((sum, p) => sum + (Number(p.coverageAmount) || 0), 0);
 
-  const handleAddPolicy = (newPol: InsurancePolicy) => {
-    const updated = [newPol, ...policies];
-    setPolicies(updated);
-    localStorage.setItem('user_insurance_policies', JSON.stringify(updated));
-    showToast(`✓ Added policy ${newPol.planName} (${newPol.providerName})`);
+  const handleAddPolicy = async (newPol: InsurancePolicy) => {
+    try {
+      await insuranceApi.createPolicy({
+        policyNumber: newPol.policyNumber,
+        policyName: newPol.planName,
+        coverageAmount: newPol.coverageAmount,
+        usedCoverage: newPol.usedAmount || 0,
+        policyStatus: newPol.status || 'Active',
+      });
+      await loadDbInsuranceDetails();
+      await refreshRecords();
+      showToast(`✓ Policy ${newPol.planName} saved to MySQL`);
+    } catch (err: any) {
+      showToast(err?.message || 'Failed to save policy');
+    }
   };
 
-  const handleSavePolicy = (updatedPol: InsurancePolicy) => {
-    const updated = policies.map((p) => (p.id === updatedPol.id ? updatedPol : p));
-    setPolicies(updated);
-    localStorage.setItem('user_insurance_policies', JSON.stringify(updated));
-    showToast(`✓ Updated policy details for ${updatedPol.planName}`);
+  const handleSavePolicy = async (updatedPol: InsurancePolicy) => {
+    try {
+      await insuranceApi.updatePolicy(updatedPol.id, {
+        policyName: updatedPol.planName,
+        coverageAmount: updatedPol.coverageAmount,
+        usedCoverage: updatedPol.usedAmount,
+        policyStatus: updatedPol.status,
+      });
+      await loadDbInsuranceDetails();
+      await refreshRecords();
+      showToast(`✓ Updated policy details for ${updatedPol.planName}`);
+    } catch (err: any) {
+      showToast(err?.message || 'Failed to update policy');
+    }
   };
 
   const patientDisplayName = React.useMemo(() => {
     if (user?.name && user.name.trim() && user.name.toLowerCase() !== 'patient') {
       return user.name.trim();
     }
-    try {
-      const custom = localStorage.getItem('patient_user_name');
-      if (custom && custom.trim()) return custom.trim();
-      const prof = localStorage.getItem('user_profile_data');
-      if (prof) {
-        const parsed = JSON.parse(prof);
-        if (parsed?.name && parsed.name.trim()) return parsed.name.trim();
-      }
-      const appUser = localStorage.getItem('app_user');
-      if (appUser) {
-        const parsed = JSON.parse(appUser);
-        if (parsed?.name && parsed.name.trim()) return parsed.name.trim();
-      }
-    } catch {}
-    if (primaryPolicy?.policyHolder && primaryPolicy.policyHolder !== 'Ragul Kumar') {
-      return primaryPolicy.policyHolder;
+    if (primaryPolicy?.policyHolder && primaryPolicy.policyHolder.trim()) {
+      return primaryPolicy.policyHolder.trim();
     }
     return user?.name || 'Patient';
   }, [user?.name, primaryPolicy?.policyHolder]);
@@ -256,52 +300,167 @@ export const InsuranceView: React.FC<InsuranceViewProps> = ({
     window.dispatchEvent(new PopStateEvent('popstate'));
   };
 
-  const handleAddClaim = (newClaim: InsuranceClaim) => {
-    const cardId = primaryPolicy?.policyNumber && primaryPolicy.policyNumber !== 'HLT-XXXX-4582'
-      ? primaryPolicy.policyNumber
-      : (primaryPolicy?.id && primaryPolicy.id !== 'POL-01' ? primaryPolicy.id : `INS-MC-${new Date().getFullYear()}-${Math.floor(10000 + Math.random() * 90000)}`);
-    const patientName = patientDisplayName;
-
-    // 1. Submit to shared insurance workflow so insurance incharge sees it immediately
-    submitPatientClaim({
-      claimId: newClaim.claimNumber || newClaim.id,
-      insuranceId: cardId,
-      patientName,
-      hospital: newClaim.hospitalName,
-      treatment: newClaim.treatmentType,
-      submittedAmount: newClaim.claimedAmount,
-      attachedFiles: newClaim.documentsAttached
-    });
-
-    // 2. Update local state
-    const updated = [newClaim, ...claims];
-    setClaims(updated);
-    localStorage.setItem('user_insurance_claims', JSON.stringify(updated));
-    showToast(`✓ Claim ${newClaim.claimNumber} dispatched to Insurance Portal (Card ID: ${cardId})`);
+  const handleAddClaim = async (newClaim: InsuranceClaim) => {
+    const cardId = primaryPolicy?.policyNumber || primaryPolicy?.id || `INS-MC-${new Date().getFullYear()}`;
+    try {
+      await submitPatientClaim({
+        claimId: newClaim.claimNumber || newClaim.id,
+        insuranceId: cardId,
+        patientName: patientDisplayName,
+        hospital: newClaim.hospitalName,
+        treatment: newClaim.treatmentType,
+        submittedAmount: newClaim.claimedAmount,
+        attachedFiles: newClaim.documentsAttached,
+      });
+      await loadDbInsuranceDetails();
+      showToast(`✓ Claim ${newClaim.claimNumber} saved to database & dispatched to Insurance Portal`);
+    } catch (err: any) {
+      showToast(err?.message || 'Failed to submit claim');
+    }
   };
 
-  const handleAddFamilyMember = (newMem: FamilyMemberCoverage) => {
-    const updated = [...familyMembers, newMem];
-    setFamilyMembers(updated);
-    showToast(`✓ Added ${newMem.memberName} to Family Floater Policy`);
+  const handleAddFamilyMember = async (newMem: FamilyMemberCoverage) => {
+    if (!policies[0]?.id) {
+      showToast('Please add an insurance policy first.');
+      return;
+    }
+    try {
+      await insuranceApi.addFamilyMember({
+        policyId: policies[0].id,
+        name: newMem.memberName,
+        relationship: newMem.relationship,
+      });
+      await loadDbInsuranceDetails();
+      showToast(`✓ Added ${newMem.memberName} to Family Floater Policy`);
+    } catch (err: any) {
+      showToast(err?.message || 'Failed to add family member');
+    }
   };
 
   const handlePayPremium = () => {
     setPayModalOpen(true);
   };
 
-  const confirmPayPremium = () => {
-    const newPay: PremiumPaymentRecord = {
-      id: `PAY-${Date.now().toString().slice(-4)}`,
-      monthYear: 'Sep 2026',
-      amount: primaryPolicy ? primaryPolicy.premiumAmount : 2450,
-      paymentDate: '24 Aug 2026',
-      status: 'Paid',
-      receiptNumber: `REC-${Math.floor(1000 + Math.random() * 9000)}-SEP`
-    };
-    setPayments([newPay, ...payments]);
-    setPayModalOpen(false);
-    showToast(`✓ Payment of ₹${newPay.amount} successful for Sep 2026`);
+  const confirmPayPremium = async () => {
+    if (!primaryPolicy?.id) {
+      setPayModalOpen(false);
+      showToast('Please register a policy before recording a premium payment.');
+      return;
+    }
+    try {
+      const amount = primaryPolicy ? primaryPolicy.premiumAmount : 2450;
+      await insuranceApi.recordPremiumPayment({
+        policyId: primaryPolicy.id,
+        amount,
+        paymentMethod: 'UPI',
+      });
+      await loadDbInsuranceDetails();
+      setPayModalOpen(false);
+      showToast(`✓ Premium payment of ₹${amount} saved to database`);
+    } catch (err: any) {
+      showToast(err?.message || 'Failed to record premium payment');
+    }
+  };
+
+  const handleUploadDocument = async (doc: InsuranceDocument) => {
+    if (!primaryPolicy?.id) {
+      showToast('Please link or add an insurance policy before uploading documents.');
+      return;
+    }
+    try {
+      await insuranceApi.addDocument({
+        policyId: primaryPolicy.id,
+        title: doc.fileName,
+        docType: doc.category,
+        fileSize: doc.fileSize,
+      });
+      await loadDbInsuranceDetails();
+      showToast(`✓ Uploaded & saved ${doc.fileName} to database`);
+    } catch (err: any) {
+      showToast(err?.message || 'Failed to upload document');
+    }
+  };
+
+  const handleDeleteDocument = async (id: string) => {
+    try {
+      await insuranceApi.deleteDocument(id);
+      await loadDbInsuranceDetails();
+      showToast('✓ Document removed from database');
+    } catch (err: any) {
+      showToast(err?.message || 'Failed to delete document');
+    }
+  };
+
+  const handleRenewPolicy = async () => {
+    if (!primaryPolicy?.id) {
+      showToast('Please add a policy first.');
+      return;
+    }
+    try {
+      const nextYear = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString();
+      await insuranceApi.updatePolicy(primaryPolicy.id, {
+        policyStatus: 'Active',
+        policyEndDate: nextYear,
+      });
+      await loadDbInsuranceDetails();
+      await refreshRecords();
+      showToast(`✓ Policy ${primaryPolicy.planName} renewed for 1 year`);
+    } catch (err: any) {
+      showToast(err?.message || 'Failed to renew policy');
+    }
+  };
+
+  const handleSetRenewalReminder = async () => {
+    if (!primaryPolicy) return;
+    try {
+      await reminderApi.createReminder({
+        title: `Renew Insurance Policy: ${primaryPolicy.planName}`,
+        type: 'INSURANCE',
+        scheduledTime: '09:00',
+        frequency: 'Once',
+        notes: `Policy #${primaryPolicy.policyNumber} expires on ${primaryPolicy.expiryDate}`,
+      });
+      showToast('✓ Policy renewal reminder saved');
+    } catch (err: any) {
+      showToast(err?.message || 'Failed to create renewal reminder');
+    }
+  };
+
+  const handleSelectMarketplacePlan = async (plan: any) => {
+    try {
+      await insuranceApi.createPolicy({
+        policyName: plan.name,
+        coverageAmount: Number(plan.coverageAmount || 500000),
+        policyStatus: 'Active',
+      });
+      await loadDbInsuranceDetails();
+      await refreshRecords();
+      setPlanExplorerOpen(false);
+      showToast(`✓ Linked plan ${plan.name} to your account`);
+    } catch (err: any) {
+      showToast(err?.message || 'Failed to add selected plan');
+    }
+  };
+
+  const handleSubmitSupportTicket = async (topic: string, message: string) => {
+    if (!primaryPolicy?.id) {
+      showToast('Please add an insurance policy before submitting a support/pre-auth request.');
+      return;
+    }
+    try {
+      await insuranceApi.createPreAuthorization({
+        policyId: primaryPolicy.id,
+        hospitalName: 'Insurance Support Desk',
+        procedure: topic,
+        diagnosis: message,
+        requestType: 'Support',
+        estimatedCost: 0,
+        requestedAmount: 0,
+      });
+      showToast(`✓ Support request submitted: ${topic}`);
+    } catch (err: any) {
+      showToast(err?.message || 'Failed to submit support request');
+    }
   };
 
   const tabList = [
@@ -379,7 +538,7 @@ export const InsuranceView: React.FC<InsuranceViewProps> = ({
           <div>
             <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider block">{t('insurance.sum_insured', 'Total Sum Insured')}</span>
             <strong className="text-xl font-black text-blue-700 dark:text-blue-400">
-              ₹{((primaryPolicy?.coverageAmount || 1000000) / 100000).toFixed(0)} Lakhs
+              {totalSumInsured > 0 ? `₹${(totalSumInsured / 100000).toFixed(1)} Lakhs` : '₹0'}
             </strong>
           </div>
         </div>
@@ -446,83 +605,119 @@ export const InsuranceView: React.FC<InsuranceViewProps> = ({
       {activeTab === 'overview' && (
         <div className="space-y-6">
           {/* LIVE CLAIM REAL-TIME TIMELINE TRACKER */}
-          <LiveClaimTimelineTracker 
-            onOpenNewClaim={() => setNewClaimOpen(true)}
-            patientInsuranceId="INS-MC-2026-10245"
-            userName={user?.name || primaryPolicy?.policyHolder || 'Ragul Kumar'}
-          />
-
-          {/* Primary Hero Card */}
           {primaryPolicy && (
-            <PrimaryPolicyHeroCard
-              policy={primaryPolicy}
-              onOpenDigitalCard={() => setDigitalCardOpen(true)}
-              onOpenEditPolicy={(p) => setEditPolicyTarget(p)}
-              onOpenCoverageDetails={() => setCoverageDetailsOpen(true)}
+            <LiveClaimTimelineTracker 
+              onOpenNewClaim={() => setNewClaimOpen(true)}
+              patientInsuranceId={primaryPolicy.memberId || primaryPolicy.policyNumber || primaryPolicy.id}
+              userName={patientDisplayName}
             />
           )}
 
-          {/* Coverage Overview with Progress */}
-          {primaryPolicy && (
-            <CoverageOverviewSection
-              policy={primaryPolicy}
-              onOpenDetails={() => setCoverageDetailsOpen(true)}
-            />
-          )}
-
-          {/* My Policies List */}
-          <div className="bg-white dark:bg-slate-900/90 border border-slate-200/90 dark:border-slate-800 rounded-3xl p-6 sm:p-8 space-y-4 shadow-xl text-xs">
-            <div className="flex justify-between items-center border-b border-slate-200 dark:border-slate-800 pb-3">
-              <h3 className="text-base font-extrabold text-slate-900 dark:text-white">
-                All Linked Policies ({safePolicies.length})
-              </h3>
-              <button
-                onClick={() => setPlanExplorerOpen(true)}
-                className="px-3.5 py-1.5 rounded-xl bg-teal-50 dark:bg-slate-800 hover:bg-teal-100 text-[#00a896] dark:text-cyan-300 font-extrabold border border-teal-200/60 dark:border-slate-700 cursor-pointer shadow-xs"
-              >
-                Explore Plans Marketplace →
-              </button>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {safePolicies.map((pol) => (
-                <div
-                  key={pol.id}
-                  className="p-4 bg-slate-50 dark:bg-slate-950 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-3 shadow-xs hover:border-teal-500/30 transition-colors"
+          {/* EMPTY STATE WHEN NO POLICIES EXIST */}
+          {safePolicies.length === 0 ? (
+            <div className="bg-white dark:bg-slate-900/90 border border-slate-200/90 dark:border-slate-800 rounded-3xl p-10 text-center space-y-4 shadow-xl">
+              <div className="w-16 h-16 rounded-2xl bg-teal-500/10 text-[#00a896] flex items-center justify-center mx-auto border border-teal-500/20">
+                <ShieldCheck className="w-8 h-8" />
+              </div>
+              <div className="space-y-1 max-w-md mx-auto">
+                <h3 className="text-lg font-extrabold text-slate-900 dark:text-white">
+                  No insurance policies linked yet
+                </h3>
+                <p className="text-xs text-slate-500 dark:text-slate-400 font-medium">
+                  Link your active health insurance policy or explore coverage plans to enable cashless claims, digital health cards, and family floater management.
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center justify-center gap-3 pt-2">
+                <button
+                  onClick={() => setAddPolicyOpen(true)}
+                  className="px-5 py-2.5 rounded-xl font-extrabold text-xs text-white bg-[#00a896] hover:bg-[#00897b] transition-all shadow-md flex items-center gap-1.5 cursor-pointer"
                 >
-                  <div className="flex justify-between items-start">
-                    <div>
-                      <span className="text-[10px] font-extrabold text-teal-700 dark:text-teal-400 uppercase font-mono">
-                        {pol.policyType}
-                      </span>
-                      <h4 className="font-extrabold text-slate-900 dark:text-white text-sm mt-0.5">{pol.planName}</h4>
-                      <p className="text-slate-500 dark:text-slate-400 text-xs font-medium">{pol.providerName}</p>
-                    </div>
-                    <span className="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30 font-mono">
-                      {pol.status}
-                    </span>
-                  </div>
-
-                  <div className="flex justify-between font-mono text-[11px] pt-2 border-t border-slate-200 dark:border-slate-800">
-                    <span className="text-slate-500 dark:text-slate-400 font-medium">
-                      Coverage: <strong className="text-slate-900 dark:text-white">₹{pol.coverageAmount.toLocaleString()}</strong>
-                    </span>
-                    <span className="font-extrabold text-slate-900 dark:text-white">
-                      ₹{pol.premiumAmount}{pol.premiumFrequency}
-                    </span>
-                  </div>
-                </div>
-              ))}
+                  <Plus className="w-4 h-4" />
+                  <span>Add Policy</span>
+                </button>
+                <button
+                  onClick={() => setPlanExplorerOpen(true)}
+                  className="px-5 py-2.5 rounded-xl font-extrabold text-xs text-[#00a896] bg-teal-50 dark:bg-slate-800 hover:bg-teal-100 border border-teal-200/60 dark:border-slate-700 transition-all cursor-pointer"
+                >
+                  Explore Plans Marketplace →
+                </button>
+              </div>
             </div>
-          </div>
+          ) : (
+            <>
+              {/* Primary Hero Card */}
+              {primaryPolicy && (
+                <PrimaryPolicyHeroCard
+                  policy={primaryPolicy}
+                  onOpenDigitalCard={() => setDigitalCardOpen(true)}
+                  onOpenEditPolicy={(p) => setEditPolicyTarget(p)}
+                  onOpenCoverageDetails={() => setCoverageDetailsOpen(true)}
+                />
+              )}
 
-          {/* Renewal Alert Card */}
-          {primaryPolicy && (
-            <PolicyRenewalCard
-              policy={primaryPolicy}
-              onRenewClick={() => showToast('✓ Demo policy renewal request submitted')}
-              onSetReminderClick={() => showToast('✓ Renewal reminder set')}
-            />
+              {/* Coverage Overview with Progress */}
+              {primaryPolicy && (
+                <CoverageOverviewSection
+                  policy={primaryPolicy}
+                  onOpenDetails={() => setCoverageDetailsOpen(true)}
+                />
+              )}
+
+              {/* My Policies List */}
+              <div className="bg-white dark:bg-slate-900/90 border border-slate-200/90 dark:border-slate-800 rounded-3xl p-6 sm:p-8 space-y-4 shadow-xl text-xs">
+                <div className="flex justify-between items-center border-b border-slate-200 dark:border-slate-800 pb-3">
+                  <h3 className="text-base font-extrabold text-slate-900 dark:text-white">
+                    All Linked Policies ({safePolicies.length})
+                  </h3>
+                  <button
+                    onClick={() => setPlanExplorerOpen(true)}
+                    className="px-3.5 py-1.5 rounded-xl bg-teal-50 dark:bg-slate-800 hover:bg-teal-100 text-[#00a896] dark:text-cyan-300 font-extrabold border border-teal-200/60 dark:border-slate-700 cursor-pointer shadow-xs"
+                  >
+                    Explore Plans Marketplace →
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {safePolicies.map((pol) => (
+                    <div
+                      key={pol.id}
+                      className="p-4 bg-slate-50 dark:bg-slate-950 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-3 shadow-xs hover:border-teal-500/30 transition-colors"
+                    >
+                      <div className="flex justify-between items-start">
+                        <div>
+                          <span className="text-[10px] font-extrabold text-teal-700 dark:text-teal-400 uppercase font-mono">
+                            {pol.policyType}
+                          </span>
+                          <h4 className="font-extrabold text-slate-900 dark:text-white text-sm mt-0.5">{pol.planName}</h4>
+                          <p className="text-slate-500 dark:text-slate-400 text-xs font-medium">{pol.providerName}</p>
+                        </div>
+                        <span className="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30 font-mono">
+                          {pol.status}
+                        </span>
+                      </div>
+
+                      <div className="flex justify-between font-mono text-[11px] pt-2 border-t border-slate-200 dark:border-slate-800">
+                        <span className="text-slate-500 dark:text-slate-400 font-medium">
+                          Coverage: <strong className="text-slate-900 dark:text-white">₹{pol.coverageAmount.toLocaleString()}</strong>
+                        </span>
+                        <span className="font-extrabold text-slate-900 dark:text-white">
+                          ₹{pol.premiumAmount}/{pol.premiumFrequency}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Renewal Alert Card */}
+              {primaryPolicy && (
+                <PolicyRenewalCard
+                  policy={primaryPolicy}
+                  onRenewClick={handleRenewPolicy}
+                  onSetReminderClick={handleSetRenewalReminder}
+                />
+              )}
+            </>
           )}
         </div>
       )}
@@ -531,11 +726,13 @@ export const InsuranceView: React.FC<InsuranceViewProps> = ({
       {activeTab === 'claims' && (
         <div className="space-y-6">
           {/* LIVE CLAIM REAL-TIME TIMELINE TRACKER */}
-          <LiveClaimTimelineTracker 
-            onOpenNewClaim={() => setNewClaimOpen(true)}
-            patientInsuranceId="INS-MC-2026-10245"
-            userName={user?.name || primaryPolicy?.policyHolder || 'Ragul Kumar'}
-          />
+          {primaryPolicy && (
+            <LiveClaimTimelineTracker 
+              onOpenNewClaim={() => setNewClaimOpen(true)}
+              patientInsuranceId={primaryPolicy.memberId || primaryPolicy.policyNumber || primaryPolicy.id}
+              userName={patientDisplayName}
+            />
+          )}
 
           <ClaimsOverviewSection
             claims={claims}
@@ -565,14 +762,8 @@ export const InsuranceView: React.FC<InsuranceViewProps> = ({
         <div className="space-y-6">
           <InsuranceDocumentsSection
             documents={documents}
-            onUploadDocument={(doc) => {
-              setDocuments([doc, ...documents]);
-              showToast(`✓ Uploaded ${doc.fileName}`);
-            }}
-            onDeleteDocument={(id) => {
-              setDocuments(documents.filter((d) => d.id !== id));
-              showToast('✓ Document deleted');
-            }}
+            onUploadDocument={handleUploadDocument}
+            onDeleteDocument={handleDeleteDocument}
           />
 
           <InsuranceFAQSection />
@@ -612,7 +803,7 @@ export const InsuranceView: React.FC<InsuranceViewProps> = ({
         onAddClaim={handleAddClaim}
         onOpenInsurancePortal={handleOpenInsurancePortal}
         patientName={patientDisplayName}
-        insuranceId={primaryPolicy?.policyNumber === 'HLT-XXXX-4582' ? 'INS-MC-2026-10245' : (primaryPolicy?.id || 'INS-MC-2026-10245')}
+        insuranceId={primaryPolicy?.memberId || primaryPolicy?.policyNumber || primaryPolicy?.id || ''}
       />
 
       <DigitalHealthCardModal
@@ -634,13 +825,13 @@ export const InsuranceView: React.FC<InsuranceViewProps> = ({
       <PlanExplorerModal
         isOpen={planExplorerOpen}
         onClose={() => setPlanExplorerOpen(false)}
-        onSelectPlan={(plan) => showToast(`Selected ${plan.name}`)}
+        onSelectPlan={handleSelectMarketplacePlan}
       />
 
       <InsuranceSupportModal
         isOpen={supportModalOpen}
         onClose={() => setSupportModalOpen(false)}
-        onSubmitSupport={(t, _m) => showToast(`✓ Support ticket submitted: ${t}`)}
+        onSubmitSupport={handleSubmitSupportTicket}
       />
 
       <InsuranceFilterDrawer
@@ -665,8 +856,8 @@ export const InsuranceView: React.FC<InsuranceViewProps> = ({
                 <strong className="text-emerald-600 dark:text-emerald-400 text-sm font-extrabold">₹{primaryPolicy.premiumAmount}</strong>
               </div>
               <div className="flex justify-between">
-                <span className="text-slate-500 dark:text-slate-400 font-sans">Due Date:</span>
-                <strong className="text-amber-600 dark:text-amber-300">01 Sep 2026</strong>
+                <span className="text-slate-500 dark:text-slate-400 font-sans">Policy Valid Until:</span>
+                <strong className="text-amber-600 dark:text-amber-300">{primaryPolicy.expiryDate}</strong>
               </div>
             </div>
             <div className="pt-3 border-t border-slate-200 dark:border-slate-800 flex justify-between gap-3 font-sans">

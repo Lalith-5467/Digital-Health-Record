@@ -1,4 +1,5 @@
 import { Request, Response } from 'express';
+import { prisma } from '../config/prisma';
 import { searchHealthShorts } from '../services/healthShorts.service';
 
 /**
@@ -149,5 +150,97 @@ export const getHealthShortsFeedController = async (req: Request, res: Response)
       message: 'Health Shorts are temporarily unavailable. Please try again.',
       videos: []
     });
+  }
+};
+
+export const getVideoInteractionController = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const videoId = String(req.params.videoId);
+    const userId = req.user!.id;
+    const [mine, totalLikes, totalSaves, comments] = await Promise.all([
+      prisma.healthVideoInteraction.findUnique({ where: { userId_videoId: { userId, videoId } } }),
+      prisma.healthVideoInteraction.count({ where: { videoId, isLiked: true } }),
+      prisma.healthVideoInteraction.count({ where: { videoId, isSaved: true } }),
+      prisma.healthVideoComment.findMany({
+        where: { videoId },
+        include: { user: { select: { id: true, fullName: true, email: true, role: true } } },
+        orderBy: { createdAt: 'desc' },
+        take: 50,
+      }),
+    ]);
+    res.status(200).json({
+      success: true,
+      data: {
+        isLiked: mine?.isLiked ?? false,
+        isSaved: mine?.isSaved ?? false,
+        watchSeconds: mine?.watchSeconds ?? 0,
+        totalLikes,
+        totalSaves,
+        comments,
+      },
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message || 'Failed to fetch video interactions' });
+  }
+};
+
+export const upsertVideoInteractionController = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const videoId = String(req.params.videoId);
+    const userId = req.user!.id;
+    const { isLiked, isSaved, watchSeconds } = req.body;
+
+    const saved = await prisma.healthVideoInteraction.upsert({
+      where: { userId_videoId: { userId, videoId } },
+      create: {
+        userId,
+        videoId,
+        isLiked: Boolean(isLiked),
+        isSaved: Boolean(isSaved),
+        watchSeconds: Number(watchSeconds ?? 0),
+      },
+      update: {
+        ...(isLiked !== undefined ? { isLiked: Boolean(isLiked) } : {}),
+        ...(isSaved !== undefined ? { isSaved: Boolean(isSaved) } : {}),
+        ...(watchSeconds !== undefined ? { watchSeconds: Number(watchSeconds) } : {}),
+      },
+    });
+    res.status(200).json({ success: true, data: saved });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message || 'Failed to persist video interaction' });
+  }
+};
+
+export const getVideoCommentsController = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const videoId = String(req.params.videoId);
+    const comments = await prisma.healthVideoComment.findMany({
+      where: { videoId },
+      include: { user: { select: { id: true, fullName: true, email: true, role: true } } },
+      orderBy: { createdAt: 'desc' },
+      take: 100,
+    });
+    res.status(200).json({ success: true, data: comments });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message || 'Failed to load comments' });
+  }
+};
+
+export const postVideoCommentController = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const videoId = String(req.params.videoId);
+    const userId = req.user!.id;
+    const { content } = req.body;
+    if (!content || !String(content).trim()) {
+      res.status(400).json({ success: false, message: 'Comment content is required' });
+      return;
+    }
+    const created = await prisma.healthVideoComment.create({
+      data: { userId, videoId, content: String(content).trim() },
+      include: { user: { select: { id: true, fullName: true, email: true, role: true } } },
+    });
+    res.status(201).json({ success: true, data: created });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message || 'Failed to save comment' });
   }
 };

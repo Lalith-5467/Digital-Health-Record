@@ -14,6 +14,10 @@ import {
   getIceServers,
   getAvailableDoctors,
   getLiveKitToken,
+  getConsultationMessages,
+  postConsultationMessage,
+  getConsultationSharedDocs,
+  shareConsultationDocument,
 } from '../controllers/videoConsultation.controller';
 
 const router = Router();
@@ -56,5 +60,9 @@ router.patch('/:id/end', endVideoConsultation);
 
 // 9. Get specific consultation details
 router.get('/:id', getConsultationById);
+router.get('/:id/messages', getConsultationMessages);
+router.post('/:id/messages', postConsultationMessage);
+router.get('/:id/documents', getConsultationSharedDocs);
+router.post('/:id/documents', shareConsultationDocument);
 
 export default router;

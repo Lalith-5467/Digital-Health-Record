@@ -13,6 +13,9 @@ export class ClinicalService {
         user: { select: { email: true, phoneNumber: true, abhaId: true } },
         vitals: { orderBy: { recordedAt: 'desc' }, take: 10 },
         medicalRecords: { orderBy: { recordDate: 'desc' } },
+        allergies: true,
+        conditions: true,
+        patientMedications: { where: { status: 'active' } },
         prescriptions: {
           include: { items: true },
           orderBy: { issuedAt: 'desc' },
@@ -25,12 +28,12 @@ export class ClinicalService {
     return patients.map((p) => {
       const age = p.dateOfBirth
         ? `${Math.floor((Date.now() - new Date(p.dateOfBirth).getTime()) / (365.25 * 24 * 60 * 60 * 1000))} Years`
-        : '34 Years';
+        : 'Not Recorded';
 
       const latestAppt = p.appointments[0];
       const appointmentTime = latestAppt
         ? `${new Date(latestAppt.appointmentDate).toLocaleDateString()} • ${latestAppt.slotTime}`
-        : 'Today • 10:30 AM';
+        : 'No Upcoming Appointment';
 
       const meds = p.prescriptions.flatMap((rx) =>
         rx.items.map((item, idx) => ({
@@ -38,8 +41,8 @@ export class ClinicalService {
           medicine: item.medicineName,
           dose: item.dosage,
           frequency: item.frequency,
-          adherencePercent: 95,
-          status: 'Taken as scheduled',
+          adherencePercent: null,
+          status: rx.status,
           isAntibiotic: item.medicineName.toLowerCase().includes('amoxicillin') || item.medicineName.toLowerCase().includes('azithromycin'),
           instructions: item.instructions || 'Take as directed',
         }))
@@ -47,10 +50,10 @@ export class ClinicalService {
 
       const vitalsHistory = p.vitals.map((v) => ({
         date: new Date(v.recordedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
-        bp: v.systolicBp && v.diastolicBp ? `${v.systolicBp}/${v.diastolicBp}` : '120/80',
-        hr: v.heartRate ? String(v.heartRate) : '74',
-        temp: v.temperature ? String(v.temperature) : '98.6',
-        spo2: v.oxygenSaturation ? String(v.oxygenSaturation) : '99',
+        bp: v.systolicBp && v.diastolicBp ? `${v.systolicBp}/${v.diastolicBp}` : 'Not Recorded',
+        hr: v.heartRate ? String(v.heartRate) : 'Not Recorded',
+        temp: v.temperature ? String(v.temperature) : 'Not Recorded',
+        spo2: v.oxygenSaturation ? String(v.oxygenSaturation) : 'Not Recorded',
       }));
 
       const labReports = p.medicalRecords
@@ -59,70 +62,80 @@ export class ClinicalService {
           id: r.id,
           testName: r.title,
           date: new Date(r.recordDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
-          value: r.notes?.slice(0, 40) || 'Normal Range',
-          normalRange: 'Optimal',
+          value: r.notes?.slice(0, 40) || r.status || 'Recorded',
+          normalRange: 'See Report',
           status: r.status === 'Critical' ? 'Critical' : 'Normal',
-          labName: r.hospital || 'Apollo Diagnostics',
+          labName: r.hospital || 'Diagnostic Lab',
         }));
 
       const timeline = [
-        {
-          id: `t-${p.id}-1`,
-          date: 'Aug 28, 2026',
-          time: '10:30 AM',
-          title: 'Consultation Review & Prescription Confirmed',
-          actor: 'Dr. Rajesh Varma',
-          type: 'consultation',
-          details: 'Evaluated patient. Advised continued adherence.',
-        },
-        {
-          id: `t-${p.id}-2`,
-          date: 'Today',
-          time: '09:00 AM',
-          title: 'Live Telemetry Sync',
-          actor: 'ABDM Health Locker',
+        ...p.medicalRecords.slice(0, 5).map((r) => ({
+          id: `rec-${r.id}`,
+          date: new Date(r.recordDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
+          time: new Date(r.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          title: r.title,
+          actor: r.hospital || 'Clinical Record',
+          type: r.type === 'LAB_REPORT' ? 'lab' : 'consultation',
+          details: r.notes || `${r.type} recorded.`,
+        })),
+        ...p.vitals.slice(0, 3).map((v) => ({
+          id: `vit-${v.id}`,
+          date: new Date(v.recordedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
+          time: new Date(v.recordedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          title: 'Vitals Recorded',
+          actor: 'Vital Telemetry',
           type: 'vitals',
-          details: vitalsHistory[0] ? `BP ${vitalsHistory[0].bp} & SpO2 ${vitalsHistory[0].spo2}% logged.` : 'Vitals logged.',
-        },
+          details: [
+            v.systolicBp && v.diastolicBp ? `BP ${v.systolicBp}/${v.diastolicBp}` : '',
+            v.heartRate ? `HR ${v.heartRate} bpm` : '',
+            v.oxygenSaturation ? `SpO2 ${v.oxygenSaturation}%` : '',
+          ].filter(Boolean).join(' • ') || 'Vitals logged.',
+        })),
       ];
+
+      const realAllergies = (p.allergies || []).map((a) => a.allergen);
+      const realDiagnoses = [
+        ...(p.conditions || []).map((c) => c.name),
+        ...p.prescriptions.map((rx) => rx.diagnosis).filter(Boolean),
+      ];
+      const activeMeds = meds.length > 0
+        ? meds
+        : (p.patientMedications || []).map((m) => ({
+            id: m.id,
+            medicine: m.name,
+            dose: m.dosage,
+            frequency: m.frequency,
+            adherencePercent: m.totalDoses && m.totalDoses > 0
+              ? Math.round(((m.totalDoses - (m.remainingDoses ?? 0)) / m.totalDoses) * 100)
+              : null,
+            status: m.status,
+            isAntibiotic: m.name.toLowerCase().includes('amoxicillin') || m.name.toLowerCase().includes('azithromycin'),
+            instructions: m.notes || 'Take as directed',
+          }));
 
       return {
         id: p.id,
         patientId: p.user.abhaId || `MC-${p.id.slice(-5)}`,
         name: p.fullName,
         age,
-        gender: p.gender || 'Male',
-        bloodGroup: p.bloodGroup || 'O+',
-        phone: p.user.phoneNumber || '+91 98765 43210',
+        gender: p.gender || 'Not Specified',
+        bloodGroup: p.bloodGroup || 'Not Recorded',
+        phone: p.user.phoneNumber || '',
         appointmentTime,
-        chiefComplaint: p.prescriptions[0]?.diagnosis || 'Routine Health Review & Telemetry Monitoring',
-        allergies: ['Penicillin'],
-        diagnosis: [p.prescriptions[0]?.diagnosis || 'General Clinical Recovery'],
-        medications: meds.length > 0 ? meds : [
-          {
-            id: 'm1',
-            medicine: 'Amoxicillin & Clavulanate',
-            dose: '625 mg',
-            frequency: 'Twice daily after food',
-            adherencePercent: 90,
-            status: 'Taken as scheduled',
-            isAntibiotic: true,
-            instructions: 'Complete full course.',
-          },
-        ],
-        vitalsHistory: vitalsHistory.length > 0 ? vitalsHistory : [
-          { date: 'Aug 20', bp: '122/82', hr: '76', temp: '98.6', spo2: '99' },
-          { date: 'Today', bp: '120/80', hr: '74', temp: '98.6', spo2: '99' },
-        ],
+        chiefComplaint: p.prescriptions[0]?.diagnosis || (p.conditions?.[0]?.name) || 'Routine Health Review',
+        allergies: realAllergies,
+        diagnosis: Array.from(new Set(realDiagnoses)),
+        medications: activeMeds,
+        vitalsHistory,
         labReports,
         timeline,
-        clinicalNotes: 'Patient is clinically stable. Medication compliance is high.',
+        clinicalNotes: p.criticalMedicalNotes || '',
       };
     });
   }
 
   private static formatCareRequest(c: any) {
-    let patientAge = '30 Years';
+    let patientAge = 'Not Recorded';
     if (c.patient?.dateOfBirth) {
       const birth = new Date(c.patient.dateOfBirth);
       const now = new Date();
@@ -135,12 +148,21 @@ export class ClinicalService {
     }
 
     let parsedNotes: any = {};
-    if (c.notes) {
+    const rawMetadata = c.metadataJson || c.notes;
+    if (rawMetadata) {
       try {
-        parsedNotes = JSON.parse(c.notes);
+        parsedNotes = JSON.parse(rawMetadata);
       } catch {
-        parsedNotes = { textNotes: c.notes };
+        parsedNotes = { textNotes: rawMetadata };
       }
+    }
+
+    let persistedChecklist: any[] | null = null;
+    if (c.checklistJson) {
+      try {
+        const parsed = JSON.parse(c.checklistJson);
+        if (Array.isArray(parsed)) persistedChecklist = parsed;
+      } catch {}
     }
 
     const patientName = c.patient?.fullName || c.patient?.user?.fullName || 'Patient information unavailable';
@@ -209,23 +231,26 @@ export class ClinicalService {
       createdAt: c.createdAt.getTime(),
       nurseId: c.nurseId,
       nurseName: c.nurse?.fullName || (c.status === 'Accepted' || c.status === 'Scheduled' || c.status === 'On the Way' || c.status === 'Arrived' || c.status === 'Care in Progress' || c.status === 'Completed' ? (c.nurse?.fullName || 'Assigned RN') : 'Pending Nurse Assignment'),
-      otpPin: c.otpPin || '5928',
-      etaMinutes: c.etaMinutes || 15,
+      otpPin: c.otpPin || null,
+      etaMinutes: c.etaMinutes ?? null,
       vitals: {
-        bp: c.patient?.vitals?.[0] ? `${c.patient.vitals[0].systolicBp}/${c.patient.vitals[0].diastolicBp} mmHg` : '120/80 mmHg',
-        hr: c.patient?.vitals?.[0]?.heartRate ? `${c.patient.vitals[0].heartRate} bpm` : '74 bpm',
-        temp: c.patient?.vitals?.[0]?.temperature ? `${c.patient.vitals[0].temperature} °F` : '98.6 °F',
-        spo2: c.patient?.vitals?.[0]?.oxygenSaturation ? `${c.patient.vitals[0].oxygenSaturation}%` : '99%',
-        bs: c.patient?.vitals?.[0]?.bloodSugar ? `${c.patient.vitals[0].bloodSugar} mg/dL` : '105 mg/dL',
+        bp: c.patient?.vitals?.[0]?.systolicBp && c.patient?.vitals?.[0]?.diastolicBp
+          ? `${c.patient.vitals[0].systolicBp}/${c.patient.vitals[0].diastolicBp} mmHg`
+          : 'Not Recorded',
+        hr: c.patient?.vitals?.[0]?.heartRate ? `${c.patient.vitals[0].heartRate} bpm` : 'Not Recorded',
+        temp: c.patient?.vitals?.[0]?.temperature ? `${c.patient.vitals[0].temperature} °F` : 'Not Recorded',
+        spo2: c.patient?.vitals?.[0]?.oxygenSaturation ? `${c.patient.vitals[0].oxygenSaturation}%` : 'Not Recorded',
+        bs: c.patient?.vitals?.[0]?.bloodSugar ? `${c.patient.vitals[0].bloodSugar} mg/dL` : 'Not Recorded',
       },
-      checklist: [
+      checklist: persistedChecklist || [
         { id: 'c1', label: 'Sterile surgical field & PPE setup', done: c.status === 'Care in Progress' || c.status === 'Completed' },
         { id: 'c2', label: 'Incision site inspection & redness check', done: c.status === 'Care in Progress' || c.status === 'Completed' },
         { id: 'c3', label: 'Antiseptic swab & sterile dressing change', done: c.status === 'Completed' },
         { id: 'c4', label: 'IV Cannula patency check & flush', done: c.status === 'Completed' },
         { id: 'c5', label: 'Record post-procedure telemetry vitals', done: c.status === 'Completed' },
       ],
-      notes: typeof parsedNotes.textNotes === 'string' ? parsedNotes.textNotes : c.notes || 'In-Home clinical care requested.',
+      notes: c.nurseClinicalNotes || (typeof parsedNotes.textNotes === 'string' ? parsedNotes.textNotes : 'In-Home clinical care requested.'),
+      nurseClinicalNotes: c.nurseClinicalNotes || '',
       metadata: parsedNotes,
     };
   }
@@ -356,7 +381,8 @@ export class ClinicalService {
         status: 'Pending',
         otpPin: Math.floor(1000 + Math.random() * 9000).toString(),
         etaMinutes: 15,
-        notes: JSON.stringify(structuredMetadata),
+        metadataJson: JSON.stringify(structuredMetadata),
+        notes: data.additionalNotes || data.instructions || '',
       },
       include: {
         patient: {
@@ -451,25 +477,57 @@ export class ClinicalService {
   }
 
   /**
-   * Update nurse care request
+   * Update nurse care request (with strict role & ownership enforcement)
    */
-  static async updateCareRequest(id: string, data: { status?: string; notes?: string; etaMinutes?: number }, userId?: string) {
+  static async updateCareRequest(
+    id: string,
+    data: { status?: string; notes?: string; nurseClinicalNotes?: string; checklist?: any[]; etaMinutes?: number },
+    userId?: string,
+    role?: string
+  ) {
+    const existing = await prisma.careRequest.findUnique({
+      where: { id },
+      include: { patient: true, nurse: true },
+    });
+    if (!existing) {
+      throw new AppError('Care request not found', 404);
+    }
+
+    const roleUpper = String(role || '').toUpperCase();
     let nurseIdToAssign: string | undefined = undefined;
-    if (data.status === 'Accepted' && userId) {
-      const nurse = await prisma.nurse.findUnique({ where: { userId } });
-      if (nurse) {
-        nurseIdToAssign = nurse.id;
-      } else {
-        const firstNurse = await prisma.nurse.findFirst();
-        if (firstNurse) nurseIdToAssign = firstNurse.id;
+
+    if (roleUpper === 'PATIENT') {
+      if (!userId || existing.patient?.userId !== userId) {
+        throw new AppError('Forbidden: You can only manage your own care requests', 403);
       }
+      if (data.status && !['Cancelled', 'CANCELLED'].includes(data.status)) {
+        throw new AppError('Forbidden: Patients may only cancel their care requests', 403);
+      }
+    } else if (roleUpper === 'CAREGIVER') {
+      if (!userId) throw new AppError('Authentication required', 401);
+      const { CaregiverService } = await import('./caregiver.service');
+      await CaregiverService.validateCaregiverAccess(userId, 'CAREGIVER' as any, existing.patientId);
+    } else if (roleUpper === 'NURSE') {
+      if (!userId) throw new AppError('Authentication required', 401);
+      const nurse = await prisma.nurse.findUnique({ where: { userId } });
+      if (!nurse) throw new AppError('Nurse profile not found', 403);
+      if (existing.nurseId && existing.nurseId !== nurse.id) {
+        throw new AppError('Forbidden: This care request is assigned to another nurse', 403);
+      }
+      if (data.status === 'Accepted' || !existing.nurseId) {
+        nurseIdToAssign = nurse.id;
+      }
+    } else if (roleUpper !== 'ADMIN' && roleUpper !== 'SUPER_ADMIN') {
+      throw new AppError('Forbidden: Insufficient permissions to update care requests', 403);
     }
 
     const updated = await prisma.careRequest.update({
       where: { id },
       data: {
         ...(data.status && { status: data.status }),
-        ...(data.notes !== undefined && { notes: data.notes }),
+        ...(data.nurseClinicalNotes !== undefined && { nurseClinicalNotes: data.nurseClinicalNotes }),
+        ...(data.notes !== undefined && { nurseClinicalNotes: data.notes }),
+        ...(data.checklist !== undefined && { checklistJson: JSON.stringify(data.checklist) }),
         ...(data.etaMinutes !== undefined && { etaMinutes: data.etaMinutes }),
         ...(nurseIdToAssign && { nurseId: nurseIdToAssign }),
       },

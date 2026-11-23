@@ -44,6 +44,22 @@ export const getAdherenceTrendsController = async (
   }
 };
 
+export const getDoseHistoryController = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const patientId = typeof req.query.patientId === 'string' ? req.query.patientId : undefined;
+    const range = String(req.query.range || '30d');
+    const days = range === '7d' ? 7 : range === '90d' ? 90 : 30;
+    const data = await MedicineService.getDoseHistory(req.user!.id, req.user!.role, patientId, days);
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    next(error);
+  }
+};
+
 export const createPatientMedicationController = async (
   req: Request,
   res: Response,
@@ -77,7 +93,7 @@ export const updatePatientMedicationController = async (
 ): Promise<void> => {
   try {
     const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
-    const data = await MedicineService.updatePatientMedication(id, req.body);
+    const data = await MedicineService.updatePatientMedication(id, req.body, req.user!.id, req.user!.role);
     res.status(200).json({ success: true, message: 'Medication updated', data });
   } catch (error) {
     next(error);
@@ -91,7 +107,7 @@ export const deletePatientMedicationController = async (
 ): Promise<void> => {
   try {
     const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
-    await MedicineService.deletePatientMedication(id);
+    await MedicineService.deletePatientMedication(id, req.user!.id, req.user!.role);
     res.status(200).json({ success: true, message: 'Medication removed' });
   } catch (error) {
     next(error);

@@ -1,25 +1,25 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { 
-  HeartHandshake, 
-  Users, 
-  Pill, 
-  Activity, 
-  Calendar, 
-  AlertTriangle, 
-  CheckCircle2, 
-  Clock, 
-  Plus, 
-  ChevronRight, 
-  MapPin, 
-  Phone, 
-  Sparkles, 
-  Check, 
-  RefreshCw, 
-  Stethoscope, 
-  ShieldCheck, 
-  AlertOctagon, 
-  X, 
+import {
+  HeartHandshake,
+  Users,
+  Pill,
+  Activity,
+  Calendar,
+  AlertTriangle,
+  CheckCircle2,
+  Clock,
+  Plus,
+  ChevronRight,
+  MapPin,
+  Phone,
+  Sparkles,
+  Check,
+  RefreshCw,
+  Stethoscope,
+  ShieldCheck,
+  AlertOctagon,
+  X,
   Heart,
   Droplets,
   Wind,
@@ -34,15 +34,14 @@ import {
 } from 'lucide-react';
 import { useCaregiverWorkflow } from '../../../utils/caregiverWorkflowStorage';
 import { useLanguage } from '../../../context/LanguageContext';
-import { DEMO_HOME_CARE_BOOKINGS_BY_WARD } from '../../../mocks/caregiverHomeCareMock';
-import { 
-  getLocalizedDosage, 
-  getLocalizedInstructions, 
-  getLocalizedTaskTitle, 
-  getLocalizedTaskCategory, 
-  getLocalizedLocation, 
+import {
+  getLocalizedDosage,
+  getLocalizedInstructions,
+  getLocalizedTaskTitle,
+  getLocalizedTaskCategory,
+  getLocalizedLocation,
   getLocalizedTimeAgo,
-  getLocalizedName 
+  getLocalizedName
 } from '../../../utils/caregiverDataTranslator';
 
 interface CaregiverOverviewViewProps {
@@ -52,12 +51,12 @@ interface CaregiverOverviewViewProps {
 
 export const CaregiverOverviewView: React.FC<CaregiverOverviewViewProps> = ({ onNavigate }) => {
   const { t } = useLanguage();
-  const { 
-    wards, 
-    activeWard, 
-    setActiveWardId, 
-    tasks, 
-    toggleTask, 
+  const {
+    wards,
+    activeWard,
+    setActiveWardId,
+    tasks,
+    toggleTask,
     addVitalReading,
     triggerSOS,
     notifications,
@@ -113,7 +112,18 @@ export const CaregiverOverviewView: React.FC<CaregiverOverviewViewProps> = ({ on
   const overdueTasks = wardTasks.filter(t => t.status === 'Overdue' || (!t.completed && t.dueDate === 'Yesterday'));
   const recentlyCompletedTasks = wardTasks.filter(t => t.completed).slice(0, 3);
 
-  const wardHomeCareBookings = DEMO_HOME_CARE_BOOKINGS_BY_WARD[activeWard.id] || [];
+  const wardHomeCareBookings = (activeWard.careRequests || []).map((c: any) => ({
+    id: c.id,
+    serviceType: c.serviceType || 'Home Care',
+    careProfessionalName: c.nurse?.fullName || 'Assigned Nurse',
+    role: c.nurse?.designation || 'Registered Nurse',
+    bookingDate: c.scheduledDate ? new Date(c.scheduledDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '—',
+    bookingTime: c.scheduledTime || '10:00 AM',
+    duration: '4 Hours',
+    visitDate: c.scheduledDate ? new Date(c.scheduledDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '—',
+    visitTime: c.scheduledTime || '10:00 AM',
+    status: c.status === 'Completed' ? 'Visit Completed' : c.status === 'Cancelled' || c.status === 'Rejected' ? 'Cancelled' : c.status || 'Requested',
+  }));
   const activeHomeCareBooking = wardHomeCareBookings.find(
     b => b.status !== 'Visit Completed' && b.status !== 'Cancelled'
   );
@@ -138,7 +148,7 @@ export const CaregiverOverviewView: React.FC<CaregiverOverviewViewProps> = ({ on
 
   return (
     <div className="space-y-6 select-none pb-16">
-      
+
       {/* TOAST ALERT */}
       <div className="fixed top-5 left-1/2 -translate-x-1/2 z-50 flex flex-col items-center pointer-events-none select-none max-w-md w-full px-4">
         <AnimatePresence>
@@ -160,7 +170,7 @@ export const CaregiverOverviewView: React.FC<CaregiverOverviewViewProps> = ({ on
       <div className="relative overflow-hidden rounded-3xl bg-gradient-to-r from-teal-50/80 via-white to-cyan-50/80 dark:from-[#0b1b36] dark:via-[#092b49] dark:to-[#041a2e] p-6 sm:p-8 text-slate-900 dark:text-white shadow-[0_8px_30px_rgb(0,0,0,0.04)] dark:shadow-xl border border-transparent dark:border-slate-700/50">
         <div className="absolute top-0 right-0 w-96 h-96 bg-gradient-to-br from-teal-500/20 via-cyan-400/10 to-transparent rounded-full blur-3xl pointer-events-none" />
         <div className="absolute -bottom-20 -left-20 w-80 h-80 bg-gradient-to-tr from-fuchsia-100/40 to-cyan-100/40 dark:from-transparent dark:to-transparent rounded-full blur-3xl pointer-events-none" />
-        
+
         <div className="relative z-10 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-6">
           <div className="space-y-2">
             <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-teal-100 dark:bg-teal-500/20 border border-teal-200 dark:border-teal-400/30 text-teal-700 dark:text-teal-300 text-xs font-black uppercase tracking-wider">
@@ -202,7 +212,7 @@ export const CaregiverOverviewView: React.FC<CaregiverOverviewViewProps> = ({ on
 
         {/* 1. TODAY'S CARE SUMMARY METRICS DECK */}
         <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 mt-6 pt-6 border-t border-slate-200/50 dark:border-slate-700/60">
-          
+
           {/* Card 1: Today's Appointments */}
           <div className="bg-white/70 dark:bg-slate-900/40 rounded-2xl p-3.5 border border-white/50 dark:border-slate-700/40 backdrop-blur-md shadow-sm">
             <p className="text-[10px] font-black text-slate-500 dark:text-slate-400 uppercase tracking-wider">
@@ -263,8 +273,8 @@ export const CaregiverOverviewView: React.FC<CaregiverOverviewViewProps> = ({ on
             <Users className="w-5 h-5 text-teal-600 dark:text-cyan-400" />
             <span>{t('caregiver.overview.wards_status_title', 'Assigned Wards & Family Health Status')}</span>
           </h2>
-          <button 
-            onClick={() => onNavigate('wards')} 
+          <button
+            onClick={() => onNavigate('wards')}
             className="text-xs font-bold text-teal-600 dark:text-cyan-400 hover:underline flex items-center gap-1"
           >
             {t('caregiver.overview.view_all_profiles', 'View All Profiles')} <ChevronRight className="w-3.5 h-3.5" />
@@ -282,11 +292,10 @@ export const CaregiverOverviewView: React.FC<CaregiverOverviewViewProps> = ({ on
                 key={ward.id}
                 whileHover={{ y: -3 }}
                 onClick={() => setActiveWardId(ward.id)}
-                className={`cursor-pointer rounded-2xl p-4 transition-all relative overflow-hidden border ${
-                  isSelected 
-                    ? 'bg-white dark:bg-[#0f1d35] border-teal-500 dark:border-cyan-400 ring-2 ring-teal-500/20 shadow-xl'
-                    : 'bg-white dark:bg-[#0b1120] border-slate-200 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700 shadow-sm'
-                }`}
+                className={`cursor-pointer rounded-2xl p-4 transition-all relative overflow-hidden border ${isSelected
+                  ? 'bg-white dark:bg-[#0f1d35] border-teal-500 dark:border-cyan-400 ring-2 ring-teal-500/20 shadow-xl'
+                  : 'bg-white dark:bg-[#0b1120] border-slate-200 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700 shadow-sm'
+                  }`}
               >
                 <div className="flex items-start justify-between gap-3">
                   <div className="flex items-center gap-3">
@@ -303,11 +312,10 @@ export const CaregiverOverviewView: React.FC<CaregiverOverviewViewProps> = ({ on
                     </div>
                   </div>
 
-                  <span className={`text-[9px] font-black px-2 py-0.5 rounded-full uppercase tracking-wider shrink-0 ${
-                    ward.overallStatus === 'Alert' ? 'bg-rose-100 text-rose-700 dark:bg-rose-900/30 dark:text-rose-400 animate-pulse' :
+                  <span className={`text-[9px] font-black px-2 py-0.5 rounded-full uppercase tracking-wider shrink-0 ${ward.overallStatus === 'Alert' ? 'bg-rose-100 text-rose-700 dark:bg-rose-900/30 dark:text-rose-400 animate-pulse' :
                     ward.overallStatus === 'Needs Attention' ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400' :
-                    'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400'
-                  }`}>
+                      'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400'
+                    }`}>
                     {t(ward.overallStatus === 'Alert' ? 'caregiver.common.alert' : ward.overallStatus === 'Needs Attention' ? 'caregiver.common.needs_attention' : 'caregiver.common.stable', ward.overallStatus)}
                   </span>
                 </div>
@@ -406,10 +414,10 @@ export const CaregiverOverviewView: React.FC<CaregiverOverviewViewProps> = ({ on
 
       {/* DYNAMIC CONTENT GRID FOR SELECTED WARD */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        
+
         {/* LEFT 7 COLS: UPCOMING APPOINTMENTS & CARE TASKS */}
         <div className="lg:col-span-7 space-y-6">
-          
+
           {/* 2. UPCOMING APPOINTMENTS SECTION */}
           <div className="bg-white dark:bg-[#0b1120] rounded-3xl p-6 border border-transparent dark:border-slate-800 shadow-sm space-y-4">
             <div className="flex items-center justify-between">
@@ -573,7 +581,7 @@ export const CaregiverOverviewView: React.FC<CaregiverOverviewViewProps> = ({ on
 
         {/* RIGHT 5 COLS: HOME-CARE BOOKING, LATEST VITALS, UNREAD NOTIFICATIONS */}
         <div className="lg:col-span-5 space-y-6">
-          
+
           {/* 4. HOME-CARE BOOKING SECTION */}
           <div className="bg-white dark:bg-[#0b1120] rounded-3xl p-6 border border-transparent dark:border-slate-800 shadow-sm space-y-4">
             <div className="flex items-center justify-between">

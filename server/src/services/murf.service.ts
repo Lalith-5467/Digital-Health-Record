@@ -9,7 +9,26 @@ interface AudioCacheEntry {
   timestamp: number;
 }
 
+const MAX_AUDIO_CACHE_ENTRIES = 50;
+const AUDIO_CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes
 const audioCache = new Map<string, AudioCacheEntry>();
+
+function setBoundedAudioCache(key: string, entry: AudioCacheEntry) {
+  const now = Date.now();
+  // Purge expired entries
+  for (const [k, v] of audioCache.entries()) {
+    if (now - v.timestamp > AUDIO_CACHE_TTL_MS) {
+      audioCache.delete(k);
+    }
+  }
+  // Evict oldest entries if above capacity
+  while (audioCache.size >= MAX_AUDIO_CACHE_ENTRIES) {
+    const oldestKey = audioCache.keys().next().value;
+    if (oldestKey !== undefined) audioCache.delete(oldestKey);
+    else break;
+  }
+  audioCache.set(key, entry);
+}
 
 export class MurfService {
   /**
@@ -27,13 +46,16 @@ export class MurfService {
     const cacheKey = `${data.language || 'ta-IN'}_${text.trim()}`;
     if (audioCache.has(cacheKey)) {
       const cached = audioCache.get(cacheKey)!;
-      return {
-        success: true,
-        audioUrl: cached.audioUrl,
-        audioBase64: cached.audioBase64,
-        isCached: true,
-        isMurf: true,
-      };
+      if (Date.now() - cached.timestamp <= AUDIO_CACHE_TTL_MS) {
+        return {
+          success: true,
+          audioUrl: cached.audioUrl,
+          audioBase64: cached.audioBase64,
+          isCached: true,
+          isMurf: true,
+        };
+      }
+      audioCache.delete(cacheKey);
     }
 
     const apiKey = process.env.MURF_API_KEY;
@@ -53,7 +75,7 @@ export class MurfService {
             const arrayBuf = await ttsRes.arrayBuffer();
             const audioBase64 = Buffer.from(arrayBuf).toString('base64');
 
-            audioCache.set(cacheKey, {
+            setBoundedAudioCache(cacheKey, {
               audioBase64,
               timestamp: Date.now(),
             });
@@ -126,7 +148,7 @@ export class MurfService {
       const audioBase64 = resData?.encodedAudio || resData?.base64;
 
       if (audioUrl || audioBase64) {
-        audioCache.set(cacheKey, {
+        setBoundedAudioCache(cacheKey, {
           audioUrl,
           audioBase64,
           timestamp: Date.now(),

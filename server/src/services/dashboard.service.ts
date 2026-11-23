@@ -18,6 +18,15 @@ export class DashboardService {
         activeReminders,
         activeOrders,
         latestVitals,
+        nextAppointment,
+        activeMedications,
+        recentRecords,
+        primaryPolicy,
+        familyMembersCount,
+        nearbyHospitalsCount,
+        activeGoalsCount,
+        latestCheckup,
+        recentActivity,
       ] = await Promise.all([
         prisma.medicalRecord.count({ where: { patientId: patient.id } }),
         prisma.prescription.count({
@@ -49,10 +58,48 @@ export class DashboardService {
           where: { patientId: patient.id },
           orderBy: { recordedAt: 'desc' },
         }),
+        prisma.appointment.findFirst({
+          where: {
+            patientId: patient.id,
+            status: { in: [AppointmentStatus.CONFIRMED, AppointmentStatus.PENDING] },
+            appointmentDate: { gte: new Date() },
+          },
+          orderBy: { appointmentDate: 'asc' },
+          include: { doctor: { select: { id: true, fullName: true, speciality: true, hospital: true } } },
+        }),
+        prisma.patientMedication.findMany({
+          where: { patientId: patient.id, status: 'active' },
+          orderBy: { createdAt: 'desc' },
+          take: 5,
+        }),
+        prisma.medicalRecord.findMany({
+          where: { patientId: patient.id },
+          orderBy: { recordDate: 'desc' },
+          take: 5,
+        }),
+        prisma.insurancePolicy.findFirst({
+          where: { patientId: patient.id, policyStatus: 'Active' },
+          orderBy: [{ isPrimary: 'desc' }, { createdAt: 'desc' }],
+        }),
+        prisma.familyConnection.count({
+          where: { patientId: patient.id, status: 'CONNECTED' },
+        }),
+        prisma.hospital.count({ where: { status: 'ACTIVE' } }),
+        prisma.healthGoal.count({ where: { patientId: patient.id, isPaused: false } }),
+        prisma.healthCheckup.findFirst({
+          where: { patientId: patient.id, status: 'COMPLETED' },
+          orderBy: { completedAt: 'desc' },
+        }),
+        prisma.auditLog.findMany({
+          where: { userId },
+          orderBy: { createdAt: 'desc' },
+          take: 8,
+        }),
       ]);
 
       return {
         role: Role.PATIENT,
+        patientId: patient.id,
         patientName: patient.fullName,
         bloodGroup: patient.bloodGroup,
         totalRecords,
@@ -60,14 +107,16 @@ export class DashboardService {
         upcomingAppointments,
         activeReminders,
         activeOrders,
-        latestVitals: latestVitals || {
-          systolicBp: 120,
-          diastolicBp: 80,
-          heartRate: 74,
-          oxygenSaturation: 99,
-          bloodSugar: 98,
-          temperature: 98.6,
-        },
+        latestVitals: latestVitals || null,
+        nextAppointment,
+        activeMedications,
+        recentRecords,
+        insuranceSummary: primaryPolicy,
+        familyMembersCount,
+        nearbyHospitalsCount,
+        activeGoalsCount,
+        latestCheckup,
+        recentActivity,
       };
     }
 
@@ -76,12 +125,16 @@ export class DashboardService {
       if (!doctor) throw new AppError('Doctor profile not found', 404);
 
       const [
-        totalPatients,
+        distinctApptPatients,
         todayAppointments,
         pendingAppointments,
         prescriptionsIssued,
       ] = await Promise.all([
-        prisma.patient.count(),
+        prisma.appointment.findMany({
+          where: { doctorId: doctor.id },
+          distinct: ['patientId'],
+          select: { patientId: true },
+        }),
         prisma.appointment.count({
           where: {
             doctorId: doctor.id,
@@ -98,6 +151,7 @@ export class DashboardService {
           where: { doctorId: doctor.id },
         }),
       ]);
+      const totalPatients = distinctApptPatients.length;
 
       return {
         role: Role.DOCTOR,
@@ -150,11 +204,16 @@ export class DashboardService {
 
     if (role === Role.NURSE) {
       const nurse = await prisma.nurse.findUnique({ where: { userId } });
-      const [totalVisits, pendingVisits, activePatients] = await Promise.all([
+      const [totalVisits, pendingVisits, nursePatients] = await Promise.all([
         prisma.careRequest.count({ where: { ...(nurse && { nurseId: nurse.id }) } }),
         prisma.careRequest.count({ where: { ...(nurse && { nurseId: nurse.id }), status: 'Pending' } }),
-        prisma.patient.count(),
+        prisma.careRequest.findMany({
+          where: { ...(nurse && { nurseId: nurse.id }) },
+          distinct: ['patientId'],
+          select: { patientId: true },
+        }),
       ]);
+      const activePatients = nursePatients.length;
 
       return {
         role: Role.NURSE,
@@ -163,6 +222,68 @@ export class DashboardService {
         pendingVisits,
         activePatients,
       };
+    }
+
+    if (role === Role.CAREGIVER) {
+      const caregiver = await prisma.caregiver.findUnique({
+        where: { userId },
+        include: { patients: { select: { id: true } }, patientLinks: { where: { consentStatus: 'ACTIVE' } } },
+      });
+      const linkedIds = Array.from(
+        new Set([
+          ...(caregiver?.patients.map((p) => p.id) || []),
+          ...(caregiver?.patientLinks.map((l) => l.patientId) || []),
+        ])
+      );
+      const [pendingTasks, completedTasks, activeAlerts] = await Promise.all([
+        caregiver
+          ? prisma.caregiverTask.count({ where: { caregiverId: caregiver.id, status: 'Pending' } })
+          : 0,
+        caregiver
+          ? prisma.caregiverTask.count({ where: { caregiverId: caregiver.id, status: 'Completed' } })
+          : 0,
+        linkedIds.length > 0
+          ? prisma.sosAlert.count({ where: { patientId: { in: linkedIds }, status: 'ACTIVE' } })
+          : 0,
+      ]);
+
+      return {
+        role: Role.CAREGIVER,
+        caregiverName: caregiver?.fullName,
+        linkedWardsCount: linkedIds.length,
+        pendingTasks,
+        completedTasks,
+        activeAlerts,
+      };
+    }
+
+    if (role === Role.INSURANCE_PROVIDER) {
+      const provider = await prisma.insuranceProvider.findUnique({ where: { userId } });
+      const policyScope = provider ? { OR: [{ providerId: provider.id }, { providerId: null }] } : {};
+      const [totalPolicies, activePolicies, totalClaims, pendingClaims, pendingPreAuths, settledCount] =
+        await Promise.all([
+          prisma.insurancePolicy.count({ where: policyScope }),
+          prisma.insurancePolicy.count({ where: { policyStatus: 'Active', ...policyScope } }),
+          prisma.insuranceClaim.count({ where: { policy: policyScope } }),
+          prisma.insuranceClaim.count({ where: { status: { in: ['New', 'Under Review'] }, policy: policyScope } }),
+          prisma.preAuthorization.count({ where: { status: 'Pending', policy: policyScope } }),
+          prisma.claimSettlement.count({ where: { claim: { policy: policyScope } } }),
+        ]);
+
+      return {
+        role: Role.INSURANCE_PROVIDER,
+        providerName: provider?.providerName,
+        totalPolicies,
+        activePolicies,
+        totalClaims,
+        pendingClaims,
+        pendingPreAuths,
+        settledCount,
+      };
+    }
+
+    if (role !== Role.ADMIN && role !== Role.SUPER_ADMIN) {
+      throw new AppError('Unauthorized dashboard role', 403);
     }
 
     // ADMIN & SUPER_ADMIN (Comprehensive Real System Intelligence)

@@ -6,14 +6,7 @@ import {
   ShieldCheck, Stethoscope
 } from 'lucide-react';
 import type { ReminderItem, NotificationLog, NotificationSettingsState } from './remindersData';
-import {
-  INITIAL_REMINDERS,
-  DEFAULT_NOTIFICATION_SETTINGS
-} from './remindersData';
-import {
-  updateReminderFollowUpStatus,
-  getReminders as getStoredReminders,
-} from '../../utils/healthWorkflowStorage';
+import { DEFAULT_NOTIFICATION_SETTINGS } from './remindersData';
 import { CreateReminderModal } from './CreateReminderModal';
 import { RemindersFilterDrawer } from './RemindersFilterDrawer';
 import type { RemindersFilterState } from './RemindersFilterDrawer';
@@ -25,7 +18,6 @@ import { reminderApi, notificationApi } from '../../services/dhrApis';
 import { healthShareApi, type AccessRequestItem } from '../../services/healthShareApi';
 import { socketService } from '../../services/socketService';
 import { PatientAccessRequestsModal } from '../dashboard/PatientAccessRequestsModal';
-import { safeLocalStorageSet } from '../../utils/safeStorage';
 import { useLanguage } from '../../context/LanguageContext';
 
 interface UserProfile {
@@ -51,17 +43,17 @@ const addMinutesToTimeStr = (timeStr: string, minutes: number): string => {
   const ampm = match[3].toUpperCase();
   if (ampm === 'PM' && hours < 12) hours += 12;
   if (ampm === 'AM' && hours === 12) hours = 0;
-  
+
   const date = new Date();
   date.setHours(hours, mins + minutes, 0, 0);
-  
+
   let newHours = date.getHours();
   const newMins = date.getMinutes();
   const newAmpm = newHours >= 12 ? 'PM' : 'AM';
-  
+
   newHours = newHours % 12;
   if (newHours === 0) newHours = 12;
-  
+
   return `${newHours.toString().padStart(2, '0')}:${newMins.toString().padStart(2, '0')} ${newAmpm}`;
 };
 
@@ -81,20 +73,20 @@ const formatFullDate = (dStr: string) => {
 
 const getCardTitle = (item: ReminderItem) => {
   if (item.category === 'Appointment') {
-    return `Doctor Follow-up — ${item.doctorName || 'Dr. Arun Kumar'}`;
+    return `Doctor Follow-up — ${item.doctorName || 'Attending Physician'}`;
   }
   return item.title;
 };
 
 const getPastCardTitle = (rem: ReminderItem) => {
   if (rem.status === 'Declined' || rem.followUpStatus === 'Declined') {
-    return `Doctor Follow-up — ${rem.doctorName || 'Dr. Arun Kumar'}`;
+    return `Doctor Follow-up — ${rem.doctorName || 'Attending Physician'}`;
   }
   if (rem.status === 'Completed' && rem.category === 'Appointment') {
     return 'Follow-up Appointment';
   }
   if (rem.status === 'Cancelled' && rem.category === 'Appointment') {
-    return `Cancelled Doctor Follow-up — ${rem.doctorName || 'Dr. Arun Kumar'}`;
+    return `Cancelled Doctor Follow-up — ${rem.doctorName || 'Attending Physician'}`;
   }
   return rem.title;
 };
@@ -128,8 +120,8 @@ export const RemindersView: React.FC<RemindersViewProps> = ({
   const [_loading, setLoading] = useState(true);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
-  // STATE & LOCALSTORAGE PERSISTENCE (Live from MySQL)
-  const [reminders, setReminders] = useState<ReminderItem[]>(INITIAL_REMINDERS);
+  // STATE (Live from MySQL)
+  const [reminders, setReminders] = useState<ReminderItem[]>([]);
   const [notifications, setNotifications] = useState<NotificationLog[]>([]);
   const [settings, setSettings] = useState<NotificationSettingsState>(DEFAULT_NOTIFICATION_SETTINGS);
 
@@ -175,17 +167,17 @@ export const RemindersView: React.FC<RemindersViewProps> = ({
       const pendingDocReqs = Array.isArray(docReqsRes) ? docReqsRes.filter((r: any) => r.status === 'PENDING') : [];
       setPendingDoctorRequests(pendingDocReqs);
 
-      if (remindersRes && remindersRes.data && remindersRes.data.length > 0) {
+      if (remindersRes && Array.isArray(remindersRes.data)) {
         const mappedReminders: ReminderItem[] = remindersRes.data.map((r: any) => ({
           id: r.id,
           title: r.title,
           category: r.type === 'MEDICATION' ? 'Medication' : r.type === 'APPOINTMENT' ? 'Appointment' : 'General Checkup',
           description: r.notes || `${r.frequency || 'Daily'} at ${r.scheduledTime}`,
-          date: r.startDate ? new Date(r.startDate).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : 'Today',
+          date: r.startDate ? new Date(r.startDate).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }),
           time: r.scheduledTime,
           repeat: r.frequency || 'Daily',
-          timing: '15 minutes before',
-          status: r.isCompletedToday ? 'Completed' : r.status === 'ACTIVE' ? 'Active' : 'Upcoming',
+          timing: r.timingOffset || '15 minutes before',
+          status: r.isCompletedToday || r.status === 'COMPLETED' ? 'Completed' : r.status === 'ACTIVE' ? 'Active' : 'Upcoming',
           priority: (r.priority as any) || 'Normal',
           relatedModule: (r.type === 'MEDICATION' ? 'medicines' : 'appointments') as any,
           doctorName: r.doctorName,
@@ -194,21 +186,19 @@ export const RemindersView: React.FC<RemindersViewProps> = ({
           sourcePrescriptionId: r.sourcePrescriptionId,
         }));
         setReminders(mappedReminders);
-        safeLocalStorageSet('user_reminders', JSON.stringify(mappedReminders));
       } else {
-        const loadedReminders = getStoredReminders();
-        setReminders(loadedReminders);
+        setReminders([]);
       }
 
       const mappedNotifs: NotificationLog[] = [];
-      if (notifsRes && notifsRes.data && notifsRes.data.length > 0) {
+      if (notifsRes && Array.isArray(notifsRes.data)) {
         notifsRes.data.forEach((n: any) => {
           mappedNotifs.push({
             id: n.id,
             title: n.title,
             description: n.message,
             category: n.category || 'General',
-            timeAgo: 'Just now',
+            timeAgo: new Date(n.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
             date: new Date(n.createdAt).toLocaleDateString(),
             isRead: Boolean(n.isRead),
             relatedModule: n.relatedModule || 'dashboard',
@@ -216,40 +206,15 @@ export const RemindersView: React.FC<RemindersViewProps> = ({
         });
       }
 
-      // Merge local storage notifications (e.g. from real-time insurance workflows)
-      try {
-        const localRaw = localStorage.getItem('medicare_notifications');
-        const localList = localRaw ? JSON.parse(localRaw) : [];
-        if (Array.isArray(localList)) {
-          localList.forEach((ln: any) => {
-            const alreadyExists = mappedNotifs.some((m) => m.id === ln.id || (m.title === ln.title && m.description === ln.message));
-            if (!alreadyExists) {
-              mappedNotifs.unshift({
-                id: ln.id,
-                title: ln.title,
-                description: ln.message,
-                category: ln.category || 'Insurance Pre-Auth',
-                timeAgo: 'Just now',
-                date: ln.createdAt ? new Date(ln.createdAt).toLocaleDateString() : new Date().toLocaleDateString(),
-                isRead: Boolean(ln.isRead || ln.read),
-                relatedModule: ln.relatedModule || 'insurance',
-              });
-            }
-          });
-        }
-      } catch {}
-
       setNotifications(mappedNotifs);
-      safeLocalStorageSet('user_notifications', JSON.stringify(mappedNotifs));
 
-      const savedSetts = localStorage.getItem('user_notification_settings');
-      if (savedSetts) {
-        try {
-          setSettings(JSON.parse(savedSetts));
-        } catch (e) {
-          console.error(e);
+      try {
+        const { profileApi } = await import('../../services/dhrApis');
+        const prefRes = await profileApi.getPreferences();
+        if (prefRes?.data?.notifications) {
+          setSettings((prev) => ({ ...prev, ...prefRes.data.notifications }));
         }
-      }
+      } catch { }
     } catch (err) {
       console.log('Error loading reminders:', err);
     } finally {
@@ -277,91 +242,48 @@ export const RemindersView: React.FC<RemindersViewProps> = ({
     setTimeout(() => setToastMessage(null), 3500);
   };
 
-  const saveRemindersState = (newReminders: ReminderItem[]) => {
-    setReminders(newReminders);
-    safeLocalStorageSet('user_reminders', JSON.stringify(newReminders));
-    window.dispatchEvent(new Event('notifications_updated'));
-    window.dispatchEvent(new Event('health_workflow_updated'));
-  };
-
-  const saveNotificationsState = (newNotifs: NotificationLog[]) => {
-    setNotifications(newNotifs);
-    safeLocalStorageSet('user_notifications', JSON.stringify(newNotifs));
-
+  // REMINDER ACTIONS (100% MySQL Persisted)
+  const handleMarkComplete = async (id: string, title: string) => {
     try {
-      const raw = localStorage.getItem('medicare_notifications');
-      if (raw) {
-        const list = JSON.parse(raw);
-        if (Array.isArray(list)) {
-          const updated = list
-            .filter((ln: any) => newNotifs.some((n) => n.id === ln.id))
-            .map((ln: any) => {
-              const matched = newNotifs.find((n) => n.id === ln.id);
-              return matched ? { ...ln, isRead: matched.isRead, read: matched.isRead } : ln;
-            });
-          localStorage.setItem('medicare_notifications', JSON.stringify(updated));
-        }
-      }
-    } catch {}
-
-    window.dispatchEvent(new Event('notifications_updated'));
+      await reminderApi.updateReminder(id, { isCompletedToday: true, status: 'COMPLETED' } as any);
+      await loadAllData();
+      showToast(`✓ Marked ${title} as completed`);
+    } catch (err: any) {
+      showToast(err?.message || 'Failed to update reminder');
+    }
   };
 
-  const saveSettingsState = (newSetts: NotificationSettingsState) => {
-    setSettings(newSetts);
-    safeLocalStorageSet('user_notification_settings', JSON.stringify(newSetts));
+  const handleDeleteReminder = async (id: string, title: string) => {
+    try {
+      await reminderApi.deleteReminder(id);
+      await loadAllData();
+      showToast(`Deleted ${title}`);
+    } catch (err: any) {
+      showToast(err?.message || 'Failed to delete reminder');
+    }
   };
 
-
-  // REMINDER ACTIONS
-  const handleMarkComplete = (id: string, title: string) => {
-    const nowTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    const updated = reminders.map((r) => {
-      if (r.id === id) {
-        return { ...r, status: 'Completed' as const, completedTime: nowTime };
-      }
-      return r;
-    });
-    saveRemindersState(updated);
-    showToast(`✓ Marked ${title} as completed`);
-  };
-
-  const handleDeleteReminder = (id: string, title: string) => {
-    const updated = reminders.filter((r) => r.id !== id);
-    saveRemindersState(updated);
-    showToast(`Deleted ${title}`);
-  };
-
-  const handleDismissReminder = (id: string) => {
-    const updated = reminders.filter((r) => r.id !== id);
-    saveRemindersState(updated);
-    setDetailTarget(null);
-    showToast('Reminder dismissed');
+  const handleDismissReminder = async (id: string) => {
+    try {
+      await reminderApi.deleteReminder(id);
+      await loadAllData();
+      setDetailTarget(null);
+      showToast('Reminder dismissed');
+    } catch (err: any) {
+      showToast(err?.message || 'Failed to dismiss reminder');
+    }
   };
 
   const handleAcceptFollowUp = async (id: string) => {
-    if (confirmingId) return; // Prevent duplicate clicks
+    if (confirmingId) return;
     setConfirmingId(id);
-    // Mimic quick api/loading latency
-    await new Promise((r) => setTimeout(r, 600));
-
     try {
-      const target = reminders.find(r => r.id === id);
-      if (!target) {
-        throw new Error('Appointment not found');
-      }
-      const docName = target.doctorName || 'Dr. Arun Kumar';
-
-      // 1. Update in local storage
-      updateReminderFollowUpStatus(id, 'Accepted');
-      
-      // 2. Reload state
-      loadAllData();
+      await reminderApi.updateFollowUpStatus(id, 'Accepted');
+      await loadAllData();
       setDetailTarget(null);
-
-      showToast('Appointment confirmed\nYour appointment has been confirmed and a reminder has been added to your schedule.');
-    } catch (e) {
-      showToast(`Unable to confirm appointment\nPlease try again.`);
+      showToast('Appointment confirmed\nYour appointment has been confirmed and saved to database.');
+    } catch (err: any) {
+      showToast(err?.message || 'Unable to confirm appointment\nPlease try again.');
     } finally {
       setConfirmingId(null);
     }
@@ -374,112 +296,126 @@ export const RemindersView: React.FC<RemindersViewProps> = ({
     }
   };
 
-  const handleDeclineFollowUpConfirm = (id: string) => {
+  const handleDeclineFollowUpConfirm = async (id: string) => {
     try {
-      // 1. Update in local storage
-      updateReminderFollowUpStatus(id, 'Declined');
-      
-      // 2. Reload state
-      loadAllData();
+      await reminderApi.updateFollowUpStatus(id, 'Declined');
+      await loadAllData();
       setDetailTarget(null);
       setDeclineConfirmTarget(null);
-
       showToast('Appointment declined\nThe appointment request has been declined.');
-    } catch (e) {
-      showToast(`Unable to decline appointment\nPlease try again.`);
+    } catch (err: any) {
+      showToast(err?.message || 'Unable to decline appointment\nPlease try again.');
     }
   };
 
-  const handleSnoozeConfirm = (id: string, mins: number) => {
+  const handleSnoozeConfirm = async (id: string, mins: number) => {
     const target = reminders.find(r => r.id === id);
     if (!target) return;
 
     let newTime = target.time;
-    let newDate = target.date;
     let toastMessageText = '';
-
     if (mins === 1440) {
-      newDate = getTomorrowDateStr(target.date);
       toastMessageText = `Reminder snoozed\nReminder moved to tomorrow.`;
     } else {
       newTime = addMinutesToTimeStr(target.time, mins);
       toastMessageText = `Reminder snoozed\nReminder moved to ${newTime}.`;
     }
 
-    const updated = reminders.map((r) => {
-      if (r.id === id) {
-        return {
-          ...r,
-          time: newTime,
-          date: newDate,
-          status: 'Snoozed' as const
-        };
-      }
-      return r;
-    });
-
-    saveRemindersState(updated);
-    showToast(toastMessageText);
-  };
-
-  const handleSaveNewReminder = (newRem: Partial<ReminderItem>) => {
-    if (editingReminder) {
-      const updated = reminders.map(r => r.id === newRem.id ? { ...r, ...newRem } as ReminderItem : r);
-      saveRemindersState(updated);
-      showToast('Reminder updated successfully');
-      setEditingReminder(null);
-    } else {
-      const fullRem = { 
-        id: `REM-${Date.now().toString().slice(-4)}`,
-        title: newRem.title || 'New Reminder',
-        category: newRem.category || 'General',
-        description: newRem.description || 'Health activity reminder',
-        date: newRem.date || '24 Aug 2026',
-        time: newRem.time || '12:30 PM',
-        repeat: newRem.repeat || 'Daily',
-        timing: newRem.timing || 'At scheduled time',
-        status: 'Upcoming',
-        priority: newRem.priority || 'Normal',
-        ...newRem 
-      } as ReminderItem;
-      const updated = [fullRem, ...reminders];
-      saveRemindersState(updated);
-      showToast('Reminder created successfully');
+    try {
+      await reminderApi.updateReminder(id, { scheduledTime: newTime, status: 'PAUSED' } as any);
+      await loadAllData();
+      showToast(toastMessageText);
+    } catch (err: any) {
+      showToast(err?.message || 'Failed to snooze reminder');
     }
   };
 
-  const handleMarkNotifRead = (id: string) => {
-    const updated = notifications.map((n) => (n.id === id ? { ...n, isRead: true } : n));
-    saveNotificationsState(updated);
+  const handleSaveNewReminder = async (newRem: Partial<ReminderItem>) => {
+    const typeMap: Record<string, string> = {
+      Medication: 'MEDICATION',
+      Appointment: 'APPOINTMENT',
+      'General Checkup': 'CHECKUP',
+      Checkup: 'CHECKUP',
+      Refill: 'REFILL',
+    };
+    const payload: any = {
+      title: newRem.title || 'New Reminder',
+      type: typeMap[newRem.category || ''] || 'OTHER',
+      scheduledTime: newRem.time || '09:00 AM',
+      frequency: newRem.repeat || 'Daily',
+      notes: newRem.description || '',
+      priority: newRem.priority || 'Normal',
+    };
+    try {
+      if (editingReminder && editingReminder.id) {
+        await reminderApi.updateReminder(editingReminder.id, payload);
+        setEditingReminder(null);
+        await loadAllData();
+        showToast('✓ Reminder updated in database');
+      } else {
+        await reminderApi.createReminder(payload);
+        await loadAllData();
+        showToast('✓ Reminder saved to database');
+      }
+    } catch (err: any) {
+      showToast(err?.message || 'Failed to save reminder');
+    }
   };
 
-  const handleMarkAllNotifsRead = () => {
-    const updated = notifications.map((n) => ({ ...n, isRead: true }));
-    saveNotificationsState(updated);
-    showToast('✓ All notifications marked as read');
+  const handleMarkNotifRead = async (id: string) => {
+    try {
+      await notificationApi.markAsRead(id);
+      setNotifications((prev) => prev.map((n) => (n.id === id ? { ...n, isRead: true } : n)));
+      window.dispatchEvent(new Event('notifications_updated'));
+    } catch (err: any) {
+      showToast(err?.message || 'Failed to mark notification read');
+    }
   };
 
-  const handleConfirmClearHistory = () => {
-    saveNotificationsState([]);
-    setClearHistoryOpen(false);
-    showToast('✓ Notification history cleared');
+  const handleMarkAllNotifsRead = async () => {
+    try {
+      await notificationApi.markAllAsRead();
+      setNotifications((prev) => prev.map((n) => ({ ...n, isRead: true })));
+      window.dispatchEvent(new Event('notifications_updated'));
+      showToast('✓ All notifications marked as read');
+    } catch (err: any) {
+      showToast(err?.message || 'Failed to update notifications');
+    }
   };
 
-  const handleSaveSettings = (updated: NotificationSettingsState) => {
-    saveSettingsState(updated);
-    showToast('✓ Notification settings saved');
+  const handleConfirmClearHistory = async () => {
+    try {
+      await notificationApi.clearAllNotifications();
+      setNotifications([]);
+      setClearHistoryOpen(false);
+      window.dispatchEvent(new Event('notifications_updated'));
+      showToast('✓ Notification history cleared from database');
+    } catch (err: any) {
+      showToast(err?.message || 'Failed to clear notifications');
+    }
+  };
+
+  const handleSaveSettings = async (updated: NotificationSettingsState) => {
+    try {
+      const { profileApi } = await import('../../services/dhrApis');
+      await profileApi.updatePreferences({ notifications: updated });
+      setSettings(updated);
+      showToast('✓ Notification settings saved to database');
+    } catch (err: any) {
+      showToast(err?.message || 'Failed to save notification settings');
+    }
   };
 
   // METRICS & COMPUTED DATA
-  const todayDateStr = '24 Aug 2026'; // Hardcoded today's date
+  const todayDateStr = new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
 
   // Filter out pending, declined, completed, and cancelled reminders to get active ones
-  const activeReminders = reminders.filter(r => r && 
-    r.status !== 'Pending' && 
-    r.followUpStatus !== 'Pending' && 
-    r.status !== 'Declined' && 
-    r.followUpStatus !== 'Declined' && 
-    r.status !== 'Completed' && 
+  const activeReminders = reminders.filter(r => r &&
+    r.status !== 'Pending' &&
+    r.followUpStatus !== 'Pending' &&
+    r.status !== 'Declined' &&
+    r.followUpStatus !== 'Declined' &&
+    r.status !== 'Completed' &&
     r.status !== 'Cancelled'
   );
   const totalRemindersCount = activeReminders.length;
@@ -501,32 +437,32 @@ export const RemindersView: React.FC<RemindersViewProps> = ({
   });
 
   // Today's Schedule - active/confirmed only
-  const todaysReminders = filteredReminders.filter(r => r && 
-    r.date === todayDateStr && 
-    r.status !== 'Completed' && 
-    r.status !== 'Cancelled' && 
-    r.status !== 'Pending' && 
-    r.followUpStatus !== 'Pending' && 
-    r.status !== 'Declined' && 
+  const todaysReminders = filteredReminders.filter(r => r &&
+    r.date === todayDateStr &&
+    r.status !== 'Completed' &&
+    r.status !== 'Cancelled' &&
+    r.status !== 'Pending' &&
+    r.followUpStatus !== 'Pending' &&
+    r.status !== 'Declined' &&
     r.followUpStatus !== 'Declined'
-  ).sort((a,b) => (a.time || '').localeCompare(b.time || ''));
-  
+  ).sort((a, b) => (a.time || '').localeCompare(b.time || ''));
+
   // Future Confirmed Reminders - active/confirmed only
-  const futureReminders = filteredReminders.filter(r => r && 
-    r.date !== todayDateStr && 
-    r.status !== 'Completed' && 
-    r.status !== 'Cancelled' && 
-    r.status !== 'Pending' && 
-    r.followUpStatus !== 'Pending' && 
-    r.status !== 'Declined' && 
+  const futureReminders = filteredReminders.filter(r => r &&
+    r.date !== todayDateStr &&
+    r.status !== 'Completed' &&
+    r.status !== 'Cancelled' &&
+    r.status !== 'Pending' &&
+    r.followUpStatus !== 'Pending' &&
+    r.status !== 'Declined' &&
     r.followUpStatus !== 'Declined'
-  ).sort((a,b) => (a.date || '').localeCompare(b.date || ''));
+  ).sort((a, b) => (a.date || '').localeCompare(b.date || ''));
 
   // Completed & History Reminders
   const completedAndHistoryReminders = reminders.filter(r => r && (
-    r.status === 'Completed' || 
-    r.status === 'Cancelled' || 
-    r.status === 'Declined' || 
+    r.status === 'Completed' ||
+    r.status === 'Cancelled' ||
+    r.status === 'Declined' ||
     r.followUpStatus === 'Declined'
   ));
 
@@ -576,7 +512,7 @@ export const RemindersView: React.FC<RemindersViewProps> = ({
 
   const daysInMonth = new Date(calendarDate.getFullYear(), calendarDate.getMonth() + 1, 0).getDate();
   const startDayOfWeek = new Date(calendarDate.getFullYear(), calendarDate.getMonth(), 1).getDay(); // 0 = Sunday
-  
+
   const calendarDays = Array.from({ length: 42 }, (_, i) => {
     const dayNum = i - startDayOfWeek + 1;
     return dayNum > 0 && dayNum <= daysInMonth ? dayNum : null;
@@ -590,7 +526,7 @@ export const RemindersView: React.FC<RemindersViewProps> = ({
       if (!r) return false;
       const onThisDate = (r.date === formattedDate1 || r.date === formattedDate2);
       if (!onThisDate) return false;
-      
+
       // Show only Confirmed or Completed items; hide Pending, Declined, and Cancelled events
       const isConfirmed = r.status === 'Confirmed' || r.status === 'Upcoming' || r.status === 'Snoozed' || r.status === 'Due Now' || r.followUpStatus === 'Accepted';
       const isCompleted = r.status === 'Completed';
@@ -622,7 +558,7 @@ export const RemindersView: React.FC<RemindersViewProps> = ({
       <div className="relative rounded-3xl p-8 sm:p-10 overflow-hidden bg-white/70 dark:bg-slate-800/60 backdrop-blur-xl border border-slate-200/60 dark:border-slate-700 shadow-2xl shadow-slate-200/40 dark:shadow-none">
         <div className="absolute top-0 right-0 w-96 h-96 bg-gradient-to-br from-teal-400/30 to-cyan-300/30 rounded-full blur-3xl -translate-y-1/2 translate-x-1/3 pointer-events-none" />
         <div className="absolute bottom-0 left-0 w-64 h-64 bg-gradient-to-tr from-purple-400/20 to-pink-300/20 rounded-full blur-3xl translate-y-1/3 -translate-x-1/3 pointer-events-none" />
-        
+
         <div className="relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-6">
           <div>
             <div className="flex items-center gap-3 mb-3">
@@ -664,7 +600,7 @@ export const RemindersView: React.FC<RemindersViewProps> = ({
             className="relative p-6 rounded-3xl bg-white/80 dark:bg-slate-900/80 backdrop-blur-md border border-white/50 dark:border-slate-800 shadow-[0_8px_30px_rgb(0,0,0,0.04)] transition-all duration-300 flex flex-col justify-between h-32 cursor-pointer group overflow-hidden"
           >
             <div className={`absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none ${stat.hoverBg}`} />
-            
+
             <div className="relative z-10 flex items-center justify-between">
               <span className="text-xs font-bold text-slate-500 dark:text-slate-400 group-hover:text-slate-700 dark:group-hover:text-slate-300 uppercase tracking-wider transition-colors">{stat.label}</span>
               <div className={`p-2 rounded-2xl bg-white/90 backdrop-blur-sm shadow-sm border border-slate-100 dark:border-slate-800 ${stat.color} transition-transform duration-300 group-hover:scale-110 group-hover:rotate-6`}>
@@ -678,7 +614,7 @@ export const RemindersView: React.FC<RemindersViewProps> = ({
 
       {/* 3. NEXT REMINDER HIGHLIGHT */}
       {nextReminder && (
-        <motion.div 
+        <motion.div
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
           className="relative bg-gradient-to-br from-teal-50/80 to-white dark:from-teal-950/40 dark:to-slate-900 border border-teal-100/50 dark:border-teal-900/50 rounded-3xl p-6 sm:p-8 shadow-[0_8px_30px_rgb(0,0,0,0.06)] overflow-hidden flex flex-col sm:flex-row items-start sm:items-center justify-between gap-6"
@@ -701,13 +637,13 @@ export const RemindersView: React.FC<RemindersViewProps> = ({
           </div>
 
           <div className="relative z-10 flex items-center gap-3 shrink-0 w-full sm:w-auto">
-            <button 
+            <button
               onClick={() => setDetailTarget(nextReminder)}
               className="flex-1 sm:flex-none px-5 py-3 rounded-xl font-bold text-sm text-teal-700 dark:text-teal-300 bg-white/80 dark:bg-slate-800/80 hover:bg-white dark:hover:bg-slate-800 border border-teal-200/50 dark:border-teal-800/50 transition-colors shadow-sm cursor-pointer"
             >
               {t('apt.view_details', 'Details')}
             </button>
-            <button 
+            <button
               onClick={() => handleMarkComplete(nextReminder.id, nextReminder.title)}
               className="flex-1 sm:flex-none px-6 py-3 rounded-xl font-extrabold text-sm text-white bg-teal-500 hover:bg-teal-400 shadow-[0_4px_14px_0_rgba(20,184,166,0.39)] transition-all hover:-translate-y-0.5 flex items-center justify-center gap-2 cursor-pointer"
             >
@@ -720,7 +656,7 @@ export const RemindersView: React.FC<RemindersViewProps> = ({
 
       {/* 4. MAIN LAYOUT (2 COLUMNS) */}
       <div className="grid grid-cols-1 xl:grid-cols-12 gap-8 items-start relative">
-        
+
         {/* LEFT COLUMN: TODAY'S SCHEDULE */}
         <div className="xl:col-span-8 space-y-6">
 
@@ -819,15 +755,15 @@ export const RemindersView: React.FC<RemindersViewProps> = ({
 
           {/* APPOINTMENT REQUESTS SECTION — only shown when there are pending requests */}
           {pendingRequests.length > 0 && (
-          <div className="space-y-4">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <h3 className="text-xl font-extrabold text-slate-900 dark:text-white">{t('reminders.apt_requests', 'Appointment Requests')}</h3>
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <h3 className="text-xl font-extrabold text-slate-900 dark:text-white">{t('reminders.apt_requests', 'Appointment Requests')}</h3>
                   <span className="px-2.5 py-0.5 text-[10px] font-bold bg-amber-500/10 text-amber-600 rounded-full border border-amber-500/20 font-mono">
                     {pendingRequests.length} {t('reminders.status_pending', 'Pending')}
                   </span>
+                </div>
               </div>
-            </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 {pendingRequests.map((req) => (
@@ -848,10 +784,10 @@ export const RemindersView: React.FC<RemindersViewProps> = ({
                       </div>
 
                       <h4 className="text-sm font-extrabold text-slate-900 dark:text-white leading-snug break-words">
-                        {req.doctorName || 'Dr. R. S. Raman, MD (Internal Medicine)'}
+                        {req.doctorName || 'Attending Physician'}
                       </h4>
                       <p className="text-xs text-slate-500 font-medium mt-1">
-                        {req.clinicName || 'Apollo Multispeciality Hospital, Chennai'}
+                        {req.clinicName || 'Medical Clinic'}
                       </p>
 
                       <p className="mt-3 text-xs font-bold text-slate-700 dark:text-slate-300 bg-slate-50 dark:bg-slate-800/50 border border-slate-100 dark:border-slate-700/50 rounded-xl px-3 py-2 inline-flex items-center gap-1.5 shadow-sm">
@@ -888,7 +824,7 @@ export const RemindersView: React.FC<RemindersViewProps> = ({
                   </motion.div>
                 ))}
               </div>
-          </div>
+            </div>
           )}
 
           {/* TODAY'S SCHEDULE SECTION */}
@@ -914,18 +850,18 @@ export const RemindersView: React.FC<RemindersViewProps> = ({
               <div className="space-y-5 relative pl-6 sm:pl-8">
                 {/* Vertical Timeline Line */}
                 <div className="absolute left-[7px] sm:left-[11px] top-6 bottom-6 w-[3px] bg-gradient-to-b from-teal-300 via-slate-200 to-slate-100 dark:from-teal-700 dark:via-slate-800 dark:to-slate-900 rounded-full"></div>
-                
+
                 {todaysReminders.map((rem, remIdx) => {
                   const badge = getCategoryBadge(rem.category);
                   const Icon = badge.icon;
                   const priorityBadge = getPriorityBadge(rem.priority, rem.status);
 
                   return (
-                    <motion.div 
+                    <motion.div
                       initial={{ opacity: 0, x: -15 }}
                       animate={{ opacity: 1, x: 0 }}
                       transition={{ delay: remIdx * 0.08 }}
-                      key={rem.id} 
+                      key={rem.id}
                       className={`relative rounded-[22px] p-5 sm:p-6 transition-all duration-300 shadow-[0_4px_24px_rgb(0,0,0,0.04)] hover:shadow-[0_8px_30px_rgb(0,0,0,0.1)] border ${badge.cardBg} ${badge.border} hover:-translate-y-1`}
                     >
                       {/* Timeline Dot */}
@@ -959,7 +895,7 @@ export const RemindersView: React.FC<RemindersViewProps> = ({
                             {rem.doctorName || 'Patient'}
                           </span>
                         </div>
-                        
+
                         <div className="flex items-center gap-3">
                           <div className="text-right">
                             <span className="text-sm font-extrabold text-slate-900 dark:text-white block leading-tight">{rem.time}</span>
@@ -1006,7 +942,7 @@ export const RemindersView: React.FC<RemindersViewProps> = ({
           <div className="flex items-center justify-between">
             <h3 className="text-xl font-extrabold text-slate-900 dark:text-white">{t('reminders.calendar', 'Calendar')}</h3>
           </div>
-          
+
           <div className="bg-white/90 dark:bg-slate-900/90 backdrop-blur-md rounded-3xl p-6 border border-white/50 dark:border-slate-800 shadow-[0_8px_30px_rgb(0,0,0,0.04)]">
             <div className="flex items-center justify-between mb-6">
               <span className="text-sm font-extrabold text-slate-900 dark:text-white">
@@ -1027,23 +963,22 @@ export const RemindersView: React.FC<RemindersViewProps> = ({
             <div className="grid grid-cols-7 gap-y-3 gap-x-1">
               {calendarDays.map((dayNum, idx) => {
                 if (!dayNum) return <div key={idx} className="h-9" />;
-                
+
                 const today = new Date();
                 const isToday = dayNum === today.getDate() && calendarDate.getMonth() === today.getMonth() && calendarDate.getFullYear() === today.getFullYear();
                 const dayReminders = getDayReminders(dayNum);
                 const hasReminders = dayReminders.length > 0;
 
                 return (
-                  <div 
-                    key={idx} 
+                  <div
+                    key={idx}
                     onClick={() => hasReminders && setDetailTarget(dayReminders[0])}
                     className="relative flex justify-center group cursor-pointer"
                   >
-                    <div className={`w-9 h-9 flex items-center justify-center rounded-full text-xs font-bold transition-all ${
-                      isToday 
-                        ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900 shadow-md scale-110' 
-                        : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
-                    }`}>
+                    <div className={`w-9 h-9 flex items-center justify-center rounded-full text-xs font-bold transition-all ${isToday
+                      ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900 shadow-md scale-110'
+                      : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
+                      }`}>
                       {dayNum}
                     </div>
                     {hasReminders && !isToday && (
@@ -1053,27 +988,27 @@ export const RemindersView: React.FC<RemindersViewProps> = ({
                 );
               })}
             </div>
-            
+
             <div className="mt-8 pt-5 border-t border-slate-100 dark:border-slate-800">
-               <div className="flex items-center gap-2 text-xs font-bold text-slate-500 dark:text-slate-400 mb-4">
-                 <div className="w-2 h-2 rounded-full bg-teal-400 shadow-[0_0_6px_#2dd4bf]" />
-                 <span>{t('reminders.days_with_reminders', 'Days with reminders')}</span>
-               </div>
-               <button 
-                 onClick={() => setFilterDrawerOpen(true)}
-                 className="w-full py-3 rounded-xl font-bold text-xs text-slate-700 dark:text-slate-300 bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 transition-colors shadow-sm cursor-pointer"
-               >
-                 {t('reminders.filter_calendar', 'Filter Calendar View')}
-               </button>
-             </div>
-           </div>
-         </div>
-       </div>
+              <div className="flex items-center gap-2 text-xs font-bold text-slate-500 dark:text-slate-400 mb-4">
+                <div className="w-2 h-2 rounded-full bg-teal-400 shadow-[0_0_6px_#2dd4bf]" />
+                <span>{t('reminders.days_with_reminders', 'Days with reminders')}</span>
+              </div>
+              <button
+                onClick={() => setFilterDrawerOpen(true)}
+                className="w-full py-3 rounded-xl font-bold text-xs text-slate-700 dark:text-slate-300 bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 transition-colors shadow-sm cursor-pointer"
+              >
+                {t('reminders.filter_calendar', 'Filter Calendar View')}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
 
       {/* 5. UPCOMING REMINDERS SECTION */}
       <div className="space-y-6 pt-8 border-t border-slate-200 dark:border-slate-800">
         <h3 className="text-xl font-extrabold text-slate-900 dark:text-white">{t('reminders.upcoming_reminders', 'Upcoming Reminders')}</h3>
-        
+
         {futureReminders.length === 0 ? (
           <div className="bg-white/80 dark:bg-slate-900/80 backdrop-blur-md rounded-3xl border border-white/50 dark:border-slate-800 p-8 text-center shadow-[0_8px_30px_rgb(0,0,0,0.04)]">
             <div className="w-16 h-16 bg-slate-50 dark:bg-slate-950 rounded-full flex items-center justify-center mb-3 mx-auto text-slate-400">
@@ -1108,13 +1043,13 @@ export const RemindersView: React.FC<RemindersViewProps> = ({
                   </div>
 
                   <div className="flex items-center gap-2 shrink-0 w-full sm:w-auto justify-end pl-16 sm:pl-0">
-                    <button 
+                    <button
                       onClick={() => setDetailTarget(rem)}
                       className="px-4 py-2 rounded-xl text-xs font-bold text-slate-600 dark:text-slate-300 bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 transition-colors shadow-sm cursor-pointer"
                     >
                       {t('common.view', 'View')}
                     </button>
-                    <button 
+                    <button
                       onClick={() => setSnoozeTarget(rem)}
                       className="px-4 py-2 rounded-xl text-xs font-bold text-slate-600 dark:text-slate-300 bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 transition-colors shadow-sm cursor-pointer"
                     >
@@ -1181,7 +1116,7 @@ export const RemindersView: React.FC<RemindersViewProps> = ({
                   </div>
 
                   <div className="flex items-center gap-2 shrink-0 w-full sm:w-auto justify-end pl-16 sm:pl-0">
-                    <button 
+                    <button
                       onClick={() => setDetailTarget(rem)}
                       className="px-4 py-2 rounded-xl text-xs font-bold text-slate-500 dark:text-slate-400 bg-slate-50/50 dark:bg-slate-800/80 hover:bg-slate-100 dark:hover:bg-slate-700 border border-slate-200/50 dark:border-slate-700 transition-colors cursor-pointer shadow-sm"
                     >

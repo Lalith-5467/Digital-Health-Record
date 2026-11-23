@@ -9,7 +9,8 @@
     "build": "tsc",
     "start": "node dist/server.js",
     "seed": "tsx prisma/seed.ts",
-    "seed:passwords": "tsx src/utils/updateDemoPasswords.ts"
+    "seed:passwords": "tsx src/utils/updateDemoPasswords.ts",
+    "reset:password": "node scripts/resetPassword.js"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

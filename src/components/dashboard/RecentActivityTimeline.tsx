@@ -1,65 +1,155 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { Activity, Calendar, Pill, FileText, ShieldCheck } from 'lucide-react';
+import { Activity, Calendar, FileText, ShieldCheck, HeartPulse } from 'lucide-react';
 import { useLanguage } from '../../context/LanguageContext';
+import { appointmentApi, recordApi, vitalApi, notificationApi } from '../../services/dhrApis';
+
+interface TimelineEntry {
+  id: string;
+  title: string;
+  time: string;
+  timestamp: number;
+  category: string;
+  icon: React.ElementType;
+  accent: string;
+  accentBg: string;
+  accentBorder: string;
+  categoryColor: string;
+  itemBg: string;
+  itemBorder: string;
+}
+
+const formatTimeAgo = (dateStr?: string | null) => {
+  if (!dateStr) return 'Recently';
+  const ts = new Date(dateStr).getTime();
+  if (isNaN(ts)) return 'Recently';
+  const diff = Math.max(0, Date.now() - ts);
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return 'Just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  if (days === 1) return 'Yesterday';
+  return `${days}d ago`;
+};
 
 export const RecentActivityTimeline: React.FC = () => {
   const { t } = useLanguage();
+  const [activities, setActivities] = useState<TimelineEntry[]>([]);
 
-  const activities = [
-    {
-      id: 1,
-      title: t('activity.act1_title', 'Appointment Scheduled with Dr. Rajesh Kumar'),
-      time: t('activity.10m_ago', '10 mins ago'),
-      category: t('activity.act1_cat', 'Appointment'),
-      icon: Calendar,
-      accent: '#3b82f6',
-      accentBg: 'rgba(59,130,246,.12)',
-      accentBorder: 'rgba(59,130,246,.25)',
-      categoryColor: '#2563eb',
-      itemBg: 'rgba(239,246,255,.8)',
-      itemBorder: 'rgba(59,130,246,.12)',
-    },
-    {
-      id: 2,
-      title: t('activity.act2_title', 'Amoxicillin 500mg marked as taken'),
-      time: t('activity.1h_ago', '1 hour ago'),
-      category: t('activity.act2_cat', 'Medication'),
-      icon: Pill,
-      accent: '#f59e0b',
-      accentBg: 'rgba(245,158,11,.12)',
-      accentBorder: 'rgba(245,158,11,.25)',
-      categoryColor: '#d97706',
-      itemBg: 'rgba(255,251,235,.8)',
-      itemBorder: 'rgba(245,158,11,.12)',
-    },
-    {
-      id: 3,
-      title: t('activity.act3_title', 'CBC & Blood Panel report uploaded to ABDM Vault'),
-      time: t('activity.3h_ago', '3 hours ago'),
-      category: t('activity.act3_cat', 'Records'),
-      icon: FileText,
-      accent: '#10b981',
-      accentBg: 'rgba(16,185,129,.12)',
-      accentBorder: 'rgba(16,185,129,.25)',
-      categoryColor: '#059669',
-      itemBg: 'rgba(240,253,244,.8)',
-      itemBorder: 'rgba(16,185,129,.12)',
-    },
-    {
-      id: 4,
-      title: t('activity.act4_title', 'Dr. Anita Sharma requested access to Health Profile'),
-      time: t('activity.yesterday', 'Yesterday'),
-      category: t('activity.act4_cat', 'Consent'),
-      icon: ShieldCheck,
-      accent: '#06b6d4',
-      accentBg: 'rgba(6,182,212,.12)',
-      accentBorder: 'rgba(6,182,212,.25)',
-      categoryColor: '#0891b2',
-      itemBg: 'rgba(236,254,255,.8)',
-      itemBorder: 'rgba(6,182,212,.12)',
-    },
-  ];
+  useEffect(() => {
+    let mounted = true;
+
+    const loadTimeline = async () => {
+      const [aptsRes, recsRes, vitalsRes, notifsRes] = await Promise.all([
+        appointmentApi.getAppointments().catch(() => ({ data: [] })),
+        recordApi.getMedicalRecords().catch(() => ({ data: [] })),
+        vitalApi.getVitals().catch(() => ({ data: [] })),
+        notificationApi.getNotifications().catch(() => ({ data: [] })),
+      ]);
+
+      if (!mounted) return;
+
+      const merged: TimelineEntry[] = [];
+
+      const apts = Array.isArray(aptsRes?.data) ? aptsRes.data : [];
+      apts.slice(0, 5).forEach((apt: any) => {
+        const dt = apt.createdAt || apt.appointmentDate;
+        const ts = new Date(dt || Date.now()).getTime() || 0;
+        const docName = apt.doctor?.fullName || 'Assigned Doctor';
+        merged.push({
+          id: `apt-${apt.id}`,
+          title: `Appointment (${apt.status || 'Scheduled'}) with ${docName}`,
+          time: formatTimeAgo(dt),
+          timestamp: ts,
+          category: 'Appointment',
+          icon: Calendar,
+          accent: '#3b82f6',
+          accentBg: 'rgba(59,130,246,.12)',
+          accentBorder: 'rgba(59,130,246,.25)',
+          categoryColor: '#2563eb',
+          itemBg: 'rgba(239,246,255,.8)',
+          itemBorder: 'rgba(59,130,246,.12)',
+        });
+      });
+
+      const recs = Array.isArray(recsRes?.data) ? recsRes.data : [];
+      recs.slice(0, 5).forEach((rec: any) => {
+        const dt = rec.createdAt || rec.recordDate;
+        const ts = new Date(dt || Date.now()).getTime() || 0;
+        merged.push({
+          id: `rec-${rec.id}`,
+          title: `${rec.title} added to Health Vault`,
+          time: formatTimeAgo(dt),
+          timestamp: ts,
+          category: 'Records',
+          icon: FileText,
+          accent: '#10b981',
+          accentBg: 'rgba(16,185,129,.12)',
+          accentBorder: 'rgba(16,185,129,.25)',
+          categoryColor: '#059669',
+          itemBg: 'rgba(240,253,244,.8)',
+          itemBorder: 'rgba(16,185,129,.12)',
+        });
+      });
+
+      const vitals = Array.isArray(vitalsRes?.data) ? vitalsRes.data : [];
+      vitals.slice(0, 5).forEach((v: any) => {
+        const dt = v.recordedAt;
+        const ts = new Date(dt || Date.now()).getTime() || 0;
+        const parts: string[] = [];
+        if (v.systolicBp && v.diastolicBp) parts.push(`BP ${v.systolicBp}/${v.diastolicBp}`);
+        if (v.heartRate) parts.push(`HR ${v.heartRate} BPM`);
+        if (v.oxygenSaturation) parts.push(`SpO₂ ${v.oxygenSaturation}%`);
+        merged.push({
+          id: `vit-${v.id}`,
+          title: parts.length > 0 ? `Vitals Logged: ${parts.join(' · ')}` : 'Vitals reading recorded',
+          time: formatTimeAgo(dt),
+          timestamp: ts,
+          category: 'Vitals',
+          icon: HeartPulse,
+          accent: '#f59e0b',
+          accentBg: 'rgba(245,158,11,.12)',
+          accentBorder: 'rgba(245,158,11,.25)',
+          categoryColor: '#d97706',
+          itemBg: 'rgba(255,251,235,.8)',
+          itemBorder: 'rgba(245,158,11,.12)',
+        });
+      });
+
+      const notifs = Array.isArray(notifsRes?.data) ? notifsRes.data : [];
+      notifs.slice(0, 5).forEach((n: any) => {
+        const dt = n.createdAt;
+        const ts = new Date(dt || Date.now()).getTime() || 0;
+        merged.push({
+          id: `notif-${n.id}`,
+          title: n.title || n.message,
+          time: formatTimeAgo(dt),
+          timestamp: ts,
+          category: n.category || 'Notification',
+          icon: ShieldCheck,
+          accent: '#06b6d4',
+          accentBg: 'rgba(6,182,212,.12)',
+          accentBorder: 'rgba(6,182,212,.25)',
+          categoryColor: '#0891b2',
+          itemBg: 'rgba(236,254,255,.8)',
+          itemBorder: 'rgba(6,182,212,.12)',
+        });
+      });
+
+      merged.sort((a, b) => b.timestamp - a.timestamp);
+      setActivities(merged.slice(0, 5));
+    };
+
+    loadTimeline();
+    const handleRefresh = () => loadTimeline();
+    window.addEventListener('health_workflow_updated', handleRefresh);
+    return () => {
+      mounted = false;
+      window.removeEventListener('health_workflow_updated', handleRefresh);
+    };
+  }, []);
 
   return (
     <motion.div
@@ -99,69 +189,75 @@ export const RecentActivityTimeline: React.FC = () => {
 
       {/* ── TIMELINE ── */}
       <div className="relative z-10">
-        {activities.map((act, idx) => {
-          const Icon = act.icon;
-          const isLast = idx === activities.length - 1;
+        {activities.length === 0 ? (
+          <div className="py-10 text-center text-xs text-slate-500 dark:text-slate-400 font-medium">
+            No recent activity yet. Book an appointment, log vitals, or upload medical records to see updates here.
+          </div>
+        ) : (
+          activities.map((act, idx) => {
+            const Icon = act.icon;
+            const isLast = idx === activities.length - 1;
 
-          return (
-            <div key={act.id} className="flex gap-4">
-              {/* LEFT COLUMN — icon + vertical connector */}
-              <div className="flex flex-col items-center shrink-0" style={{ width: '40px' }}>
-                {/* Icon circle */}
-                <motion.div
-                  initial={{ scale: 0.7, opacity: 0 }}
-                  animate={{ scale: 1, opacity: 1 }}
-                  transition={{ duration: 0.3, delay: idx * 0.07 }}
-                  className="w-10 h-10 rounded-full flex items-center justify-center shrink-0 shadow-sm z-10"
-                  style={{
-                    background: act.accentBg,
-                    border: `2px solid ${act.accentBorder}`,
-                  }}
-                >
-                  <Icon className="w-4 h-4" style={{ color: act.accent }} />
-                </motion.div>
-
-                {/* Connector line — hidden for last item */}
-                {!isLast && (
-                  <div
-                    className="flex-1 mt-1"
+            return (
+              <div key={act.id} className="flex gap-4">
+                {/* LEFT COLUMN — icon + vertical connector */}
+                <div className="flex flex-col items-center shrink-0" style={{ width: '40px' }}>
+                  {/* Icon circle */}
+                  <motion.div
+                    initial={{ scale: 0.7, opacity: 0 }}
+                    animate={{ scale: 1, opacity: 1 }}
+                    transition={{ duration: 0.3, delay: idx * 0.07 }}
+                    className="w-10 h-10 rounded-full flex items-center justify-center shrink-0 shadow-sm z-10"
                     style={{
-                      width: '2px',
-                      minHeight: '20px',
-                      background: `linear-gradient(to bottom, ${act.accent}40, ${activities[idx + 1].accent}20)`,
-                      borderRadius: '2px',
-                      marginBottom: '0px',
+                      background: act.accentBg,
+                      border: `2px solid ${act.accentBorder}`,
                     }}
-                  />
-                )}
-              </div>
+                  >
+                    <Icon className="w-4 h-4" style={{ color: act.accent }} />
+                  </motion.div>
 
-              {/* RIGHT COLUMN — content card */}
-              <motion.div
-                initial={{ opacity: 0, x: -8 }}
-                animate={{ opacity: 1, x: 0 }}
-                transition={{ duration: 0.3, delay: idx * 0.06 }}
-                className={`flex-1 rounded-2xl px-4 py-3 relative overflow-hidden ${isLast ? 'mb-0' : 'mb-3'}`}
-              >
-                <div className="absolute inset-0 dark:hidden pointer-events-none" style={{ background: act.itemBg, border: `1px solid ${act.itemBorder}`, boxShadow: '0 1px 6px rgba(0,0,0,.04)' }} />
-                <div className="absolute inset-0 hidden dark:block pointer-events-none bg-slate-800/50 border border-slate-200 dark:border-slate-700/60 shadow-[0_1px_6px_rgba(0,0,0,.3)]" />
-                
-                <div className="relative z-10 flex items-start justify-between gap-2">
-                  <h4 className="text-xs font-extrabold text-slate-900 dark:text-white leading-snug">
-                    {act.title}
-                  </h4>
-                  <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 dark:text-slate-500 font-mono shrink-0 pt-px whitespace-nowrap">
-                    {act.time}
-                  </span>
+                  {/* Connector line — hidden for last item */}
+                  {!isLast && (
+                    <div
+                      className="flex-1 mt-1"
+                      style={{
+                        width: '2px',
+                        minHeight: '20px',
+                        background: `linear-gradient(to bottom, ${act.accent}40, ${activities[idx + 1].accent}20)`,
+                        borderRadius: '2px',
+                        marginBottom: '0px',
+                      }}
+                    />
+                  )}
                 </div>
-                <span className="mt-1 inline-block text-[10px] font-extrabold relative z-10"
-                  style={{ color: act.categoryColor }}>
-                  {act.category}
-                </span>
-              </motion.div>
-            </div>
-          );
-        })}
+
+                {/* RIGHT COLUMN — content card */}
+                <motion.div
+                  initial={{ opacity: 0, x: -8 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  transition={{ duration: 0.3, delay: idx * 0.06 }}
+                  className={`flex-1 rounded-2xl px-4 py-3 relative overflow-hidden ${isLast ? 'mb-0' : 'mb-3'}`}
+                >
+                  <div className="absolute inset-0 dark:hidden pointer-events-none" style={{ background: act.itemBg, border: `1px solid ${act.itemBorder}`, boxShadow: '0 1px 6px rgba(0,0,0,.04)' }} />
+                  <div className="absolute inset-0 hidden dark:block pointer-events-none bg-slate-800/50 border border-slate-200 dark:border-slate-700/60 shadow-[0_1px_6px_rgba(0,0,0,.3)]" />
+
+                  <div className="relative z-10 flex items-start justify-between gap-2">
+                    <h4 className="text-xs font-extrabold text-slate-900 dark:text-white leading-snug">
+                      {act.title}
+                    </h4>
+                    <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 font-mono shrink-0 pt-px whitespace-nowrap">
+                      {act.time}
+                    </span>
+                  </div>
+                  <span className="mt-1 inline-block text-[10px] font-extrabold relative z-10"
+                    style={{ color: act.categoryColor }}>
+                    {act.category}
+                  </span>
+                </motion.div>
+              </div>
+            );
+          })
+        )}
       </div>
     </motion.div>
   );

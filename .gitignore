@@ -12,7 +12,20 @@ dist
 dist-ssr
 *.local
 
-# Editor directories and files
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Temporary and scratch test scripts
+scratch/
+server/test_hospital_auth_suite.ts
+
+# Database backups and exports
+backups/
+*backup*.json
+prisma_backup*.json
+
 .vscode/*
 !.vscode/extensions.json
 .idea

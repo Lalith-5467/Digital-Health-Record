@@ -1,22 +1,34 @@
 import { Router } from 'express';
-import { 
-  searchHealthShortsController, 
+import { authenticate } from '../middleware/auth.middleware';
+import {
+  searchHealthShortsController,
   getHealthShortsFeedController,
-  getHealthShortsSuggestionsController
+  getHealthShortsSuggestionsController,
+  getVideoInteractionController,
+  upsertVideoInteractionController,
+  getVideoCommentsController,
+  postVideoCommentController,
 } from '../controllers/healthShorts.controller';
 
 const router = Router();
+router.use(authenticate);
 
-// Real-time YouTube-style search autocomplete suggestions: /api/health-shorts/suggest?q=hand
+// Real-time YouTube-style search autocomplete suggestions
 router.get('/suggest', getHealthShortsSuggestionsController);
 
-// Dynamic Search endpoint: /api/health-shorts/search?q=fitness
+// Dynamic Search endpoint
 router.get('/search', searchHealthShortsController);
 
-// Dynamic Feed endpoint: /api/health-shorts/feed?category=Wellness
+// Dynamic Feed endpoint
 router.get('/feed', getHealthShortsFeedController);
 
-// Default GET endpoint: /api/health-shorts?q=fitness&category=Fitness
+// Engagement: Likes, Saves, Watch Progress & Comments persisted in MySQL
+router.get('/:videoId/interact', getVideoInteractionController);
+router.post('/:videoId/interact', upsertVideoInteractionController);
+router.get('/:videoId/comments', getVideoCommentsController);
+router.post('/:videoId/comments', postVideoCommentController);
+
+// Default GET endpoint
 router.get('/', searchHealthShortsController);
 
 export default router;

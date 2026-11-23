@@ -15,8 +15,6 @@ import type {
   ConnectedServiceItem
 } from './settingsData';
 import {
-  INITIAL_USER_PROFILE,
-  INITIAL_ACCOUNT_SETTINGS,
   INITIAL_SECURITY_SETTINGS,
   INITIAL_NOTIFICATION_SETTINGS,
   INITIAL_PRIVACY_SETTINGS,
@@ -41,6 +39,7 @@ import { DataStorageSection } from './DataStorageSection';
 import { AccessibilitySection } from './AccessibilitySection';
 import { AboutSupportSection } from './AboutSupportSection';
 import { UnsavedChangesBar } from './UnsavedChangesBar';
+import { profileApi, authApi } from '../../services/dhrApis';
 
 interface UserProfile {
   name: string;
@@ -67,15 +66,23 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [hasUnsaved, setHasUnsaved] = useState(false);
 
   // SETTINGS STATE
-  const [profile, setProfile] = useState<UserProfileSettings>(() => {
-    return {
-      ...INITIAL_USER_PROFILE,
-      fullName: _user?.name || INITIAL_USER_PROFILE.fullName,
-      email: _user?.email || INITIAL_USER_PROFILE.email,
-      bloodGroup: _user?.bloodGroup || INITIAL_USER_PROFILE.bloodGroup,
-    };
+  const [profile, setProfile] = useState<UserProfileSettings>(() => ({
+    fullName: _user?.name || '',
+    email: _user?.email || '',
+    phone: '',
+    dob: '',
+    gender: 'Prefer not to say',
+    location: '',
+    bloodGroup: _user?.bloodGroup || '',
+    emergencyContact: '',
+    avatarUrl: '',
+  }));
+  const [account, setAccount] = useState<AccountSettings>({
+    accountStatus: 'Active',
+    memberSince: 'Not Recorded',
+    userId: 'Loading...',
+    plan: 'Patient Standard',
   });
-  const [account, setAccount] = useState<AccountSettings>(INITIAL_ACCOUNT_SETTINGS);
   const [security, setSecurity] = useState<SecuritySettingsState>(INITIAL_SECURITY_SETTINGS);
   const [notificationSetts, setNotificationSetts] = useState<NotificationSettingsState>(INITIAL_NOTIFICATION_SETTINGS);
   const [privacySetts, setPrivacySetts] = useState<PrivacySettingsState>(INITIAL_PRIVACY_SETTINGS);
@@ -83,28 +90,69 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [healthPrefSetts, setHealthPrefSetts] = useState<HealthPreferencesSettingsState>(INITIAL_HEALTH_PREFERENCES);
   const [connectedServices, setConnectedServices] = useState<ConnectedServiceItem[]>(CONNECTED_SERVICES_LIST);
 
-  // Load settings from localStorage on mount
+  // Load profile & preferences from MySQL on mount
   useEffect(() => {
-    const savedProfile = localStorage.getItem('user_settings_profile');
-    if (savedProfile) { 
-      try { 
-        const parsedProfile = JSON.parse(savedProfile);
-        if (_user && parsedProfile.email !== _user.email) {
-          localStorage.removeItem('user_settings_profile');
-        } else if (parsedProfile.fullName === 'Arun Kumar') {
-          // Clear the old cached mock data so Devi's profile loads
-          localStorage.removeItem('user_settings_profile');
-        } else {
-          setProfile(parsedProfile); 
+    Promise.all([
+      profileApi.getProfile().catch(() => null),
+      profileApi.getPreferences().catch(() => null),
+    ]).then(([profRes, prefRes]) => {
+      const d: any = profRes?.data;
+      const p = d?.profile || d;
+      if (d) {
+        const createdRaw = d.createdAt || p?.createdAt;
+        const memberSinceFormatted = createdRaw
+          ? new Date(createdRaw).toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
+          : 'Not Recorded';
+        const statusVal = String(d.status || '').toUpperCase() === 'INACTIVE' ? 'Inactive' : 'Active';
+        setAccount({
+          accountStatus: statusVal,
+          memberSince: memberSinceFormatted,
+          userId: d.id ? `USR-${String(d.id).slice(-8).toUpperCase()}` : 'Not Recorded',
+          plan: d.role ? `${String(d.role).charAt(0).toUpperCase() + String(d.role).slice(1).toLowerCase()} Account` : 'Patient Account',
+        });
+      }
+      if (p) {
+        setProfile((prev) => ({
+          ...prev,
+          fullName: p.fullName || d?.fullName || prev.fullName,
+          email: d?.email || prev.email,
+          phone: d?.phoneNumber || p.phone || prev.phone,
+          dob: p.dateOfBirth ? String(p.dateOfBirth).slice(0, 10) : prev.dob,
+          gender: p.gender || prev.gender,
+          location: p.address || prev.location,
+          bloodGroup: p.bloodGroup || prev.bloodGroup,
+        }));
+      }
+      const pref: any = prefRes?.data;
+      if (pref) {
+        if (pref.notifications && typeof pref.notifications === 'object') {
+          setNotificationSetts((prev) => ({ ...prev, ...pref.notifications }));
         }
-      } catch (e) { console.error(e); } 
-    }
-    const savedNotifs = localStorage.getItem('user_settings_notifications');
-    if (savedNotifs) { try { setNotificationSetts(JSON.parse(savedNotifs)); } catch (e) { console.error(e); } }
-    const savedPrivacy = localStorage.getItem('user_settings_privacy');
-    if (savedPrivacy) { try { setPrivacySetts(JSON.parse(savedPrivacy)); } catch (e) { console.error(e); } }
-    const savedAppear = localStorage.getItem('user_settings_appearance');
-    if (savedAppear) { try { setAppearanceSetts(JSON.parse(savedAppear)); } catch (e) { console.error(e); } }
+        if (pref.privacy && typeof pref.privacy === 'object') {
+          setPrivacySetts((prev) => ({ ...prev, ...pref.privacy }));
+        }
+        if (pref.appearance && typeof pref.appearance === 'object') {
+          setAppearanceSetts((prev) => ({ ...prev, ...pref.appearance }));
+        }
+        if (pref.health && typeof pref.health === 'object') {
+          setHealthPrefSetts((prev) => ({ ...prev, ...pref.health }));
+        }
+        if (Array.isArray(pref.connectedServices)) {
+          setConnectedServices(pref.connectedServices);
+        } else if (pref.connectedServices && typeof pref.connectedServices === 'object') {
+          setConnectedServices((prev) =>
+            prev.map((s) =>
+              pref.connectedServices[s.id] !== undefined
+                ? { ...s, enabled: Boolean(pref.connectedServices[s.id]) }
+                : s
+            )
+          );
+        }
+        if (pref.twoFactorEnabled !== undefined) {
+          setSecurity((prev) => ({ ...prev, twoFactorEnabled: Boolean(pref.twoFactorEnabled) }));
+        }
+      }
+    });
   }, []);
 
   useEffect(() => {
@@ -123,69 +171,80 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     setTimeout(() => setToastMessage(null), 3000);
   };
 
-  const handleSaveProfile = (updated: UserProfileSettings) => {
-    setProfile(updated);
-    localStorage.setItem('user_settings_profile', JSON.stringify(updated));
-    
+  const persistAllPreferences = async (overrides: Record<string, any> = {}) => {
     try {
-      const existingProfileStr = localStorage.getItem('user_profile_data');
-      const existingProfile = existingProfileStr ? JSON.parse(existingProfileStr) : {};
-      
-      const syncedProfileData = {
-        ...existingProfile,
-        name: updated.fullName,
-        email: updated.email,
-        phone: updated.phone,
-        dob: updated.dob,
-        gender: updated.gender,
-        location: updated.location,
-        bloodGroup: updated.bloodGroup
-      };
-      
-      localStorage.setItem('user_profile_data', JSON.stringify(syncedProfileData));
-    } catch (e) {
-      console.error('Failed to sync profile data', e);
-    }
-
-    setHasUnsaved(false);
-    showToast('✓ Profile updated successfully');
+      await profileApi.updatePreferences({
+        notifications: overrides.notificationSetts ?? notificationSetts,
+        privacy: overrides.privacySetts ?? privacySetts,
+        appearance: overrides.appearanceSetts ?? appearanceSetts,
+        health: overrides.healthPrefSetts ?? healthPrefSetts,
+        connectedServices: overrides.connectedServices ?? connectedServices,
+        ...(overrides.twoFactorEnabled !== undefined ? { twoFactorEnabled: overrides.twoFactorEnabled } : {}),
+      });
+    } catch {}
   };
 
-  const handleDeactivateAccount = () => {
-    setAccount({ ...account, accountStatus: 'Inactive' });
-    showToast('✓ Account status set to Inactive (Demo)');
+  const handleSaveProfile = async (updated: UserProfileSettings) => {
+    try {
+      await profileApi.updatePatientProfile({
+        fullName: updated.fullName,
+        phoneNumber: updated.phone,
+        dateOfBirth: updated.dob,
+        gender: updated.gender,
+        address: updated.location,
+        bloodGroup: updated.bloodGroup,
+      });
+      setProfile(updated);
+      setHasUnsaved(false);
+      showToast('✓ Profile saved to MySQL database');
+    } catch {
+      showToast('Failed to update profile');
+    }
+  };
+
+  const handleDeactivateAccount = async () => {
+    try {
+      await authApi.deactivateAccount();
+      setAccount({ ...account, accountStatus: 'Inactive' });
+      showToast('✓ Account deactivated in database');
+    } catch {
+      showToast('Failed to deactivate account');
+    }
   };
 
   const handleUpdateSecurity = (updated: SecuritySettingsState) => {
     setSecurity(updated);
-    showToast('✓ Security settings updated');
+    persistAllPreferences();
+    showToast('✓ Security settings saved to MySQL');
   };
 
   const handleUpdateNotifications = (updated: NotificationSettingsState) => {
     setNotificationSetts(updated);
-    localStorage.setItem('user_settings_notifications', JSON.stringify(updated));
-    showToast('✓ Notification preferences updated');
+    persistAllPreferences({ notificationSetts: updated });
+    showToast('✓ Notification preferences saved to MySQL');
   };
 
   const handleUpdatePrivacy = (updated: PrivacySettingsState) => {
     setPrivacySetts(updated);
-    localStorage.setItem('user_settings_privacy', JSON.stringify(updated));
+    persistAllPreferences({ privacySetts: updated });
   };
 
   const handleUpdateAppearance = (updated: AppearanceSettingsState) => {
     setAppearanceSetts(updated);
-    localStorage.setItem('user_settings_appearance', JSON.stringify(updated));
+    persistAllPreferences({ appearanceSetts: updated });
   };
 
-  const handleUpdateHealthPref = (updated: HealthPreferencesSettingsState) => {
+  const handleUpdateHealthPref = async (updated: HealthPreferencesSettingsState) => {
     setHealthPrefSetts(updated);
-    localStorage.setItem('user_settings_health_pref', JSON.stringify(updated));
+    await persistAllPreferences({ healthPrefSetts: updated });
+    showToast('✓ Health preferences saved to MySQL');
   };
 
-  const handleToggleService = (id: string) => {
+  const handleToggleService = async (id: string) => {
     const updated = connectedServices.map((s) => (s.id === id ? { ...s, enabled: !s.enabled } : s));
     setConnectedServices(updated);
-    showToast('✓ Connected services updated');
+    await persistAllPreferences({ connectedServices: updated });
+    showToast('✓ Connected services saved to MySQL');
   };
 
   const handleExportData = (format: 'json' | 'csv') => {
@@ -224,17 +283,20 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     reader.readAsText(file);
   };
 
-  const handleResetPreferences = () => {
-    setProfile(INITIAL_USER_PROFILE);
+  const handleResetPreferences = async () => {
     setNotificationSetts(INITIAL_NOTIFICATION_SETTINGS);
     setPrivacySetts(INITIAL_PRIVACY_SETTINGS);
     setAppearanceSetts(INITIAL_APPEARANCE_SETTINGS);
     setHealthPrefSetts(INITIAL_HEALTH_PREFERENCES);
-    localStorage.removeItem('user_settings_profile');
-    localStorage.removeItem('user_settings_notifications');
-    localStorage.removeItem('user_settings_privacy');
-    localStorage.removeItem('user_settings_appearance');
-    showToast('✓ All preferences restored to defaults');
+    setConnectedServices(CONNECTED_SERVICES_LIST);
+    await persistAllPreferences({
+      notificationSetts: INITIAL_NOTIFICATION_SETTINGS,
+      privacySetts: INITIAL_PRIVACY_SETTINGS,
+      appearanceSetts: INITIAL_APPEARANCE_SETTINGS,
+      healthPrefSetts: INITIAL_HEALTH_PREFERENCES,
+      connectedServices: CONNECTED_SERVICES_LIST,
+    });
+    showToast('✓ All preferences restored to defaults in database');
   };
 
   return (

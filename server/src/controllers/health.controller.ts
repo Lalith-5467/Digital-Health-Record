@@ -24,7 +24,6 @@ export const getDatabaseHealth = async (_req: Request, res: Response): Promise<v
     res.status(503).json({
       success: false,
       message: 'Database connection failed',
-      error: err.message,
     });
   }
 };

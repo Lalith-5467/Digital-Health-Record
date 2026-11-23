@@ -18,10 +18,7 @@ import type {
   EmergencyPreferencesState
 } from './emergencyData';
 import {
-  INITIAL_EMERGENCY_CONTACTS,
-  INITIAL_MEDICAL_INFO,
   EMERGENCY_SERVICES,
-  INITIAL_EMERGENCY_HISTORY,
   DEFAULT_EMERGENCY_PREFERENCES
 } from './emergencyData';
 import { EmergencyHeaderStatus } from './EmergencyHeaderStatus';
@@ -42,6 +39,7 @@ import { EmergencyPreferencesModal } from './EmergencyPreferencesModal';
 import { EmergencyHistorySection } from './EmergencyHistorySection';
 import { TestEmergencyModal } from './TestEmergencyModal';
 import { EmergencyReadinessCard } from './EmergencyReadinessCard';
+import { patientClinicalApi, profileApi, medicineApi } from '../../services/dhrApis';
 
 interface UserProfile {
   name: string;
@@ -64,12 +62,22 @@ export const EmergencyView: React.FC<EmergencyViewProps> = ({
   const { t } = useLanguage();
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
-  // MAIN STATE
-  const [contacts, setContacts] = useState<EmergencyContactItem[]>(INITIAL_EMERGENCY_CONTACTS);
-  const [medicalInfo, setMedicalInfo] = useState<EmergencyMedicalInfo>(INITIAL_MEDICAL_INFO);
-  const [history, setHistory] = useState<EmergencyActivityItem[]>(INITIAL_EMERGENCY_HISTORY);
+  // MAIN STATE (Hydrated from MySQL)
+  const [contacts, setContacts] = useState<EmergencyContactItem[]>([]);
+  const [medicalInfo, setMedicalInfo] = useState<EmergencyMedicalInfo>({
+    patientName: _user?.name || 'Not Recorded',
+    bloodGroup: _user?.bloodGroup || 'Not Recorded',
+    allergies: 'None Recorded',
+    conditions: 'None Recorded',
+    medications: 'None Recorded',
+    preferredHospital: 'Not Recorded',
+    medicalId: _user?.abhaId || 'Not Recorded',
+    organDonor: false,
+  });
+  const [history, setHistory] = useState<EmergencyActivityItem[]>([]);
+  const [activeSosId, setActiveSosId] = useState<string | null>(null);
   const [preferences, setPreferences] = useState<EmergencyPreferencesState>(DEFAULT_EMERGENCY_PREFERENCES);
-  const [locationName, setLocationName] = useState('Selaiyur, Chennai (12.9090° N, 80.1425° E)');
+  const [locationName, setLocationName] = useState('Not Recorded');
   const [hasTested, setHasTested] = useState(false);
 
   // SOS SEQUENCING STATE
@@ -89,16 +97,116 @@ export const EmergencyView: React.FC<EmergencyViewProps> = ({
   const [testModalOpen, setTestModalOpen] = useState(false);
   const [shareIDModalOpen, setShareIDModalOpen] = useState(false);
 
-  // Load state from localStorage on mount
+  const loadEmergencyData = async () => {
+    try {
+      const [contactsRes, sosRes, patRes, prefRes, allergiesRes, conditionsRes, medsRes] = await Promise.all([
+        patientClinicalApi.getEmergencyContacts().catch(() => null),
+        patientClinicalApi.getSosAlerts().catch(() => null),
+        profileApi.getPatientProfile().catch(() => null),
+        profileApi.getPreferences().catch(() => null),
+        patientClinicalApi.getAllergies().catch(() => null),
+        patientClinicalApi.getConditions().catch(() => null),
+        medicineApi.getActiveMedications().catch(() => null),
+      ]);
+
+      if (contactsRes?.data && Array.isArray(contactsRes.data)) {
+        setContacts(
+          contactsRes.data.map((c: any) => ({
+            id: c.id,
+            name: c.name,
+            relationship: c.relationship,
+            phone: c.phone,
+            priority: c.priority === 'PRIMARY' ? 'Primary' : 'Secondary',
+            status: 'Ready',
+          }))
+        );
+      }
+
+      if (sosRes?.data && Array.isArray(sosRes.data)) {
+        const mappedHistory: EmergencyActivityItem[] = sosRes.data.map((s: any) => {
+          const dt = s.triggeredAt ? new Date(s.triggeredAt) : new Date();
+          const isTest = String(s.eventType || '').toUpperCase().includes('TEST') ||
+            String(s.eventType || '').toUpperCase().includes('DRILL') ||
+            String(s.notes || '').toLowerCase().includes('drill test');
+          return {
+            id: s.id,
+            event: isTest ? 'Emergency Drill Test' : (s.eventType || 'SOS Emergency Alert'),
+            date: dt.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }),
+            time: dt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            status: isTest ? 'Test' : (s.status === 'CANCELLED' ? 'Cancelled' : 'Completed'),
+          };
+        });
+        setHistory(mappedHistory);
+        if (mappedHistory.some((h) => h.status === 'Test')) {
+          setHasTested(true);
+        }
+      }
+
+      const pat: any = patRes?.data;
+      const allergiesList: any[] = Array.isArray(allergiesRes?.data)
+        ? allergiesRes!.data
+        : Array.isArray(pat?.allergies)
+        ? pat.allergies
+        : [];
+      const conditionsList: any[] = Array.isArray(conditionsRes?.data)
+        ? conditionsRes!.data
+        : Array.isArray(pat?.conditions)
+        ? pat.conditions
+        : [];
+      const rawMeds: any = medsRes?.data;
+      const medsList: any[] = Array.isArray(rawMeds?.medications)
+        ? rawMeds.medications
+        : Array.isArray(rawMeds)
+        ? rawMeds
+        : [];
+
+      const formattedAllergies = allergiesList.length > 0
+        ? allergiesList
+            .map((a: any) => `${a.allergen || a.name || ''}${a.severity ? ` (${a.severity})` : ''}`.trim())
+            .filter(Boolean)
+            .join(', ')
+        : 'None Recorded';
+
+      const formattedConditions = conditionsList.length > 0
+        ? conditionsList
+            .map((c: any) => c.conditionName || c.name || '')
+            .filter(Boolean)
+            .join(', ')
+        : 'None Recorded';
+
+      const formattedMeds = medsList.length > 0
+        ? medsList
+            .map((m: any) => `${m.medicineName || m.name || ''}${m.dosage ? ` ${m.dosage}` : ''}`.trim())
+            .filter(Boolean)
+            .join(', ')
+        : 'None Recorded';
+
+      setMedicalInfo({
+        patientName: pat?.fullName || _user?.name || 'Not Recorded',
+        bloodGroup: pat?.bloodGroup || _user?.bloodGroup || 'Not Recorded',
+        allergies: formattedAllergies,
+        conditions: formattedConditions,
+        medications: formattedMeds,
+        preferredHospital: pat?.preferredHospital || 'Not Recorded',
+        medicalId: pat?.abhaId || _user?.abhaId || 'Not Recorded',
+        organDonor: pat?.organDonor !== undefined ? Boolean(pat.organDonor) : false,
+      });
+
+      if (pat?.lastKnownLocation) {
+        setLocationName(pat.lastKnownLocation);
+      } else if (pat?.address) {
+        setLocationName(pat.address);
+      }
+
+      const emergPref = prefRes?.data?.emergency;
+      if (emergPref && typeof emergPref === 'object') {
+        setPreferences((prev) => ({ ...prev, ...emergPref }));
+      }
+    } catch { }
+  };
+
   useEffect(() => {
-    const savedContacts = localStorage.getItem('user_emergency_contacts');
-    if (savedContacts) {
-      try { setContacts(JSON.parse(savedContacts)); } catch (e) { console.error(e); }
-    }
-    const savedMedical = localStorage.getItem('user_emergency_medical_info');
-    if (savedMedical) {
-      try { setMedicalInfo(JSON.parse(savedMedical)); } catch (e) { console.error(e); }
-    }
+    loadEmergencyData();
   }, []);
 
   // Countdown Interval logic
@@ -111,7 +219,18 @@ export const EmergencyView: React.FC<EmergencyViewProps> = ({
     } else if (sosCountdownActive && sosCountdown === 0) {
       setSosCountdownActive(false);
       setSosActivated(true);
-      showToast('🚨 Simulated SOS Emergency Alert Activated');
+      patientClinicalApi
+        .triggerSosAlert({
+          eventType: 'EMERGENCY_SOS',
+          locationLabel: locationName,
+          notes: 'SOS Emergency Alert activated by patient',
+        })
+        .then((res) => {
+          if (res?.data?.id) setActiveSosId(res.data.id);
+          loadEmergencyData();
+        })
+        .catch(() => { });
+      showToast('🚨 Emergency SOS Alert persisted & dispatched');
     }
     return () => clearInterval(timer);
   }, [sosCountdownActive, sosCountdown]);
@@ -136,57 +255,81 @@ export const EmergencyView: React.FC<EmergencyViewProps> = ({
     showToast('✓ SOS Countdown Cancelled');
   };
 
-  const handleCancelSOSActivated = () => {
+  const handleCancelSOSActivated = async () => {
+    if (activeSosId) {
+      await patientClinicalApi.resolveSosAlert(activeSosId, { notes: 'Cancelled by patient' }).catch(() => { });
+      setActiveSosId(null);
+      await loadEmergencyData();
+    }
     setSosActivated(false);
-    showToast('✓ SOS Simulation Deactivated');
+    showToast('✓ SOS Alert resolved in database');
   };
 
-  const handleSaveContact = (contact: EmergencyContactItem) => {
-    let updated = [...contacts];
-    if (contact.priority === 'Primary') {
-      updated = updated.map((c) => ({
-        ...c,
-        priority: c.priority === 'Primary' ? 'Secondary' : c.priority
-      }));
+  const handleSaveContact = async (contact: EmergencyContactItem) => {
+    try {
+      const existing = contacts.find((c) => c.id === contact.id);
+      if (existing) {
+        await patientClinicalApi.updateEmergencyContact(contact.id, {
+          name: contact.name,
+          relationship: contact.relationship,
+          phone: contact.phone,
+          priority: contact.priority === 'Primary' ? 'PRIMARY' : 'SECONDARY',
+        });
+      } else {
+        await patientClinicalApi.createEmergencyContact({
+          name: contact.name,
+          relationship: contact.relationship,
+          phone: contact.phone,
+          priority: contact.priority === 'Primary' ? 'PRIMARY' : 'SECONDARY',
+        });
+      }
+      await loadEmergencyData();
+      showToast(`✓ Contact ${contact.name} saved to MySQL`);
+    } catch {
+      showToast('Failed to save emergency contact');
     }
-    const existingIdx = updated.findIndex((c) => c.id === contact.id);
-    if (existingIdx >= 0) {
-      updated[existingIdx] = contact;
-    } else {
-      updated.push(contact);
+  };
+
+  const handleRemoveContact = async (id: string) => {
+    try {
+      await patientClinicalApi.deleteEmergencyContact(id);
+      await loadEmergencyData();
+      showToast('✓ Contact removed from database');
+    } catch {
+      showToast('Failed to remove emergency contact');
     }
-    setContacts(updated);
-    localStorage.setItem('user_emergency_contacts', JSON.stringify(updated));
-    showToast(`✓ Contact ${contact.name} saved successfully`);
   };
 
-  const handleRemoveContact = (id: string) => {
-    const updated = contacts.filter((c) => c.id !== id);
-    setContacts(updated);
-    localStorage.setItem('user_emergency_contacts', JSON.stringify(updated));
-    showToast('✓ Contact removed from emergency list');
-  };
-
-  const handleSaveMedicalInfo = (updatedInfo: EmergencyMedicalInfo) => {
-    setMedicalInfo(updatedInfo);
-    localStorage.setItem('user_emergency_medical_info', JSON.stringify(updatedInfo));
-    showToast('✓ Emergency Medical Information updated');
+  const handleSaveMedicalInfo = async (updatedInfo: EmergencyMedicalInfo) => {
+    try {
+      await profileApi.updatePatientProfile({
+        fullName: updatedInfo.patientName,
+        bloodGroup: updatedInfo.bloodGroup,
+        preferredHospital: updatedInfo.preferredHospital,
+        organDonor: updatedInfo.organDonor,
+      });
+      setMedicalInfo(updatedInfo);
+      showToast('✓ Emergency Medical Information saved to MySQL');
+    } catch {
+      showToast('Failed to update medical information');
+    }
   };
 
   const handleRefreshLocation = () => {
     if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
         (pos) => {
-          setLocationName(`Detected Coordinates: (${pos.coords.latitude.toFixed(4)}° N, ${pos.coords.longitude.toFixed(4)}° E)`);
-          showToast('📍 Browser location updated');
+          const coords = `GPS (${pos.coords.latitude.toFixed(4)}° N, ${pos.coords.longitude.toFixed(4)}° E)`;
+          setLocationName(coords);
+          profileApi.updatePatientProfile({ lastKnownLocation: coords }).catch(() => { });
+          showToast('📍 Browser location updated & saved');
         },
         () => {
-          setLocationName('Selaiyur, Chennai (Fallback Location)');
-          showToast('📍 Location permission denied — using fallback');
+          showToast('📍 Location permission denied');
         }
       );
     } else {
-      showToast('📍 Geolocation not supported — using demo location');
+      showToast('📍 Geolocation not supported by browser');
     }
   };
 
@@ -228,7 +371,7 @@ export const EmergencyView: React.FC<EmergencyViewProps> = ({
           contacts={contacts}
           locationName={locationName}
           onCancelSimulation={handleCancelSOSActivated}
-          onOpenServices={() => {}}
+          onOpenServices={() => { }}
         />
       )}
 
@@ -381,26 +524,38 @@ export const EmergencyView: React.FC<EmergencyViewProps> = ({
         preferences={preferences}
         isOpen={preferencesModalOpen}
         onClose={() => setPreferencesModalOpen(false)}
-        onSavePreferences={(pref) => {
+        onSavePreferences={async (pref) => {
           setPreferences(pref);
-          showToast('✓ Emergency Preferences updated');
+          try {
+            await profileApi.updatePreferences({ emergency: pref });
+            showToast('✓ Emergency Preferences saved to database');
+          } catch {
+            showToast('Failed to save emergency preferences');
+          }
         }}
       />
 
       <TestEmergencyModal
         isOpen={testModalOpen}
         onClose={() => setTestModalOpen(false)}
-        onTestComplete={() => {
+        onTestComplete={async () => {
           setHasTested(true);
-          const newAct: EmergencyActivityItem = {
-            id: `ACT-${Date.now().toString().slice(-4)}`,
-            event: 'System Diagnostic Test',
-            date: '24 Aug 2026',
-            time: 'Just Now',
-            status: 'Completed'
-          };
-          setHistory([newAct, ...history]);
-          showToast('✓ Emergency sequence test completed');
+          try {
+            const res = await patientClinicalApi.triggerSosAlert({
+              eventType: 'EMERGENCY_DRILL_TEST',
+              locationLabel: locationName,
+              notes: 'Emergency Drill Test',
+            });
+            if (res?.data?.id) {
+              await patientClinicalApi.resolveSosAlert(res.data.id, {
+                notes: 'Emergency Drill Test completed',
+              }).catch(() => { });
+            }
+            await loadEmergencyData();
+            showToast('✓ Emergency drill test recorded in database');
+          } catch {
+            showToast('Failed to record emergency drill test');
+          }
         }}
       />
 

@@ -3,13 +3,7 @@ import { AlertTriangle, Plus, Trash2 } from 'lucide-react';
 import type { AllergyItem } from './AddAllergyModal';
 import { AddAllergyModal } from './AddAllergyModal';
 import { useLanguage } from '../../context/LanguageContext';
-
-const STORAGE_KEY = 'patient_profile_allergies';
-
-const DEFAULT_ALLERGIES: AllergyItem[] = [
-  { id: '1', name: 'Penicillin', severity: 'Moderate', reaction: 'Skin Rash & Hives', notes: 'Diagnosed 2018' },
-  { id: '2', name: 'Peanuts', severity: 'Severe', reaction: 'Anaphylactic throat swelling', notes: 'Requires EpiPen' }
-];
+import { patientClinicalApi } from '../../services/dhrApis';
 
 interface AllergiesSectionProps {
   onToast: (msg: string) => void;
@@ -18,19 +12,31 @@ interface AllergiesSectionProps {
 
 export const AllergiesSection: React.FC<AllergiesSectionProps> = ({ onToast, openAddModalTrigger }) => {
   const { t } = useLanguage();
-  const [allergies, setAllergies] = useState<AllergyItem[]>(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          return parsed;
-        }
-      }
-    } catch {}
-    return DEFAULT_ALLERGIES;
-  });
+  const [allergies, setAllergies] = useState<AllergyItem[]>([]);
   const [modalOpen, setModalOpen] = useState(false);
+
+  const loadAllergies = async () => {
+    try {
+      const res = await patientClinicalApi.getAllergies();
+      if (res?.data && Array.isArray(res.data)) {
+        setAllergies(
+          res.data.map((a: any) => ({
+            id: a.id,
+            name: a.allergen || a.name,
+            severity: a.severity || 'Moderate',
+            reaction: a.reaction || 'Reported sensitivity',
+            notes: a.notes || '',
+          }))
+        );
+      }
+    } catch {
+      setAllergies([]);
+    }
+  };
+
+  useEffect(() => {
+    loadAllergies();
+  }, []);
 
   // Trigger modal when requested from ProfileCompletionCard
   useEffect(() => {
@@ -39,26 +45,40 @@ export const AllergiesSection: React.FC<AllergiesSectionProps> = ({ onToast, ope
     }
   }, [openAddModalTrigger]);
 
-  const handleAdd = (item: AllergyItem) => {
-    setAllergies((prev) => {
-      const updated = [...prev, item];
-      try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
-      } catch {}
-      return updated;
-    });
-    onToast(`Added allergy: ${item.name}`);
+  const handleAdd = async (item: AllergyItem) => {
+    try {
+      const res = await patientClinicalApi.createAllergy({
+        allergen: item.name,
+        severity: item.severity,
+        reaction: item.reaction,
+        notes: item.notes,
+      });
+      if (res?.data) {
+        setAllergies((prev) => [
+          {
+            id: res.data.id,
+            name: res.data.allergen,
+            severity: res.data.severity,
+            reaction: res.data.reaction || '',
+            notes: res.data.notes || '',
+          },
+          ...prev,
+        ]);
+        onToast(`Saved allergy to database: ${item.name}`);
+      }
+    } catch (err: any) {
+      onToast(err?.message || 'Failed to save allergy');
+    }
   };
 
-  const handleDelete = (id: string, name: string) => {
-    setAllergies((prev) => {
-      const updated = prev.filter((a) => a.id !== id);
-      try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
-      } catch {}
-      return updated;
-    });
-    onToast(`Removed allergy: ${name}`);
+  const handleDelete = async (id: string, name: string) => {
+    try {
+      await patientClinicalApi.deleteAllergy(id);
+      setAllergies((prev) => prev.filter((a) => a.id !== id));
+      onToast(`Removed allergy: ${name}`);
+    } catch (err: any) {
+      onToast(err?.message || 'Failed to delete allergy');
+    }
   };
 
   return (
@@ -108,8 +128,8 @@ export const AllergiesSection: React.FC<AllergiesSectionProps> = ({ onToast, ope
               const badgeBg = isSevere
                 ? 'bg-rose-500/15 text-rose-700 dark:text-rose-400 border-rose-500/30'
                 : isMod
-                ? 'bg-amber-500/15 text-amber-700 dark:text-amber-400 border-amber-500/30'
-                : 'bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-400 border-slate-300 dark:border-slate-700';
+                  ? 'bg-amber-500/15 text-amber-700 dark:text-amber-400 border-amber-500/30'
+                  : 'bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-400 border-slate-300 dark:border-slate-700';
 
               return (
                 <div

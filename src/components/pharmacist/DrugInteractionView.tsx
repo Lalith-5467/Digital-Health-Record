@@ -1,4 +1,5 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
+import { pharmacyOpsApi } from '../../services/dhrApis';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   ShieldAlert,
@@ -388,9 +389,63 @@ export const DrugInteractionView: React.FC = () => {
   const [newDrugInput, setNewDrugInput] = useState('');
 
   // Profiles derived dynamically
+  const [dbInteractionMatch, setDbInteractionMatch] = useState<InteractionResult | null>(null);
   const primaryProfile = useMemo(() => getDrugProfile(primaryDrug), [primaryDrug]);
   const secondaryProfile = useMemo(() => getDrugProfile(secondaryDrug), [secondaryDrug]);
-  const interactionReport = useMemo(() => getClinicalInteraction(primaryDrug, secondaryDrug), [primaryDrug, secondaryDrug]);
+  const localInteractionReport = useMemo(() => getClinicalInteraction(primaryDrug, secondaryDrug), [primaryDrug, secondaryDrug]);
+  const interactionReport = dbInteractionMatch || localInteractionReport;
+
+  useEffect(() => {
+    const drugs = [primaryDrug, secondaryDrug, ...additionalDrugs].map((d) => d.trim()).filter(Boolean);
+    if (drugs.length < 2) {
+      setDbInteractionMatch(null);
+      return;
+    }
+    let cancelled = false;
+    pharmacyOpsApi
+      .checkDrugInteractions(drugs)
+      .then((res) => {
+        if (cancelled) return;
+        const hits = Array.isArray(res?.data) ? res.data : [];
+        if (hits.length > 0) {
+          const top = hits[0];
+          const sev = String(top.severity || '').toLowerCase();
+          const severityLevel: InteractionResult['severityLevel'] =
+            sev.includes('critical') || sev.includes('contra') || sev.includes('severe')
+              ? 'critical'
+              : sev.includes('moderate')
+              ? 'moderate'
+              : sev.includes('mild')
+              ? 'mild'
+              : 'safe';
+          setDbInteractionMatch({
+            drugA: top.drugA || primaryDrug,
+            drugB: top.drugB || secondaryDrug,
+            severity:
+              severityLevel === 'critical'
+                ? 'Critical / Contraindicated'
+                : severityLevel === 'moderate'
+                ? 'Moderate Risk'
+                : severityLevel === 'mild'
+                ? 'Mild / Monitor'
+                : 'Safe / Compatible',
+            severityLevel,
+            mechanism: top.clinicalEffect || top.mechanism || top.description || 'Database-verified clinical interaction.',
+            clinicalAction: top.recommendation || top.clinicalAction || 'Consult prescribing physician before dispensing.',
+            patientAdvice: top.recommendation || top.patientAdvice || 'Follow pharmacist safety counseling.',
+            evidenceSource: top.evidenceSource || 'MySQL Clinical Pharmacovigilance DB',
+          });
+        } else {
+          setDbInteractionMatch(null);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setDbInteractionMatch(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [primaryDrug, secondaryDrug, additionalDrugs]);
 
   // Quick preset catalog
   const PRESET_COMBINATIONS = [

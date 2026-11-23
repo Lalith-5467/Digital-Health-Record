@@ -5,42 +5,96 @@ import { useNurseWorkflow } from '../../../utils/nurseWorkflowStorage';
 
 export const NurseHistoryView: React.FC = () => {
   const { bookings } = useNurseWorkflow();
-  
-  // Enhance bookings with mock data for fields that might be missing in the schema
-  const enhancedBookings = bookings.map((b, i) => ({
-    ...b,
-    requiresFollowUp: i % 3 === 0, // Mock follow-up requirement
-    rating: b.status === 'Completed' ? "5.0" : "N/A"
-  }));
+
+  // Derive follow-up and rating strictly from real persisted care request fields
+  const enhancedBookings = bookings.map((b: any) => {
+    const notesStr = String(b.nurseClinicalNotes || b.notes || '');
+    const checklistArr = Array.isArray(b.checklist) ? b.checklist : [];
+    const hasIncompleteTasks = checklistArr.some((item: any) => item && item.done === false);
+    const requiresFollowUp = Boolean(
+      b.requiresFollowUp ||
+        b.followUpRequired ||
+        /follow[- ]?up|revisit|review required/i.test(notesStr) ||
+        (b.status !== 'Completed' && hasIncompleteTasks)
+    );
+    const numericRating = typeof b.rating === 'number' && b.rating > 0 ? b.rating : null;
+    return {
+      ...b,
+      requiresFollowUp,
+      numericRating,
+      rating: numericRating !== null ? numericRating.toFixed(1) : 'N/A',
+    };
+  });
 
   // State
   const [searchTerm, setSearchTerm] = useState('');
   const [dateFilter, setDateFilter] = useState('');
   const [showFilterDropdown, setShowFilterDropdown] = useState(false);
-  
+
   const [statusFilter, setStatusFilter] = useState('All');
   const [followUpFilter, setFollowUpFilter] = useState('All');
   const [ratingFilter, setRatingFilter] = useState('All');
   const [selectedRecord, setSelectedRecord] = useState<any | null>(null);
 
+  const handleDownloadEhrSummary = (visit: any) => {
+    const summaryPayload = {
+      exportedAt: new Date().toISOString(),
+      careRequestId: visit.id,
+      patientName: visit.patientName,
+      patientAge: visit.patientAge,
+      gender: visit.gender || 'Not Specified',
+      serviceType: visit.serviceType || visit.service || 'Home Nursing Care',
+      scheduledDate: visit.prefDate,
+      scheduledTime: visit.time,
+      status: visit.status,
+      address: visit.address || 'Not Recorded',
+      requiresFollowUp: visit.requiresFollowUp,
+      rating: visit.rating,
+      clinicalNotes: visit.nurseClinicalNotes || visit.notes || '',
+      checklist: Array.isArray(visit.checklist) ? visit.checklist : [],
+    };
+
+    const blob = new Blob([JSON.stringify(summaryPayload, null, 2)], {
+      type: 'application/json;charset=utf-8;',
+    });
+    const url = URL.createObjectURL(blob);
+    const safeName = String(visit.patientName || 'patient').replace(/[^a-z0-9-_]+/gi, '_').toLowerCase();
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `ehr-care-summary-${safeName}-${visit.id}.json`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
   // Filtering Logic
-  const filteredRecords = enhancedBookings.filter(visit => {
-    const matchesSearch = visit.patientName.toLowerCase().includes(searchTerm.toLowerCase()) || 
-                          visit.id.toLowerCase().includes(searchTerm.toLowerCase());
-    const matchesDate = dateFilter ? visit.prefDate.includes(dateFilter) : true;
+  const filteredRecords = enhancedBookings.filter((visit) => {
+    const matchesSearch =
+      String(visit.patientName || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
+      String(visit.id || '').toLowerCase().includes(searchTerm.toLowerCase());
+    const matchesDate = dateFilter ? String(visit.prefDate || '').includes(dateFilter) : true;
     const matchesStatus = statusFilter === 'All' ? true : visit.status === statusFilter;
-    const matchesFollowUp = followUpFilter === 'All' ? true : 
-                            followUpFilter === 'Yes' ? visit.requiresFollowUp : !visit.requiresFollowUp;
+    const matchesFollowUp =
+      followUpFilter === 'All'
+        ? true
+        : followUpFilter === 'Yes'
+        ? visit.requiresFollowUp
+        : !visit.requiresFollowUp;
     const matchesRating = ratingFilter === 'All' ? true : visit.rating === ratingFilter;
 
     return matchesSearch && matchesDate && matchesStatus && matchesFollowUp && matchesRating;
   });
 
-  // Summary Data (Based on filtered records)
+  // Summary Data (Strictly derived from real filtered DB records)
   const totalVisits = filteredRecords.length;
-  const completedCount = filteredRecords.filter(b => b.status === 'Completed').length;
-  const followUpsCount = filteredRecords.filter(b => b.requiresFollowUp).length; 
-  const avgRating = completedCount > 0 ? "5.0" : "N/A";
+  const completedCount = filteredRecords.filter((b) => b.status === 'Completed').length;
+  const followUpsCount = filteredRecords.filter((b) => b.requiresFollowUp).length;
+  const ratedVisits = filteredRecords.filter((b) => b.numericRating !== null);
+  const avgRating =
+    ratedVisits.length > 0
+      ? (ratedVisits.reduce((sum, b) => sum + Number(b.numericRating), 0) / ratedVisits.length).toFixed(1)
+      : 'N/A';
 
   const clearFilters = () => {
     setSearchTerm('');
@@ -100,7 +154,6 @@ export const NurseHistoryView: React.FC = () => {
         </div>
         
         <div className="flex gap-2 relative">
-          {/* Native Date Picker Hack */}
           <div className="relative">
             <input 
               type="date" 
@@ -221,9 +274,9 @@ export const NurseHistoryView: React.FC = () => {
                    'bg-purple-100 text-purple-600 dark:bg-purple-900/40 dark:text-purple-400',
                    'bg-rose-100 text-rose-600 dark:bg-rose-900/40 dark:text-rose-400',
                    'bg-amber-100 text-amber-600 dark:bg-amber-900/40 dark:text-amber-400'
-                  ][visit.patientName.charCodeAt(0) % 5]
+                  ][(visit.patientName || 'P').charCodeAt(0) % 5]
                 }`}>
-                  {visit.patientName.charAt(0)}
+                  {(visit.patientName || 'P').charAt(0)}
                 </div>
                 <div>
                   <div className="flex items-center gap-2 mb-0.5">
@@ -251,15 +304,15 @@ export const NurseHistoryView: React.FC = () => {
                 
                 <div className="flex items-center gap-2">
                   <button 
-                    onClick={() => alert(`Downloading EHR Summary PDF for ${visit.patientName}...`)}
-                    className="w-8 h-8 rounded-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 flex items-center justify-center text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 hover:border-emerald-200 transition-all group/btn"
+                    onClick={() => handleDownloadEhrSummary(visit)}
+                    className="w-8 h-8 rounded-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 flex items-center justify-center text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 hover:border-emerald-200 transition-all group/btn cursor-pointer"
                     title="Download EHR Summary"
                   >
                     <Download className="w-3.5 h-3.5 group-hover/btn:scale-110 group-hover/btn:text-emerald-600 transition-all duration-300" />
                   </button>
                   <button 
                     onClick={() => setSelectedRecord(visit)}
-                    className="px-3 py-1.5 rounded-lg bg-slate-900 dark:bg-white text-white dark:text-slate-900 text-xs font-bold shadow-sm hover:shadow-md hover:scale-105 active:scale-95 transition-all flex items-center gap-1.5 group/btn2"
+                    className="px-3 py-1.5 rounded-lg bg-slate-900 dark:bg-white text-white dark:text-slate-900 text-xs font-bold shadow-sm hover:shadow-md hover:scale-105 active:scale-95 transition-all flex items-center gap-1.5 group/btn2 cursor-pointer"
                   >
                     View <ArrowRight className="w-3 h-3 group-hover/btn2:translate-x-0.5 transition-transform" />
                   </button>
@@ -300,7 +353,7 @@ export const NurseHistoryView: React.FC = () => {
                 </div>
                 <button 
                   onClick={() => setSelectedRecord(null)}
-                  className="w-8 h-8 rounded-full hover:bg-slate-200 dark:hover:bg-slate-800 flex items-center justify-center text-slate-500 hover:text-slate-800 dark:hover:text-white hover:rotate-90 transition-all duration-300"
+                  className="w-8 h-8 rounded-full hover:bg-slate-200 dark:hover:bg-slate-800 flex items-center justify-center text-slate-500 hover:text-slate-800 dark:hover:text-white hover:rotate-90 transition-all duration-300 cursor-pointer"
                 >
                   <X className="w-4 h-4" />
                 </button>
@@ -311,11 +364,11 @@ export const NurseHistoryView: React.FC = () => {
                 {/* Profile Snapshot */}
                 <div className="text-center space-y-2">
                   <div className="w-20 h-20 mx-auto rounded-3xl bg-gradient-to-br from-emerald-100 to-emerald-50 dark:from-emerald-900/40 dark:to-emerald-800/20 text-emerald-600 dark:text-emerald-400 flex items-center justify-center font-black text-3xl shadow-sm">
-                    {selectedRecord.patientName.charAt(0)}
+                    {(selectedRecord.patientName || 'P').charAt(0)}
                   </div>
                   <div>
                     <h2 className="text-lg font-black text-slate-900 dark:text-white">{selectedRecord.patientName}</h2>
-                    <p className="text-xs font-bold text-slate-500">{selectedRecord.patientAge} • {selectedRecord.gender || 'M'}</p>
+                    <p className="text-xs font-bold text-slate-500">{selectedRecord.patientAge} • {selectedRecord.gender || 'Not Specified'}</p>
                   </div>
                   <div className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black uppercase tracking-wider ${selectedRecord.status === 'Completed' ? 'bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-400' : 'bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400'}`}>
                     <CheckCircle2 className="w-3 h-3" /> {selectedRecord.status}
@@ -340,7 +393,7 @@ export const NurseHistoryView: React.FC = () => {
                     </div>
 
                     <div className="flex items-center gap-3 p-3 bg-slate-50 dark:bg-slate-800/50 rounded-xl border border-slate-100 dark:border-slate-700/50 group/item hover:bg-white dark:hover:bg-slate-800 transition-colors">
-                      <div className={`w-8 h-8 rounded-lg bg-white dark:bg-slate-900 shadow-sm flex items-center justify-center text-slate-400 group-hover/item:text-amber-500 transition-colors`}>
+                      <div className="w-8 h-8 rounded-lg bg-white dark:bg-slate-900 shadow-sm flex items-center justify-center text-slate-400 group-hover/item:text-amber-500 transition-colors">
                         <Star className="w-4 h-4" />
                       </div>
                       <div>
@@ -367,8 +420,8 @@ export const NurseHistoryView: React.FC = () => {
 
               <div className="p-4 sm:p-6 border-t border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/50">
                 <button 
-                  onClick={() => alert(`Downloading EHR Summary PDF for ${selectedRecord.patientName}...`)}
-                  className="w-full py-3 rounded-xl bg-emerald-50 dark:bg-emerald-900/30 border border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-400 text-sm font-black flex items-center justify-center gap-2 hover:bg-emerald-100 dark:hover:bg-emerald-900/50 transition-colors group"
+                  onClick={() => handleDownloadEhrSummary(selectedRecord)}
+                  className="w-full py-3 rounded-xl bg-emerald-50 dark:bg-emerald-900/30 border border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-400 text-sm font-black flex items-center justify-center gap-2 hover:bg-emerald-100 dark:hover:bg-emerald-900/50 transition-colors group cursor-pointer"
                 >
                   <Download className="w-4 h-4 group-hover:-translate-y-0.5 transition-transform duration-300" />
                   Download EHR Summary

@@ -23,25 +23,26 @@ import {
   Smile,
   ShieldCheck
 } from 'lucide-react';
-import type { Doctor, SpecialityItem, Appointment } from './appointmentsData';
-import { MOCK_SPECIALITIES, MOCK_DOCTORS } from './appointmentsData';
+import type { Doctor, Appointment } from './appointmentsData';
+import { MOCK_SPECIALITIES } from './appointmentsData';
 import { DoctorFilterDrawer } from './DoctorFilterDrawer';
 import type { DoctorFilterState } from './DoctorFilterDrawer';
+import { appointmentApi } from '../../services/dhrApis';
 
 const generateAvailableDates = () => {
   const dates = [];
   const today = new Date();
-  
+
   for (let i = 0; i < 7; i++) {
     const d = new Date(today);
     d.setDate(today.getDate() + i);
-    
+
     const dayName = i === 0 ? 'Today' : i === 1 ? 'Tomorrow' : d.toLocaleDateString('en-US', { weekday: 'short' });
     const formattedDate = d.toLocaleDateString('en-US', { day: '2-digit', month: 'short', year: 'numeric' });
     const displayDayMonth = d.toLocaleDateString('en-US', { day: '2-digit', month: 'short' });
     const pseudoRandom = (d.getDate() * (d.getMonth() + 1) * 17) % 10;
-    const slots = 8 + pseudoRandom; 
-    
+    const slots = 8 + pseudoRandom;
+
     dates.push({
       day: dayName,
       date: formattedDate,
@@ -70,14 +71,15 @@ export const BookingModal: React.FC<BookingModalProps> = ({
 
   // SELECTIONS
   const [selectedSpeciality, setSelectedSpeciality] = useState<string>(
-    initialDoctor ? initialDoctor.speciality : 'General Physician'
+    initialDoctor ? initialDoctor.speciality : 'All'
   );
-  const [selectedDoctor, setSelectedDoctor] = useState<Doctor | null>(initialDoctor || MOCK_DOCTORS[0]);
+  const [selectedDoctor, setSelectedDoctor] = useState<Doctor | null>(initialDoctor || null);
   const availableDates = React.useMemo(() => generateAvailableDates(), []);
   const [selectedDate, setSelectedDate] = useState<string>(availableDates[0].date);
   const [selectedTime, setSelectedTime] = useState<string>('10:30 AM');
   const [consultationType, setConsultationType] = useState<'Video' | 'In-Person'>('Video');
   const [reason, setReason] = useState<string>('');
+  const [bookedSlots, setBookedSlots] = useState<string[]>([]);
 
   // DOCTOR SEARCH & FILTER
   const [doctorSearch, setDoctorSearch] = useState('');
@@ -93,12 +95,68 @@ export const BookingModal: React.FC<BookingModalProps> = ({
 
   const [isConfirming, setIsConfirming] = useState(false);
   const [createdAptId, setCreatedAptId] = useState<string>('');
+  const [dbDoctors, setDbDoctors] = useState<Doctor[]>([]);
+
+  React.useEffect(() => {
+    if (!isOpen) return;
+    setStep(initialDoctor ? 3 : 1);
+    setSelectedDoctor(initialDoctor || null);
+    setSelectedSpeciality(initialDoctor ? initialDoctor.speciality : 'All');
+    setDoctorFilters((prev) => ({
+      ...prev,
+      speciality: initialDoctor ? initialDoctor.speciality : 'All',
+    }));
+
+    appointmentApi
+      .getDoctors()
+      .then((res) => {
+        if (res?.data && Array.isArray(res.data)) {
+          const mapped: Doctor[] = res.data.map((d: any) => ({
+            id: d.id,
+            name: d.fullName,
+            speciality: d.speciality || 'General Physician',
+            experienceYears: Number(d.experienceYears) || 0,
+            hospital: d.hospital || 'Medical Center',
+            rating: Number(d.rating) || 4.8,
+            reviewCount: Number(d.reviewCount) || 0,
+            consultationCount: Number(d.consultationCount) || 0,
+            fee: Number(d.onlineFee || d.consultationFee) || 500,
+            photoUrl: d.photoUrl || '',
+            availability: 'Available Today' as Doctor['availability'],
+            languages: d.languagesJson ? (() => { try { return JSON.parse(d.languagesJson); } catch { return ['English']; } })() : ['English'],
+            gender: (d.gender || 'Male') as Doctor['gender'],
+            about: d.about || 'Verified specialist.',
+          }));
+          setDbDoctors(mapped);
+          if (!initialDoctor && mapped.length > 0) {
+            setSelectedDoctor((prev) => prev || mapped[0]);
+          }
+        }
+      })
+      .catch(() => setDbDoctors([]));
+  }, [isOpen, initialDoctor]);
+
+  React.useEffect(() => {
+    if (!isOpen || !selectedDoctor?.id || !selectedDate) {
+      setBookedSlots([]);
+      return;
+    }
+    const parsedDate = new Date(selectedDate);
+    const isoDate = !isNaN(parsedDate.getTime()) ? parsedDate.toISOString().split('T')[0] : new Date().toISOString().split('T')[0];
+    appointmentApi
+      .getDoctorSlots(selectedDoctor.id, isoDate)
+      .then((res) => {
+        const booked = res?.data?.bookedSlots || res?.data?.unavailableSlots || [];
+        setBookedSlots(Array.isArray(booked) ? booked : []);
+      })
+      .catch(() => setBookedSlots([]));
+  }, [isOpen, selectedDoctor?.id, selectedDate]);
 
   if (!isOpen) return null;
 
-  // FILTER DOCTORS LOGIC
-  const filteredDoctors = MOCK_DOCTORS.filter((doc) => {
-    if (selectedSpeciality && selectedSpeciality !== 'All' && doc.speciality !== selectedSpeciality) {
+  // FILTER DOCTORS LOGIC (Real MySQL Doctors)
+  const filteredDoctors = dbDoctors.filter((doc) => {
+    if (selectedSpeciality && selectedSpeciality !== 'All' && !doc.speciality.toLowerCase().includes(selectedSpeciality.toLowerCase())) {
       return false;
     }
     if (doctorFilters.speciality !== 'All' && doc.speciality !== doctorFilters.speciality) {
@@ -213,6 +271,9 @@ export const BookingModal: React.FC<BookingModalProps> = ({
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 max-h-[50vh] overflow-y-auto pr-1">
               {MOCK_SPECIALITIES.map((spec) => {
                 const isSelected = selectedSpeciality === spec.name;
+                const realCount = dbDoctors.filter((d) =>
+                  d.speciality.toLowerCase().includes(spec.name.toLowerCase())
+                ).length;
                 return (
                   <div
                     key={spec.id}
@@ -220,21 +281,19 @@ export const BookingModal: React.FC<BookingModalProps> = ({
                       setSelectedSpeciality(spec.name);
                       setDoctorFilters((f) => ({ ...f, speciality: spec.name }));
                     }}
-                    className={`p-4 rounded-2xl border transition-all cursor-pointer space-y-2.5 ${
-                      isSelected
-                        ? 'bg-teal-500/10 border-teal-500 text-teal-900 dark:text-white shadow-xs'
-                        : 'bg-slate-50 dark:bg-slate-800/60 hover:bg-slate-100 dark:hover:bg-slate-700 border-slate-200 dark:border-slate-700/60 text-slate-700 dark:text-slate-300'
-                    }`}
+                    className={`p-4 rounded-2xl border transition-all cursor-pointer space-y-2.5 ${isSelected
+                      ? 'bg-teal-500/10 border-teal-500 text-teal-900 dark:text-white shadow-xs'
+                      : 'bg-slate-50 dark:bg-slate-800/60 hover:bg-slate-100 dark:hover:bg-slate-700 border-slate-200 dark:border-slate-700/60 text-slate-700 dark:text-slate-300'
+                      }`}
                   >
-                    <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${
-                      isSelected ? 'bg-[#00a896] text-white' : 'bg-white dark:bg-slate-700 text-[#00a896] border border-slate-200 dark:border-slate-600'
-                    }`}>
+                    <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${isSelected ? 'bg-[#00a896] text-white' : 'bg-white dark:bg-slate-700 text-[#00a896] border border-slate-200 dark:border-slate-600'
+                      }`}>
                       {renderSpecialityIcon(spec.iconName)}
                     </div>
 
                     <div>
                       <h4 className="text-xs font-extrabold text-slate-900 dark:text-white">{spec.name}</h4>
-                      <p className="text-[10px] text-teal-600 dark:text-teal-400 font-semibold mt-0.5">{spec.doctorCount} Doctors</p>
+                      <p className="text-[10px] text-teal-600 dark:text-teal-400 font-semibold mt-0.5">{realCount} Doctor{realCount === 1 ? '' : 's'}</p>
                     </div>
                   </div>
                 );
@@ -286,18 +345,23 @@ export const BookingModal: React.FC<BookingModalProps> = ({
                   <div
                     key={doc.id}
                     onClick={() => setSelectedDoctor(doc)}
-                    className={`p-3.5 rounded-2xl border transition-all cursor-pointer flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 ${
-                      isSelected
-                        ? 'bg-teal-500/10 border-teal-500 shadow-xs'
-                        : 'bg-slate-50 dark:bg-slate-800/60 hover:bg-slate-100 dark:hover:bg-slate-700 border-slate-200 dark:border-slate-700/60'
-                    }`}
+                    className={`p-3.5 rounded-2xl border transition-all cursor-pointer flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 ${isSelected
+                      ? 'bg-teal-500/10 border-teal-500 shadow-xs'
+                      : 'bg-slate-50 dark:bg-slate-800/60 hover:bg-slate-100 dark:hover:bg-slate-700 border-slate-200 dark:border-slate-700/60'
+                      }`}
                   >
                     <div className="flex items-center gap-3">
-                      <img
-                        src={doc.photoUrl}
-                        alt={doc.name}
-                        className="w-12 h-12 rounded-xl object-cover border border-teal-500/30 shrink-0"
-                      />
+                      {doc.photoUrl ? (
+                        <img
+                          src={doc.photoUrl}
+                          alt={doc.name}
+                          className="w-12 h-12 rounded-xl object-cover border border-teal-500/30 shrink-0"
+                        />
+                      ) : (
+                        <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-teal-500 to-cyan-600 text-white font-black text-sm flex items-center justify-center border border-teal-500/30 shrink-0">
+                          {doc.name.charAt(0).toUpperCase()}
+                        </div>
+                      )}
                       <div>
                         <h4 className="text-xs font-extrabold text-slate-900 dark:text-white flex items-center gap-2">
                           <span>{doc.name}</span>
@@ -317,11 +381,10 @@ export const BookingModal: React.FC<BookingModalProps> = ({
                       <span className="text-xs font-mono font-bold text-slate-800 dark:text-slate-200">₹{doc.fee}</span>
                       <button
                         type="button"
-                        className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
-                          isSelected
-                            ? 'bg-[#00a896] text-white shadow-xs'
-                            : 'bg-white dark:bg-slate-700 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-600'
-                        }`}
+                        className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${isSelected
+                          ? 'bg-[#00a896] text-white shadow-xs'
+                          : 'bg-white dark:bg-slate-700 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-600'
+                          }`}
                       >
                         {isSelected ? 'Selected ✓' : 'Select'}
                       </button>
@@ -360,14 +423,17 @@ export const BookingModal: React.FC<BookingModalProps> = ({
         {step === 3 && (
           <div className="space-y-5 text-xs">
             <div className="bg-slate-50 dark:bg-slate-800/60 p-3.5 rounded-2xl flex items-center gap-3 border border-slate-200 dark:border-slate-700/60">
-              <img
-                src={selectedDoctor?.photoUrl || (selectedDoctor as any)?.image || 'https://images.unsplash.com/photo-1622253692010-333f2da6031d?auto=format&fit=crop&w=600&q=80'}
-                alt={selectedDoctor?.name || 'Doctor'}
-                className="w-11 h-11 rounded-xl object-cover border border-teal-500/30 shrink-0"
-                onError={(e) => {
-                  e.currentTarget.src = 'https://images.unsplash.com/photo-1622253692010-333f2da6031d?auto=format&fit=crop&w=600&q=80';
-                }}
-              />
+              {selectedDoctor?.photoUrl ? (
+                <img
+                  src={selectedDoctor.photoUrl}
+                  alt={selectedDoctor?.name || 'Doctor'}
+                  className="w-11 h-11 rounded-xl object-cover border border-teal-500/30 shrink-0"
+                />
+              ) : (
+                <div className="w-11 h-11 rounded-xl bg-gradient-to-br from-teal-500 to-cyan-600 text-white font-black text-sm flex items-center justify-center border border-teal-500/30 shrink-0">
+                  {(selectedDoctor?.name || 'D').charAt(0).toUpperCase()}
+                </div>
+              )}
               <div>
                 <h4 className="text-xs font-extrabold text-slate-900 dark:text-white">{selectedDoctor?.name}</h4>
                 <p className="text-[11px] text-[#00a896] font-semibold">{selectedDoctor?.speciality || (selectedDoctor as any)?.specialty || 'Healthcare Specialist'}</p>
@@ -388,11 +454,10 @@ export const BookingModal: React.FC<BookingModalProps> = ({
                       key={item.date}
                       type="button"
                       onClick={() => setSelectedDate(item.date)}
-                      className={`p-3 rounded-2xl border transition-all text-center cursor-pointer ${
-                        isSel
-                          ? 'bg-[#00a896] text-white border-teal-500 shadow-md scale-105'
-                          : 'bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700'
-                      }`}
+                      className={`p-3 rounded-2xl border transition-all text-center cursor-pointer ${isSel
+                        ? 'bg-[#00a896] text-white border-teal-500 shadow-md scale-105'
+                        : 'bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700'
+                        }`}
                     >
                       <div className={`text-[10px] uppercase font-bold ${isSel ? 'text-teal-100' : 'text-slate-500 dark:text-slate-400'}`}>{item.day}</div>
                       <div className="text-xs font-black mt-0.5">{item.displayDayMonth}</div>
@@ -433,22 +498,21 @@ export const BookingModal: React.FC<BookingModalProps> = ({
             <div className="space-y-1.5">
               <span className="text-[10px] font-bold uppercase text-slate-500 tracking-wider">Morning Slots</span>
               <div className="grid grid-cols-4 gap-2">
-                {['09:00 AM', '09:30 AM', '10:00 AM', '10:30 AM'].map((slot, i) => {
+                {['09:00 AM', '09:30 AM', '10:00 AM', '10:30 AM'].map((slot) => {
                   const isSel = selectedTime === slot;
-                  const isBooked = i === 0;
+                  const isBooked = bookedSlots.includes(slot);
                   return (
                     <button
                       key={slot}
                       type="button"
                       disabled={isBooked}
                       onClick={() => setSelectedTime(slot)}
-                      className={`py-2 rounded-xl font-mono text-xs font-bold border transition-colors cursor-pointer text-center ${
-                        isBooked
-                          ? 'opacity-40 bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-slate-800 cursor-not-allowed'
-                          : isSel
+                      className={`py-2 rounded-xl font-mono text-xs font-bold border transition-colors cursor-pointer text-center ${isBooked
+                        ? 'opacity-40 bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-slate-800 cursor-not-allowed'
+                        : isSel
                           ? 'bg-[#00a896] text-white border-teal-500 shadow-xs'
                           : 'bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-200 border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700'
-                      }`}
+                        }`}
                     >
                       {slot}
                     </button>
@@ -463,16 +527,19 @@ export const BookingModal: React.FC<BookingModalProps> = ({
               <div className="grid grid-cols-4 gap-2">
                 {['12:00 PM', '12:30 PM', '01:00 PM', '01:30 PM'].map((slot) => {
                   const isSel = selectedTime === slot;
+                  const isBooked = bookedSlots.includes(slot);
                   return (
                     <button
                       key={slot}
                       type="button"
+                      disabled={isBooked}
                       onClick={() => setSelectedTime(slot)}
-                      className={`py-2 rounded-xl font-mono text-xs font-bold border transition-colors cursor-pointer text-center ${
-                        isSel
+                      className={`py-2 rounded-xl font-mono text-xs font-bold border transition-colors cursor-pointer text-center ${isBooked
+                        ? 'opacity-40 bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-slate-800 cursor-not-allowed'
+                        : isSel
                           ? 'bg-[#00a896] text-white border-teal-500 shadow-xs'
                           : 'bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-200 border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700'
-                      }`}
+                        }`}
                     >
                       {slot}
                     </button>
@@ -508,11 +575,10 @@ export const BookingModal: React.FC<BookingModalProps> = ({
               {/* VIDEO */}
               <div
                 onClick={() => setConsultationType('Video')}
-                className={`p-5 rounded-2xl border transition-all cursor-pointer space-y-2.5 ${
-                  consultationType === 'Video'
-                    ? 'bg-teal-500/10 border-teal-500 text-slate-900 dark:text-white shadow-xs'
-                    : 'bg-slate-50 dark:bg-slate-800/60 hover:bg-slate-100 dark:hover:bg-slate-700 border-slate-200 dark:border-slate-700/60'
-                }`}
+                className={`p-5 rounded-2xl border transition-all cursor-pointer space-y-2.5 ${consultationType === 'Video'
+                  ? 'bg-teal-500/10 border-teal-500 text-slate-900 dark:text-white shadow-xs'
+                  : 'bg-slate-50 dark:bg-slate-800/60 hover:bg-slate-100 dark:hover:bg-slate-700 border-slate-200 dark:border-slate-700/60'
+                  }`}
               >
                 <div className="w-10 h-10 rounded-xl bg-teal-500/15 text-[#00a896] flex items-center justify-center">
                   <Video className="w-5 h-5" />
@@ -526,11 +592,10 @@ export const BookingModal: React.FC<BookingModalProps> = ({
               {/* IN-PERSON */}
               <div
                 onClick={() => setConsultationType('In-Person')}
-                className={`p-5 rounded-2xl border transition-all cursor-pointer space-y-2.5 ${
-                  consultationType === 'In-Person'
-                    ? 'bg-teal-500/10 border-teal-500 text-slate-900 dark:text-white shadow-xs'
-                    : 'bg-slate-50 dark:bg-slate-800/60 hover:bg-slate-100 dark:hover:bg-slate-700 border-slate-200 dark:border-slate-700/60'
-                }`}
+                className={`p-5 rounded-2xl border transition-all cursor-pointer space-y-2.5 ${consultationType === 'In-Person'
+                  ? 'bg-teal-500/10 border-teal-500 text-slate-900 dark:text-white shadow-xs'
+                  : 'bg-slate-50 dark:bg-slate-800/60 hover:bg-slate-100 dark:hover:bg-slate-700 border-slate-200 dark:border-slate-700/60'
+                  }`}
               >
                 <div className="w-10 h-10 rounded-xl bg-purple-500/15 text-purple-600 flex items-center justify-center">
                   <Building2 className="w-5 h-5" />

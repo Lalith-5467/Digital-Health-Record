@@ -1,23 +1,25 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { 
-  Receipt, 
-  IndianRupee, 
-  Printer, 
-  Search, 
-  CheckCircle2, 
-  CreditCard, 
-  Clock, 
-  RefreshCw, 
-  X, 
+import {
+  Receipt,
+  IndianRupee,
+  Printer,
+  Search,
+  CheckCircle2,
+  CreditCard,
+  Clock,
+  RefreshCw,
+  X,
   ChevronRight,
   Pill,
   ShoppingBag
 } from 'lucide-react';
 import { fetchPharmacistOrders, type BackendPharmacyOrder } from '../../services/pharmacyOrderApi';
+import { pharmacyOpsApi } from '../../services/dhrApis';
 
 export const PharmacyBillingView: React.FC = () => {
   const [orders, setOrders] = useState<BackendPharmacyOrder[]>([]);
+  const [invoiceMap, setInvoiceMap] = useState<Record<string, any>>({});
   const [loading, setLoading] = useState<boolean>(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedOrder, setSelectedOrder] = useState<BackendPharmacyOrder | null>(null);
@@ -25,8 +27,18 @@ export const PharmacyBillingView: React.FC = () => {
   const loadBillingOrders = async () => {
     try {
       setLoading(true);
-      const data = await fetchPharmacistOrders();
+      const [data, invoicesRes] = await Promise.all([
+        fetchPharmacistOrders(),
+        pharmacyOpsApi.getInvoices().catch(() => null),
+      ]);
       setOrders(data);
+      if (invoicesRes?.data && Array.isArray(invoicesRes.data)) {
+        const map: Record<string, any> = {};
+        invoicesRes.data.forEach((inv: any) => {
+          if (inv.orderId) map[inv.orderId] = inv;
+        });
+        setInvoiceMap(map);
+      }
     } catch (err) {
       console.error('Failed to load pharmacy billing orders:', err);
     } finally {
@@ -46,7 +58,7 @@ export const PharmacyBillingView: React.FC = () => {
   // Compute live financial metrics from database records
   const paidOrders = orders.filter((o) => o.paymentStatus === 'PAID');
   const pendingOrders = orders.filter((o) => o.paymentStatus !== 'PAID');
-  
+
   const totalPaidAmount = paidOrders.reduce((sum, o) => sum + Number(o.totalAmount || 0), 0);
   const totalPendingAmount = pendingOrders.reduce((sum, o) => sum + Number(o.totalAmount || 0), 0);
 
@@ -71,7 +83,7 @@ export const PharmacyBillingView: React.FC = () => {
 
   return (
     <div className="space-y-6 pb-16 font-sans select-none max-w-7xl mx-auto">
-      
+
       {/* HEADER BANNER */}
       <div className="p-6 sm:p-8 rounded-3xl bg-gradient-to-br from-slate-50 via-emerald-50/50 to-white dark:from-slate-900 dark:via-emerald-950/60 dark:to-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm dark:shadow-xl relative overflow-hidden flex flex-col md:flex-row md:items-center justify-between gap-6">
         <div className="space-y-2 relative z-10">
@@ -180,7 +192,8 @@ export const PharmacyBillingView: React.FC = () => {
         ) : (
           <div className="divide-y divide-slate-100 dark:divide-slate-800/60">
             {filteredOrders.map((ord) => {
-              const invoiceNo = `INV-${ord.id.slice(-6).toUpperCase()}`;
+              const persistedInv = invoiceMap[ord.id];
+              const invoiceNo = persistedInv?.invoiceNumber || `INV-${ord.id.slice(-6).toUpperCase()}`;
               const isPaid = ord.paymentStatus === 'PAID';
               const customerName = ord.patient?.fullName || ord.patientName || 'Patient';
               const itemsCount = ord.items?.length || 0;
@@ -300,11 +313,10 @@ export const PharmacyBillingView: React.FC = () => {
                   <div className="flex justify-between items-center text-xs">
                     <span className="text-slate-400 font-bold">Payment Status:</span>
                     <span
-                      className={`font-mono font-extrabold px-2 py-0.5 rounded-md text-[10px] ${
-                        selectedOrder.paymentStatus === 'PAID'
-                          ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30'
-                          : 'bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/30'
-                      }`}
+                      className={`font-mono font-extrabold px-2 py-0.5 rounded-md text-[10px] ${selectedOrder.paymentStatus === 'PAID'
+                        ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30'
+                        : 'bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/30'
+                        }`}
                     >
                       {selectedOrder.paymentStatus} {selectedOrder.paymentMethod ? `(${selectedOrder.paymentMethod.replace(/_/g, ' ')})` : ''}
                     </span>

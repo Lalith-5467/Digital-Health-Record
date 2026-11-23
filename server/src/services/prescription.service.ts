@@ -53,42 +53,29 @@ export class PrescriptionService {
     let targetPatientId = data.patientId;
     if (user.role === Role.PATIENT) {
       const pat = await prisma.patient.findUnique({ where: { userId: user.id } });
-      if (pat) {
-        targetPatientId = pat.id;
+      if (!pat) throw new AppError('Patient profile not found', 404);
+      if (data.patientId && data.patientId !== pat.id) {
+        throw new AppError('Forbidden: Patients can only submit prescriptions for themselves', 403);
       }
+      targetPatientId = pat.id;
+    } else if (user.role === Role.CAREGIVER) {
+      if (!targetPatientId) throw new AppError('Patient ID is required', 400);
+      await CaregiverService.validateCaregiverAccess(user.id, user.role, targetPatientId);
     }
 
     if (!targetPatientId) {
-      const firstPatient = await prisma.patient.findFirst();
-      if (firstPatient) {
-        targetPatientId = firstPatient.id;
-      } else {
-        throw new AppError('Patient ID is required', 400);
-      }
+      throw new AppError('Patient ID is required', 400);
     }
 
-    // 1. Verify patient exists
-    let patient = await prisma.patient.findUnique({
+    // 1. Verify patient exists (no fallback to arbitrary first patient!)
+    const patient = await prisma.patient.findUnique({
       where: { id: targetPatientId },
     });
 
     if (!patient) {
-      patient = await prisma.patient.findFirst();
-      if (!patient) {
-        const err: AppError = new Error(`Patient with ID ${targetPatientId} not found`);
-        err.statusCode = 404;
-        throw err;
-      }
-      targetPatientId = patient.id;
-    }
-
-    // Patient access check: Patients can only submit prescriptions for themselves
-    if (user.role === Role.PATIENT && patient.userId !== user.id) {
-      const ownPat = await prisma.patient.findUnique({ where: { userId: user.id } });
-      if (ownPat) {
-        patient = ownPat;
-        targetPatientId = ownPat.id;
-      }
+      const err: AppError = new Error(`Patient with ID ${targetPatientId} not found`);
+      err.statusCode = 404;
+      throw err;
     }
 
     // 2. Resolve Doctor identity securely from user.id

@@ -8,6 +8,98 @@ interface JwtPayload {
   id: string;
   email: string;
   role: Role;
+  jti?: string;
+  hospitalId?: string;
+  hospitalCode?: string;
+  hospitalName?: string;
+  isHospitalAdmin?: boolean;
+}
+
+/**
+ * Verifies a Bearer JWT token against signing secret, active non-revoked UserSession, and active User record.
+ */
+export async function verifySessionToken(token: string) {
+  const decoded = jwt.verify(token, config.jwtSecret) as JwtPayload;
+
+  if (!decoded || !decoded.id) {
+    const err = new Error('Invalid authentication token.');
+    (err as any).statusCode = 401;
+    throw err;
+  }
+
+  // Enforce session revocation when jti is present (or require session record)
+  if (!decoded.jti) {
+    const err = new Error('Session token is missing session identifier. Please login again.');
+    (err as any).statusCode = 401;
+    throw err;
+  }
+
+  const session = await prisma.userSession.findUnique({
+    where: { tokenJti: decoded.jti },
+    select: {
+      id: true,
+      userId: true,
+      isRevoked: true,
+      expiresAt: true,
+    },
+  });
+
+  if (!session || session.userId !== decoded.id || session.isRevoked || session.expiresAt <= new Date()) {
+    const err = new Error('Session has been revoked or expired. Please login again.');
+    (err as any).statusCode = 401;
+    throw err;
+  }
+
+  const user = await prisma.user.findUnique({
+    where: { id: decoded.id },
+    select: {
+      id: true,
+      email: true,
+      role: true,
+      abhaId: true,
+      phoneNumber: true,
+      isActive: true,
+      isOriginalSuperAdmin: true,
+      isViewOnly: true,
+      managedHospitals: {
+        select: {
+          id: true,
+          code: true,
+          name: true,
+        },
+      },
+    },
+  });
+
+  if (!user || !user.isActive) {
+    const err = new Error('User no longer exists or account is inactive.');
+    (err as any).statusCode = 401;
+    throw err;
+  }
+
+  // A Super Admin is View-Only if isViewOnly is true, or if they are a secondary Super Admin (not original)
+  const isOriginal = Boolean(user.isOriginalSuperAdmin);
+  const isViewOnly = Boolean(user.isViewOnly || (user.role === Role.SUPER_ADMIN && !isOriginal));
+
+  const managedHospital = user.managedHospitals && user.managedHospitals.length > 0 ? user.managedHospitals[0] : null;
+  const isHospitalAdmin = Boolean(
+    (user.role === Role.ADMIN && (managedHospital || decoded.isHospitalAdmin))
+  );
+
+  return {
+    id: user.id,
+    email: user.email,
+    role: user.role,
+    abhaId: user.abhaId,
+    phoneNumber: user.phoneNumber,
+    jti: decoded.jti,
+    isOriginalSuperAdmin: isOriginal,
+    isViewOnly,
+    managedHospitalId: managedHospital ? managedHospital.id : (decoded.hospitalId || undefined),
+    managedHospitalName: managedHospital ? managedHospital.name : (decoded.hospitalName || undefined),
+    managedHospitalCode: managedHospital ? managedHospital.code : (decoded.hospitalCode || undefined),
+    isHospitalAdmin,
+  };
 }
 
 export const authenticate = async (
@@ -19,45 +111,6 @@ export const authenticate = async (
     const authHeader = req.headers.authorization;
 
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      // In development, recover active user session from referer/headers to prevent blocking scans
-      if (config.nodeEnv === 'development') {
-        const portalHeader = ((req.headers['x-portal-role'] as string) || '').toUpperCase();
-        const referer = (req.headers.referer || req.headers.origin || '').toLowerCase();
-        let targetRole = portalHeader || 'PATIENT';
-        if (!portalHeader) {
-          if (referer.includes('/doctor')) targetRole = 'DOCTOR';
-          else if (referer.includes('/nurse')) targetRole = 'NURSE';
-          else if (referer.includes('/pharmacist')) targetRole = 'PHARMACIST';
-          else if (referer.includes('/caregiver')) targetRole = 'CAREGIVER';
-          else if (referer.includes('/insurance')) targetRole = 'INSURANCE_PROVIDER';
-          else if (referer.includes('/admin') || referer.includes('/hospital')) targetRole = 'ADMIN';
-        }
-
-        let fallbackUser: any = null;
-        if (targetRole === 'DOCTOR') {
-          const doctorEmail = req.headers['x-doctor-email'] as string | undefined;
-          if (doctorEmail) {
-            fallbackUser = await prisma.user.findFirst({
-              where: { email: doctorEmail, role: Role.DOCTOR, isActive: true },
-            });
-          }
-        }
-        if (!fallbackUser) {
-          fallbackUser = await prisma.user.findFirst({
-            where: { role: targetRole as any, isActive: true },
-          });
-        }
-
-        if (fallbackUser) {
-          req.user = {
-            id: fallbackUser.id,
-            email: fallbackUser.email,
-            role: fallbackUser.role,
-          };
-          return next();
-        }
-      }
-
       res.status(401).json({
         success: false,
         message: 'Authentication token missing or invalid. Please provide Bearer token.',
@@ -65,143 +118,82 @@ export const authenticate = async (
       return;
     }
 
-    const token = authHeader.split(' ')[1];
+    const token = authHeader.split(' ')[1]?.trim();
 
     if (!token) {
       res.status(401).json({
         success: false,
-        message: 'Authentication token is required',
+        message: 'Authentication token is required.',
       });
       return;
     }
 
-    // Verify token
-    let decoded: JwtPayload;
     try {
-      decoded = jwt.verify(token, config.jwtSecret) as JwtPayload;
-    } catch (err: unknown) {
-      if (config.nodeEnv === 'development') {
-        const portalHeader = ((req.headers['x-portal-role'] as string) || '').toUpperCase();
-        const referer = (req.headers.referer || req.headers.origin || '').toLowerCase();
-        let targetRole = portalHeader || 'PATIENT';
-        if (!portalHeader) {
-          if (referer.includes('/doctor')) targetRole = 'DOCTOR';
-          else if (referer.includes('/nurse')) targetRole = 'NURSE';
-          else if (referer.includes('/pharmacist')) targetRole = 'PHARMACIST';
-          else if (referer.includes('/caregiver')) targetRole = 'CAREGIVER';
-          else if (referer.includes('/insurance')) targetRole = 'INSURANCE_PROVIDER';
-          else if (referer.includes('/admin') || referer.includes('/hospital')) targetRole = 'ADMIN';
-        }
-
-        let fallbackUser: any = null;
-        if (targetRole === 'DOCTOR') {
-          const doctorEmail = req.headers['x-doctor-email'] as string | undefined;
-          if (doctorEmail) {
-            fallbackUser = await prisma.user.findFirst({
-              where: { email: doctorEmail, role: Role.DOCTOR, isActive: true },
-            });
-          }
-        }
-        if (!fallbackUser) {
-          fallbackUser = await prisma.user.findFirst({
-            where: { role: targetRole as any, isActive: true },
-          });
-        }
-
-        if (fallbackUser) {
-          req.user = {
-            id: fallbackUser.id,
-            email: fallbackUser.email,
-            role: fallbackUser.role,
-          };
-          return next();
-        }
-      }
-
-      const error = err as jwt.VerifyErrors;
-      if (error.name === 'TokenExpiredError') {
+      const authUser = await verifySessionToken(token);
+      req.user = authUser;
+      next();
+    } catch (err: any) {
+      if (err?.name === 'TokenExpiredError') {
         res.status(401).json({
           success: false,
           message: 'Authentication token has expired. Please login again.',
         });
         return;
       }
-      res.status(401).json({
-        success: false,
-        message: 'Invalid authentication token.',
-      });
-      return;
-    }
-
-    // Verify user exists and is active in database
-    const user = await prisma.user.findUnique({
-      where: { id: decoded.id },
-      select: {
-        id: true,
-        email: true,
-        role: true,
-        abhaId: true,
-        phoneNumber: true,
-        isActive: true,
-      },
-    });
-
-    if (!user || !user.isActive) {
-      res.status(401).json({
-        success: false,
-        message: 'User no longer exists or account is inactive.',
-      });
-      return;
-    }
-
-    // In development, recover active user session from referer/headers if there's a portal mismatch
-    if (config.nodeEnv === 'development') {
-      const portalHeader = ((req.headers['x-portal-role'] as string) || '').toUpperCase();
-      const referer = (req.headers.referer || req.headers.origin || '').toLowerCase();
-      let expectedRole: Role | null = null;
-      if (portalHeader === 'DOCTOR' || referer.includes('/doctor')) expectedRole = Role.DOCTOR;
-      else if (portalHeader === 'NURSE' || referer.includes('/nurse')) expectedRole = Role.NURSE;
-      else if (portalHeader === 'PHARMACIST' || referer.includes('/pharmacist')) expectedRole = Role.PHARMACIST;
-      else if (portalHeader === 'CAREGIVER' || referer.includes('/caregiver')) expectedRole = Role.CAREGIVER;
-      else if (portalHeader === 'INSURANCE_PROVIDER' || referer.includes('/insurance')) expectedRole = Role.INSURANCE_PROVIDER;
-      else if (portalHeader === 'PATIENT' || referer.includes('/user')) expectedRole = Role.PATIENT;
-
-      if (expectedRole && user.role !== expectedRole && user.role !== Role.SUPER_ADMIN && user.role !== Role.ADMIN) {
-        let portalFallbackUser: any = null;
-        if (expectedRole === Role.DOCTOR) {
-          const doctorEmail = (req.headers['x-doctor-email'] as string) || 'dr.arjun.kumar@apollocentral.in';
-          portalFallbackUser = await prisma.user.findFirst({
-            where: { email: doctorEmail, role: Role.DOCTOR, isActive: true },
-          });
-        }
-        if (!portalFallbackUser) {
-          portalFallbackUser = await prisma.user.findFirst({
-            where: { role: expectedRole, isActive: true },
-          });
-        }
-        if (portalFallbackUser) {
-          req.user = {
-            id: portalFallbackUser.id,
-            email: portalFallbackUser.email,
-            role: portalFallbackUser.role,
-            abhaId: portalFallbackUser.abhaId,
-            phoneNumber: portalFallbackUser.phoneNumber,
-          };
-          return next();
-        }
+      if (err?.name === 'JsonWebTokenError' || err?.name === 'NotBeforeError') {
+        res.status(401).json({
+          success: false,
+          message: 'Invalid authentication token.',
+        });
+        return;
       }
+      if (err?.statusCode === 401) {
+        res.status(401).json({
+          success: false,
+          message: err.message,
+        });
+        return;
+      }
+      throw err;
+    }
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Authenticates access to uploaded PHI files via Authorization header or ?token= query parameter.
+ */
+export const authenticateUpload = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const authHeader = req.headers.authorization;
+    const queryToken = typeof req.query.token === 'string' ? req.query.token.trim() : '';
+    const token = authHeader?.startsWith('Bearer ')
+      ? authHeader.split(' ')[1]?.trim()
+      : queryToken;
+
+    if (!token) {
+      res.status(401).json({
+        success: false,
+        message: 'Authentication required to access uploaded files.',
+      });
+      return;
     }
 
-    // Attach user to request
-    req.user = {
-      id: user.id,
-      email: user.email,
-      role: user.role,
-      abhaId: user.abhaId,
-      phoneNumber: user.phoneNumber,
-    };
-
-    next();
+    try {
+      req.user = await verifySessionToken(token);
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      next();
+    } catch (err: any) {
+      res.status(401).json({
+        success: false,
+        message: err?.message || 'Invalid or expired authentication token.',
+      });
+    }
   } catch (error) {
     next(error);
   }

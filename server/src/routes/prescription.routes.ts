@@ -18,10 +18,10 @@ const router = Router();
 // All prescription routes require authentication
 router.use(authenticate);
 
-// 1. Create prescription with nested items (Patient, Doctor, Nurse, Caregiver, Admin, Super Admin)
+// 1. Create prescription with nested items (Doctor/Admin/Super Admin clinical Rx; Patient/Caregiver scanned Rx for self/ward only)
 router.post(
   '/',
-  requireRole('PATIENT', 'DOCTOR', 'NURSE', 'CAREGIVER', 'ADMIN', 'SUPER_ADMIN'),
+  requireRole('DOCTOR', 'PATIENT', 'CAREGIVER', 'ADMIN', 'SUPER_ADMIN'),
   createPrescriptionController
 );
 

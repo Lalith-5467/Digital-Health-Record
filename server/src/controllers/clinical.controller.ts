@@ -60,7 +60,7 @@ export const updateCareRequestController = async (
 ): Promise<void> => {
   try {
     const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
-    const data = await ClinicalService.updateCareRequest(id, req.body, req.user?.id);
+    const data = await ClinicalService.updateCareRequest(id, req.body, req.user?.id, req.user?.role);
     res.status(200).json({ success: true, message: 'Care request updated', data });
   } catch (error) {
     next(error);

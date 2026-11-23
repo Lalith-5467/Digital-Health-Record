@@ -1,7 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { PageHeader } from '../ui/PageHeader';
 import { useLanguage } from '../../context/LanguageContext';
+import { patientExtendedApi, clinicalApi, profileApi } from '../../services/dhrApis';
 import { 
   Grid, 
   Sparkles, 
@@ -57,9 +58,23 @@ export const MoreFeaturesView: React.FC<MoreFeaturesViewProps> = ({
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   // Form States for Modals
-  const [bookingDate, setBookingDate] = useState('2026-08-26');
+  const [bookingDate, setBookingDate] = useState(() => {
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    return tomorrow.toISOString().split('T')[0];
+  });
   const [bookingTime, setBookingTime] = useState('10:00 AM');
-  const [selectedPackage, setSelectedPackage] = useState('Full Body Health Checkup');
+  const [selectedPackage, setSelectedPackage] = useState('Full Body Master Health Checkup (84 Parameters)');
+  const [janitorServiceType, setJanitorServiceType] = useState('Medical Grade Home Disinfection (Whole House)');
+  const [nurseRequirement, setNurseRequirement] = useState('IV Drip Administration & Injection Procedure');
+  const [patientAddress, setPatientAddress] = useState('Registered Residence');
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    profileApi.getPatientProfile().then((res) => {
+      if (res?.data?.address) setPatientAddress(res.data.address);
+    }).catch(() => {});
+  }, []);
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
@@ -202,9 +217,55 @@ export const MoreFeaturesView: React.FC<MoreFeaturesViewProps> = ({
     setSelectedFeature(cardId);
   };
 
-  const handleConfirmBooking = (serviceName: string) => {
-    setSelectedFeature(null);
-    showToast(`✓ Booking Confirmed for ${serviceName} on ${bookingDate} at ${bookingTime}`);
+  const handleConfirmBooking = async (serviceType: 'janitor' | 'lab' | 'diet' | 'nurse') => {
+    if (submitting) return;
+    setSubmitting(true);
+    try {
+      if (serviceType === 'janitor') {
+        await patientExtendedApi.createSanitationBooking({
+          serviceType: janitorServiceType,
+          packageName: janitorServiceType,
+          scheduledDate: bookingDate,
+          scheduledTime: bookingTime,
+          address: patientAddress,
+          price: 1499,
+        });
+        showToast(`✓ Janitor booking saved for ${bookingDate} at ${bookingTime}`);
+      } else if (serviceType === 'lab') {
+        await patientExtendedApi.createLabTest({
+          testName: selectedPackage,
+          category: 'Diagnostics',
+          collectionType: 'Home Collection',
+          scheduledDate: bookingDate,
+          scheduledTime: bookingTime,
+        });
+        showToast(`✓ Lab test "${selectedPackage}" booked for ${bookingDate}`);
+      } else if (serviceType === 'diet') {
+        await patientExtendedApi.saveDietAssessment({
+          goal: 'Balanced Nutrition',
+          dietPreference: 'Clinical Balanced Plan',
+          activityLevel: 'Moderate',
+          targetCalories: 1390,
+          notes: 'Quick clinical diet plan saved from More Features',
+        });
+        showToast('✓ Diet & Nutrition assessment saved to database');
+      } else if (serviceType === 'nurse') {
+        await clinicalApi.createNurseCareRequest({
+          serviceType: nurseRequirement,
+          careCategory: 'In-Home Nursing Care',
+          scheduledDate: bookingDate,
+          scheduledTime: bookingTime,
+          location: patientAddress,
+          conditionReason: nurseRequirement,
+        });
+        showToast(`✓ In-Home Nurse request created for ${bookingDate} at ${bookingTime}`);
+      }
+      setSelectedFeature(null);
+    } catch (err: any) {
+      showToast(err?.message || 'Failed to save booking to database');
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -484,10 +545,14 @@ export const MoreFeaturesView: React.FC<MoreFeaturesViewProps> = ({
               <div className="space-y-4">
                 <div>
                   <label className="block font-bold text-slate-900 dark:text-white mb-1">Select Cleaning Service Type</label>
-                  <select className="w-full p-3 rounded-xl bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 font-medium text-xs text-slate-900 dark:text-white">
-                    <option>Medical Grade Home Disinfection (Whole House)</option>
-                    <option>Post-Hospitalization Patient Room Sanitization</option>
-                    <option>UV-C Sterilization & Air Purification Treatment</option>
+                  <select
+                    value={janitorServiceType}
+                    onChange={(e) => setJanitorServiceType(e.target.value)}
+                    className="w-full p-3 rounded-xl bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 font-medium text-xs text-slate-900 dark:text-white"
+                  >
+                    <option value="Medical Grade Home Disinfection (Whole House)">Medical Grade Home Disinfection (Whole House)</option>
+                    <option value="Post-Hospitalization Patient Room Sanitization">Post-Hospitalization Patient Room Sanitization</option>
+                    <option value="UV-C Sterilization & Air Purification Treatment">UV-C Sterilization & Air Purification Treatment</option>
                   </select>
                 </div>
 
@@ -514,10 +579,11 @@ export const MoreFeaturesView: React.FC<MoreFeaturesViewProps> = ({
               </div>
 
               <button
-                onClick={() => handleConfirmBooking('Janitor Service')}
-                className="w-full py-3 rounded-2xl bg-[#00a896] hover:bg-[#00897b] text-white font-extrabold text-xs shadow-md cursor-pointer"
+                onClick={() => handleConfirmBooking('janitor')}
+                disabled={submitting}
+                className="w-full py-3 rounded-2xl bg-[#00a896] hover:bg-[#00897b] text-white font-extrabold text-xs shadow-md cursor-pointer disabled:opacity-60"
               >
-                Confirm Janitor Booking (₹1,499)
+                {submitting ? 'Saving Booking...' : 'Confirm Janitor Booking (₹1,499)'}
               </button>
             </motion.div>
           </div>
@@ -577,10 +643,11 @@ export const MoreFeaturesView: React.FC<MoreFeaturesViewProps> = ({
               </div>
 
               <button
-                onClick={() => handleConfirmBooking(selectedPackage)}
-                className="w-full py-3 rounded-2xl bg-blue-600 hover:bg-blue-700 text-white font-extrabold text-xs shadow-md cursor-pointer"
+                onClick={() => handleConfirmBooking('lab')}
+                disabled={submitting}
+                className="w-full py-3 rounded-2xl bg-blue-600 hover:bg-blue-700 text-white font-extrabold text-xs shadow-md cursor-pointer disabled:opacity-60"
               >
-                Schedule Free Home Sample Collection
+                {submitting ? 'Booking Lab Test...' : 'Schedule Free Home Sample Collection'}
               </button>
             </motion.div>
           </div>
@@ -630,13 +697,11 @@ export const MoreFeaturesView: React.FC<MoreFeaturesViewProps> = ({
               </div>
 
               <button
-                onClick={() => {
-                  setSelectedFeature(null);
-                  showToast('✓ Diet Plan updated & sent to WhatsApp!');
-                }}
-                className="w-full py-3 rounded-2xl bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs shadow-md cursor-pointer"
+                onClick={() => handleConfirmBooking('diet')}
+                disabled={submitting}
+                className="w-full py-3 rounded-2xl bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs shadow-md cursor-pointer disabled:opacity-60"
               >
-                Download Weekly Meal Chart (PDF)
+                {submitting ? 'Saving Diet Plan...' : 'Save Clinical Diet Assessment'}
               </button>
             </motion.div>
           </div>
@@ -671,11 +736,15 @@ export const MoreFeaturesView: React.FC<MoreFeaturesViewProps> = ({
               <div className="space-y-4">
                 <div>
                   <label className="block font-bold text-slate-900 dark:text-white mb-1">Select Nursing Requirement</label>
-                  <select className="w-full p-3 rounded-xl bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 font-medium text-xs text-slate-900 dark:text-white">
-                    <option>IV Drip Administration & Injection Procedure</option>
-                    <option>Surgical Wound Dressing & Catheter Management</option>
-                    <option>12-Hour Day Shift Elderly Nursing Care</option>
-                    <option>24/7 Full Time In-Home Critical Nurse</option>
+                  <select
+                    value={nurseRequirement}
+                    onChange={(e) => setNurseRequirement(e.target.value)}
+                    className="w-full p-3 rounded-xl bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 font-medium text-xs text-slate-900 dark:text-white"
+                  >
+                    <option value="IV Drip Administration & Injection Procedure">IV Drip Administration & Injection Procedure</option>
+                    <option value="Surgical Wound Dressing & Catheter Management">Surgical Wound Dressing & Catheter Management</option>
+                    <option value="12-Hour Day Shift Elderly Nursing Care">12-Hour Day Shift Elderly Nursing Care</option>
+                    <option value="24/7 Full Time In-Home Critical Nurse">24/7 Full Time In-Home Critical Nurse</option>
                   </select>
                 </div>
 
@@ -696,10 +765,11 @@ export const MoreFeaturesView: React.FC<MoreFeaturesViewProps> = ({
               </div>
 
               <button
-                onClick={() => handleConfirmBooking('In-Home Nurse')}
-                className="w-full py-3 rounded-2xl bg-rose-600 hover:bg-rose-700 text-white font-extrabold text-xs shadow-md cursor-pointer"
+                onClick={() => handleConfirmBooking('nurse')}
+                disabled={submitting}
+                className="w-full py-3 rounded-2xl bg-rose-600 hover:bg-rose-700 text-white font-extrabold text-xs shadow-md cursor-pointer disabled:opacity-60"
               >
-                Confirm Nurse Booking (₹899 / Visit)
+                {submitting ? 'Booking Nurse...' : 'Confirm Nurse Booking (₹899 / Visit)'}
               </button>
             </motion.div>
           </div>

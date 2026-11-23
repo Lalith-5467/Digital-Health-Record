@@ -14,22 +14,59 @@ import {
   CheckCircle2
 } from 'lucide-react';
 import { useLanguage } from '../../context/LanguageContext';
+import { vitalApi, patientClinicalApi, medicineApi } from '../../services/dhrApis';
+
+interface ComputedScoreData {
+  targetScore: number;
+  hasData: boolean;
+  heartRate: string;
+  spo2: string;
+  bp: string;
+  sleepAvg: string;
+  cardioScore: number | null;
+  metabolicScore: number | null;
+  sleepScore: number | null;
+  adherenceScore: number | null;
+  vitalsCount: number;
+  trendText: string;
+  recommendation: string;
+  sparklinePoints: string;
+}
 
 export const HealthScoreCard: React.FC = () => {
   const { t } = useLanguage();
   const [score, setScore] = useState(0);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [showDetailModal, setShowDetailModal] = useState(false);
-  const targetScore = 85;
+  const [metrics, setMetrics] = useState<ComputedScoreData>({
+    targetScore: 0,
+    hasData: false,
+    heartRate: 'Not Recorded',
+    spo2: 'Not Recorded',
+    bp: 'Not Recorded',
+    sleepAvg: 'Not Recorded',
+    cardioScore: null,
+    metabolicScore: null,
+    sleepScore: null,
+    adherenceScore: null,
+    vitalsCount: 0,
+    trendText: 'No vitals logged yet',
+    recommendation: 'Log your daily vitals, sleep hours, and medication doses to generate personalized health score insights.',
+    sparklinePoints: '0,20 240,20',
+  });
 
-  // Animated Count-Up Logic
-  const animateCount = () => {
+  const animateCount = (target: number) => {
+    if (target <= 0) {
+      setScore(0);
+      return;
+    }
     setScore(0);
     let current = 0;
+    const step = Math.max(1, Math.ceil(target / 35));
     const interval = setInterval(() => {
-      current += 2;
-      if (current >= targetScore) {
-        setScore(targetScore);
+      current += step;
+      if (current >= target) {
+        setScore(target);
         clearInterval(interval);
       } else {
         setScore(current);
@@ -37,14 +74,151 @@ export const HealthScoreCard: React.FC = () => {
     }, 18);
   };
 
+  const fetchMetrics = async () => {
+    try {
+      const [vitalsRes, wellnessRes, adherenceRes] = await Promise.all([
+        vitalApi.getVitals().catch(() => ({ data: [] })),
+        patientClinicalApi.getWellnessLogs().catch(() => ({ data: [] })),
+        medicineApi.getAdherenceTrends().catch(() => ({ data: { summary: null, timeSeries: [], hasData: false } })),
+      ]);
+
+      const vitals = Array.isArray(vitalsRes?.data) ? vitalsRes.data : [];
+      const wellness = Array.isArray(wellnessRes?.data) ? wellnessRes.data : [];
+      const adherenceData = adherenceRes?.data;
+
+      const latestVital = vitals[0];
+      const latestWellness = wellness[0];
+
+      const heartRate = latestVital?.heartRate != null ? `${latestVital.heartRate} BPM` : 'Not Recorded';
+      const spo2 = latestVital?.oxygenSaturation != null ? `${latestVital.oxygenSaturation}%` : 'Not Recorded';
+      const bp =
+        latestVital?.systolicBp != null && latestVital?.diastolicBp != null
+          ? `${latestVital.systolicBp}/${latestVital.diastolicBp}`
+          : 'Not Recorded';
+
+      const sleepLogs = wellness.filter((w: any) => w.sleepHours != null && Number(w.sleepHours) > 0);
+      const avgSleep =
+        sleepLogs.length > 0
+          ? sleepLogs.reduce((acc: number, w: any) => acc + Number(w.sleepHours), 0) / sleepLogs.length
+          : latestWellness?.sleepHours != null
+            ? Number(latestWellness.sleepHours)
+            : null;
+      const sleepAvg = avgSleep != null ? `${avgSleep.toFixed(1)} hrs` : 'Not Recorded';
+
+      // Sub-scores
+      const cardioParts: number[] = [];
+      if (latestVital?.heartRate != null) {
+        const hr = Number(latestVital.heartRate);
+        cardioParts.push(hr >= 60 && hr <= 100 ? 94 : hr >= 50 && hr <= 110 ? 78 : 62);
+      }
+      if (latestVital?.systolicBp != null && latestVital?.diastolicBp != null) {
+        const sys = Number(latestVital.systolicBp);
+        const dia = Number(latestVital.diastolicBp);
+        cardioParts.push(sys >= 90 && sys <= 125 && dia >= 60 && dia <= 85 ? 94 : sys <= 140 && dia <= 90 ? 78 : 62);
+      }
+      if (latestVital?.oxygenSaturation != null) {
+        const o2 = Number(latestVital.oxygenSaturation);
+        cardioParts.push(o2 >= 95 ? 96 : o2 >= 90 ? 80 : 60);
+      }
+      const cardioScore =
+        cardioParts.length > 0
+          ? Math.round(cardioParts.reduce((a, b) => a + b, 0) / cardioParts.length)
+          : null;
+
+      let metabolicScore: number | null = null;
+      if (latestVital?.bloodSugar != null) {
+        const bs = Number(latestVital.bloodSugar);
+        metabolicScore = bs >= 70 && bs <= 140 ? 90 : bs <= 180 ? 74 : 58;
+      }
+
+      let sleepScore: number | null = null;
+      if (avgSleep != null) {
+        sleepScore = avgSleep >= 7 && avgSleep <= 9 ? 92 : avgSleep >= 6 ? 78 : 62;
+      }
+
+      let adherenceScore: number | null = null;
+      if (adherenceData?.hasData) {
+        const overall =
+          adherenceData.summary?.overallAdherence ??
+          adherenceData.summary?.adherenceRate ??
+          (Array.isArray(adherenceData.timeSeries) && adherenceData.timeSeries.length > 0
+            ? Math.round(
+                adherenceData.timeSeries.reduce((s: number, d: any) => s + Number(d.adherencePct || 0), 0) /
+                  adherenceData.timeSeries.length
+              )
+            : null);
+        if (overall != null) adherenceScore = Math.round(Number(overall));
+      }
+
+      const validSubScores = [cardioScore, metabolicScore, sleepScore, adherenceScore].filter(
+        (v): v is number => v !== null
+      );
+      const computedTarget =
+        validSubScores.length > 0
+          ? Math.round(validSubScores.reduce((a, b) => a + b, 0) / validSubScores.length)
+          : 0;
+
+      // Build sparkline from recent vitals heartRate or adherence timeSeries
+      let sparkPoints = '0,20 240,20';
+      const recentPts = vitals
+        .slice(0, 8)
+        .reverse()
+        .map((v: any) => Number(v.heartRate || v.oxygenSaturation || 0))
+        .filter((n: number) => n > 0);
+      if (recentPts.length >= 2) {
+        const min = Math.min(...recentPts);
+        const max = Math.max(...recentPts);
+        const range = max - min || 1;
+        sparkPoints = recentPts
+          .map((val: number, i: number) => {
+            const x = Math.round((i / (recentPts.length - 1)) * 240);
+            const y = Math.round(20 - ((val - min) / range) * 16);
+            return `${x},${y}`;
+          })
+          .join(' ');
+      }
+
+      const hasData = validSubScores.length > 0;
+      const trendText = hasData
+        ? `${vitals.length} vital${vitals.length === 1 ? '' : 's'} · ${wellness.length} wellness log${wellness.length === 1 ? '' : 's'}`
+        : 'No data yet';
+      const recommendation = hasData
+        ? computedTarget >= 85
+          ? 'Your logged vitals and adherence are in a healthy range. Keep maintaining consistent check-ins.'
+          : 'Continue logging vitals, adequate sleep, and timely medications to reach your target score of 90+.'
+        : 'Log your vitals, sleep hours, and daily medications to calculate your personalized Health Score.';
+
+      setMetrics({
+        targetScore: computedTarget,
+        hasData,
+        heartRate,
+        spo2,
+        bp,
+        sleepAvg,
+        cardioScore,
+        metabolicScore,
+        sleepScore,
+        adherenceScore,
+        vitalsCount: vitals.length,
+        trendText,
+        recommendation,
+        sparklinePoints: sparkPoints,
+      });
+
+      animateCount(computedTarget);
+    } catch {
+      setScore(0);
+    }
+  };
+
   useEffect(() => {
-    animateCount();
+    fetchMetrics();
   }, []);
 
-  const handleRefresh = () => {
+  const handleRefresh = async () => {
     setIsRefreshing(true);
-    animateCount();
-    setTimeout(() => setIsRefreshing(false), 800);
+    await fetchMetrics();
+    setTimeout(() => setIsRefreshing(false), 500);
   };
 
   const circumference = 2 * Math.PI * 46;
@@ -99,7 +273,7 @@ export const HealthScoreCard: React.FC = () => {
                   <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
                 </span>
                 <ShieldCheck className="w-3.5 h-3.5" />
-                <span>{t('card.optimal_vitals', 'Optimal Vitals • Live')}</span>
+                <span>{metrics.hasData ? (metrics.targetScore >= 80 ? t('card.optimal_vitals', 'Optimal Vitals • Live') : 'Live Health Telemetry') : 'No Data Yet'}</span>
               </span>
             </div>
           </div>
@@ -198,7 +372,7 @@ export const HealthScoreCard: React.FC = () => {
               </div>
               <div>
                 <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">{t('card.heart_rate', 'Heart Rate')}</span>
-                <span className="text-xs font-extrabold text-slate-900 dark:text-white">72 BPM</span>
+                <span className="text-xs font-extrabold text-slate-900 dark:text-white">{metrics.heartRate}</span>
               </div>
             </motion.div>
 
@@ -212,7 +386,7 @@ export const HealthScoreCard: React.FC = () => {
               </div>
               <div>
                 <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">{t('card.blood_spo2', 'Blood SpO2')}</span>
-                <span className="text-xs font-extrabold text-slate-900 dark:text-white">98%</span>
+                <span className="text-xs font-extrabold text-slate-900 dark:text-white">{metrics.spo2}</span>
               </div>
             </motion.div>
 
@@ -226,7 +400,7 @@ export const HealthScoreCard: React.FC = () => {
               </div>
               <div>
                 <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">{t('card.blood_pressure', 'Blood Pressure')}</span>
-                <span className="text-xs font-extrabold text-slate-900 dark:text-white">120/80</span>
+                <span className="text-xs font-extrabold text-slate-900 dark:text-white">{metrics.bp}</span>
               </div>
             </motion.div>
 
@@ -240,7 +414,7 @@ export const HealthScoreCard: React.FC = () => {
               </div>
               <div>
                 <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">{t('card.sleep_avg', 'Sleep Avg.')}</span>
-                <span className="text-xs font-extrabold text-slate-900 dark:text-white">7.8 hrs</span>
+                <span className="text-xs font-extrabold text-slate-900 dark:text-white">{metrics.sleepAvg}</span>
               </div>
             </motion.div>
 
@@ -252,7 +426,7 @@ export const HealthScoreCard: React.FC = () => {
           {/* Mini sparkline SVG */}
           <svg className="w-full h-6 mb-2" viewBox="0 0 240 24" fill="none" preserveAspectRatio="none">
             <polyline
-              points="0,20 30,16 60,18 90,12 120,14 150,8 180,6 210,4 240,2"
+              points={metrics.sparklinePoints}
               stroke="#14b8a6"
               strokeWidth="2"
               strokeLinecap="round"
@@ -260,7 +434,7 @@ export const HealthScoreCard: React.FC = () => {
               fill="none"
             />
             <polyline
-              points="0,20 30,16 60,18 90,12 120,14 150,8 180,6 210,4 240,2"
+              points={metrics.sparklinePoints}
               stroke="url(#sparkFill)"
               strokeWidth="0"
               fill="url(#sparkFill)"
@@ -276,7 +450,7 @@ export const HealthScoreCard: React.FC = () => {
           <div className="flex items-center justify-between text-xs font-mono">
             <div className="flex items-center gap-1.5 text-emerald-600 dark:text-emerald-400 font-extrabold">
               <TrendingUp className="w-4 h-4 text-emerald-500" />
-              <span>{t('score.points_last_week', '+4 points from last week')}</span>
+              <span>{metrics.trendText}</span>
             </div>
             <div className="flex items-center gap-2">
               <span className="text-xs text-slate-500 dark:text-slate-400 font-bold">{t('score.target_90', 'Target: 90+')}</span>
@@ -324,10 +498,30 @@ export const HealthScoreCard: React.FC = () => {
               {/* MODAL SCORE METRICS */}
               <div className="space-y-3 font-mono">
                 {[
-                  { label: t('score.cardiovascular', 'Cardiovascular Health'), score: '92/100', status: t('score.status_optimal', 'Optimal'), color: 'text-emerald-500' },
-                  { label: t('score.metabolic', 'Metabolic & Blood Glucose'), score: '84/100', status: t('score.status_good', 'Good'), color: 'text-teal-500' },
-                  { label: t('score.recovery', 'Sleep & Recovery Cycle'), score: '88/100', status: t('score.status_optimal', 'Optimal'), color: 'text-cyan-500' },
-                  { label: t('score.adherence', 'Medication Adherence'), score: '100/100', status: t('score.status_perfect', 'Perfect'), color: 'text-emerald-400' }
+                  {
+                    label: t('score.cardiovascular', 'Cardiovascular Health'),
+                    score: metrics.cardioScore !== null ? `${metrics.cardioScore}/100` : 'No data',
+                    status: metrics.cardioScore !== null ? (metrics.cardioScore >= 85 ? t('score.status_optimal', 'Optimal') : 'Monitor') : 'Not Recorded',
+                    color: 'text-emerald-500',
+                  },
+                  {
+                    label: t('score.metabolic', 'Metabolic & Blood Glucose'),
+                    score: metrics.metabolicScore !== null ? `${metrics.metabolicScore}/100` : 'No data',
+                    status: metrics.metabolicScore !== null ? (metrics.metabolicScore >= 80 ? t('score.status_good', 'Good') : 'Monitor') : 'Not Recorded',
+                    color: 'text-teal-500',
+                  },
+                  {
+                    label: t('score.recovery', 'Sleep & Recovery Cycle'),
+                    score: metrics.sleepScore !== null ? `${metrics.sleepScore}/100` : 'No data',
+                    status: metrics.sleepScore !== null ? (metrics.sleepScore >= 85 ? t('score.status_optimal', 'Optimal') : 'Fair') : 'Not Recorded',
+                    color: 'text-cyan-500',
+                  },
+                  {
+                    label: t('score.adherence', 'Medication Adherence'),
+                    score: metrics.adherenceScore !== null ? `${metrics.adherenceScore}/100` : 'No data',
+                    status: metrics.adherenceScore !== null ? (metrics.adherenceScore >= 90 ? t('score.status_perfect', 'Optimal') : 'Track') : 'Not Recorded',
+                    color: 'text-emerald-400',
+                  },
                 ].map((item, idx) => (
                   <div key={idx} className="p-3.5 bg-slate-50 dark:bg-slate-800/50 rounded-2xl border border-slate-200 dark:border-slate-700 flex items-center justify-between text-xs">
                     <div className="flex items-center gap-2 font-sans font-bold text-slate-900 dark:text-white">
@@ -345,8 +539,8 @@ export const HealthScoreCard: React.FC = () => {
               </div>
 
               <div className="p-4 rounded-2xl bg-teal-500/10 border border-teal-500/20 text-xs text-slate-700 dark:text-slate-200 space-y-1">
-                <span className="font-extrabold text-[#00a896] dark:text-cyan-300 block">{t('score.doc_rec_title', 'Doctor Recommendation:')}</span>
-                <p className="font-medium">{t('score.doc_rec_text', 'Maintain your current exercise regime. Consistent 30-minute daily walks will help reach your target score of 90+ next week.')}</p>
+                <span className="font-extrabold text-[#00a896] dark:text-cyan-300 block">{t('score.doc_rec_title', 'Health Recommendation:')}</span>
+                <p className="font-medium">{metrics.recommendation}</p>
               </div>
 
               <button

@@ -1,5 +1,4 @@
-import { apiClient } from '../../../services/apiClient';
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
   Calendar, 
@@ -11,12 +10,12 @@ import {
   ChevronDown,
   X,
   FileText,
-  Activity,
-  User,
-  History,
-  Pill
+  User
 } from 'lucide-react';
-import { useDoctorWorkflow } from '../../../utils/doctorWorkflowStorage';
+import { apiClient } from '../../../services/apiClient';
+import { appointmentApi } from '../../../services/dhrApis';
+import { useLanguage } from '../../../context/LanguageContext';
+import { getLocalizedName } from '../../../utils/caregiverDataTranslator';
 
 interface DoctorAppointmentsScheduleViewProps {
   onStartConsultation: (patientId: string) => void;
@@ -24,138 +23,101 @@ interface DoctorAppointmentsScheduleViewProps {
   onViewConsultation?: (patientId: string) => void;
 }
 
-import { appointmentApi } from '../../../services/dhrApis';
-import { useLanguage } from '../../../context/LanguageContext';
-import { getLocalizedName } from '../../../utils/caregiverDataTranslator';
-
-const mockSlots = [
-  {
-    id: 'apt-6',
-    recordId: '1',
-    patientId: 'PT-09882',
-    patientName: 'Arun Raj',
-    age: 41,
-    gender: 'Male',
-    time: '09:00 AM',
-    date: 'Today',
-    type: 'Tele-Consultation',
-    status: 'Completed',
-    completedAt: '09:25 AM',
-    reason: 'Thyroid Level Review',
-    isTele: true,
-    department: 'Endocrinology'
-  },
-  {
-    id: 'apt-1',
-    recordId: '1',
-    patientId: 'PT-10245',
-    patientName: 'Abinesh Kumar',
-    age: 28,
-    gender: 'Male',
-    time: '10:30 AM',
-    date: 'Today',
-    type: 'OPD In-Clinic',
-    status: 'Scheduled',
-    reason: 'Post-Appendectomy Suture Review',
-    isTele: false,
-    department: 'General Surgery'
-  },
-  {
-    id: 'apt-2',
-    recordId: '2',
-    patientId: 'PT-10892',
-    patientName: 'Ragul Kumar',
-    age: 45,
-    gender: 'Male',
-    time: '10:45 AM',
-    date: 'Today',
-    type: 'Tele-Consultation',
-    status: 'Delayed',
-    delayDuration: '20 min',
-    reason: 'Hypertension Medication Check',
-    isTele: true,
-    department: 'Cardiology',
-    arrivedAt: '10:55 AM'
-  },
-  {
-    id: 'apt-3',
-    recordId: '3',
-    patientId: 'PT-10331',
-    patientName: 'Mrs. Meenakshi Sundaram',
-    age: 62,
-    gender: 'Female',
-    time: '11:15 AM',
-    date: 'Today',
-    type: 'Tele-Consultation',
-    status: 'In Consultation',
-    startedAt: '11:18 AM',
-    reason: 'Diabetes Vitals & Routine Adherence',
-    isTele: true,
-    department: 'Internal Medicine'
-  },
-  {
-    id: 'apt-4',
-    recordId: '1',
-    patientId: 'PT-11005',
-    patientName: 'Suresh Menon',
-    age: 55,
-    gender: 'Male',
-    time: '12:00 PM',
-    date: 'Today',
-    type: 'OPD In-Clinic',
-    status: 'No-show',
-    reason: 'General Executive Health Checkup',
-    isTele: false,
-    department: 'General Medicine',
-    scheduled: '12:00 PM',
-    expectedArrival: '12:00 PM',
-    statusUpdated: '12:20 PM'
-  },
-  {
-    id: 'apt-5',
-    recordId: '2',
-    patientId: 'PT-10944',
-    patientName: 'Priya S',
-    age: 31,
-    gender: 'Female',
-    time: '01:30 PM',
-    date: 'Today',
-    type: 'OPD In-Clinic',
-    status: 'Cancelled',
-    cancelReason: 'Cancelled by Patient',
-    reason: 'Migraine Follow-up',
-    isTele: false,
-    department: 'Neurology'
-  }
-];
-export const DoctorAppointmentsScheduleView: React.FC<DoctorAppointmentsScheduleViewProps> = ({ onStartConsultation, onViewProfile, onViewConsultation }) => {
+export const DoctorAppointmentsScheduleView: React.FC<DoctorAppointmentsScheduleViewProps> = ({
+  onStartConsultation,
+  onViewProfile,
+  onViewConsultation,
+}) => {
   const { t } = useLanguage();
   const [liveAppointments, setLiveAppointments] = useState<any[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('All');
-  const [dateFilter, setDateFilter] = useState('Today');
+  const [dateFilter, setDateFilter] = useState('All Dates');
   const [selectedPatient, setSelectedPatient] = useState<any | null>(null);
-  
-  // Real data states
+
   const [slots, setSlots] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
-  React.useEffect(() => {
-    const fetchSchedule = async () => {
+  const formatDateBucket = (rawDate: string | Date) => {
+    const d = new Date(rawDate);
+    if (isNaN(d.getTime())) return 'Scheduled';
+    const today = new Date();
+    const yesterday = new Date();
+    yesterday.setDate(today.getDate() - 1);
+    const tomorrow = new Date();
+    tomorrow.setDate(today.getDate() + 1);
+    if (d.toDateString() === today.toDateString()) return 'Today';
+    if (d.toDateString() === yesterday.toDateString()) return 'Yesterday';
+    if (d.toDateString() === tomorrow.toDateString()) return 'Tomorrow';
+    return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' });
+  };
+
+  useEffect(() => {
+    const loadAll = async () => {
+      setLoading(true);
       try {
-        const data = await apiClient.get("/appointments/schedule");
-        if (data.success) {
-          setSlots(data.data);
+        const [scheduleRes, apptsRes] = await Promise.all([
+          apiClient.get('/appointments/schedule').catch(() => null),
+          appointmentApi.getAppointments().catch(() => null),
+        ]);
+
+        if (scheduleRes?.success && Array.isArray(scheduleRes.data) && scheduleRes.data.length > 0) {
+          setSlots(scheduleRes.data);
+        } else {
+          setSlots([]);
         }
-      } catch (error) {
-        console.error("Failed to fetch schedule:", error);
+
+        if (apptsRes && Array.isArray(apptsRes.data)) {
+          const mapped = apptsRes.data.map((apt: any) => {
+            const p = apt.patient || {};
+            const u = p.user || {};
+            const doc = apt.doctor || {};
+            const rawStatus = String(apt.status || 'CONFIRMED').toUpperCase();
+            const status =
+              rawStatus === 'COMPLETED'
+                ? 'Completed'
+                : rawStatus === 'CANCELLED'
+                ? 'Cancelled'
+                : rawStatus === 'NO_SHOW'
+                ? 'No-show'
+                : rawStatus === 'IN_PROGRESS'
+                ? 'In Consultation'
+                : 'Scheduled';
+            return {
+              id: apt.id,
+              recordId: p.id || apt.patientId,
+              patientId: p.id ? p.id.slice(-6).toUpperCase() : String(apt.patientId || '').slice(-6).toUpperCase(),
+              patientName: p.fullName || u.email?.split('@')[0] || 'Patient',
+              age: p.dateOfBirth
+                ? Math.max(0, new Date().getFullYear() - new Date(p.dateOfBirth).getFullYear())
+                : 'N/A',
+              gender: p.gender || 'Not Specified',
+              time: apt.slotTime || '10:00 AM',
+              date: formatDateBucket(apt.appointmentDate),
+              type: apt.type === 'VIDEO' ? 'Tele-Consultation' : 'OPD In-Clinic',
+              status,
+              reason: apt.reason || 'Routine Consultation',
+              cancelReason: apt.cancellationReason || undefined,
+              completedAt: status === 'Completed' && apt.updatedAt ? new Date(apt.updatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : undefined,
+              isTele: apt.type === 'VIDEO',
+              department: doc.speciality || 'General Medicine',
+              meetingLink: apt.meetingLink,
+            };
+          });
+          setLiveAppointments(mapped);
+        } else {
+          setLiveAppointments([]);
+        }
+      } catch (err: any) {
+        console.error('Failed to load appointments from MySQL:', err?.message);
+        setSlots([]);
+        setLiveAppointments([]);
       } finally {
         setLoading(false);
       }
     };
-    fetchSchedule();
+    loadAll();
   }, []);
-
 
   const statuses = ['All', 'Scheduled', 'In Consultation', 'Completed', 'Delayed', 'No-show', 'Cancelled'];
 
@@ -172,46 +134,11 @@ export const DoctorAppointmentsScheduleView: React.FC<DoctorAppointmentsSchedule
     }
   };
 
-  const loadAppointments = async () => {
-    try {
-      const res = await appointmentApi.getAppointments();
-      if (res && res.data && res.data.length > 0) {
-        const mapped = res.data.map((apt: any, idx: number) => {
-          const p = apt.patient || {};
-          const u = p.user || {};
-          const isToday = new Date(apt.appointmentDate).toDateString() === new Date().toDateString();
-          return {
-            id: apt.id,
-            recordId: `${idx + 1}`,
-            patientId: p.id ? p.id.slice(-6).toUpperCase() : `PT-${10200 + idx}`,
-            patientName: p.fullName || u.email?.split('@')[0] || 'Patient',
-            age: p.dateOfBirth ? Math.max(1, new Date().getFullYear() - new Date(p.dateOfBirth).getFullYear()) : 35,
-            gender: p.gender || 'Male',
-            time: apt.slotTime || '10:00 AM',
-            date: isToday ? 'Today' : new Date(apt.appointmentDate).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }),
-            type: apt.type === 'VIDEO' ? 'Tele-Consultation' : 'OPD In-Clinic',
-            status: apt.status === 'CONFIRMED' ? 'Scheduled' : apt.status === 'COMPLETED' ? 'Completed' : apt.status === 'CANCELLED' ? 'Cancelled' : 'Scheduled',
-            reason: apt.reason || 'Routine Consultation',
-            isTele: apt.type === 'VIDEO',
-            department: 'Cardiology',
-            meetingLink: apt.meetingLink,
-          };
-        });
-        setLiveAppointments(mapped);
-      }
-    } catch (err: any) {
-      console.error('Failed to load appointments from MySQL:', err?.message);
-    }
-  };
-
-  React.useEffect(() => {
-    loadAppointments();
-  }, []);
-
-  const allSlots = slots.length > 0 ? slots : (liveAppointments.length > 0 ? liveAppointments : mockSlots);
+  // Strictly use real backend data; NEVER fall back to mock slots
+  const allSlots = slots.length > 0 ? slots : liveAppointments;
 
   const getInitials = (name: string) => {
-    const parts = name.replace('Mrs. ', '').replace('Dr. ', '').split(' ');
+    const parts = name.replace('Mrs. ', '').replace('Dr. ', '').trim().split(/\s+/);
     if (parts.length > 1) {
       return (parts[0][0] + parts[1][0]).toUpperCase();
     }
@@ -244,33 +171,29 @@ export const DoctorAppointmentsScheduleView: React.FC<DoctorAppointmentsSchedule
 
   const filteredSlots = useMemo(() => {
     return allSlots.filter(apt => {
-      // Date filter
       if (dateFilter !== 'All Dates' && apt.date !== dateFilter) return false;
-      
-      // Status filter
       if (statusFilter !== 'All' && apt.status !== statusFilter) return false;
-      
-      // Search filter
+
       if (searchQuery) {
         const query = searchQuery.toLowerCase();
-        const localizedName = getLocalizedName(apt.patientName, t);
-        const matchesName = localizedName.toLowerCase().includes(query) || apt.patientName.toLowerCase().includes(query);
-        const matchesId = apt.patientId.toLowerCase().includes(query);
-        const matchesAptId = apt.id.toLowerCase().includes(query);
-        if (!matchesName && !matchesId && !matchesAptId) return false;
+        const localizedName = getLocalizedName(apt.patientName || '', t);
+        const matchesName = localizedName.toLowerCase().includes(query) || String(apt.patientName || '').toLowerCase().includes(query);
+        const matchesId = String(apt.patientId || '').toLowerCase().includes(query);
+        const matchesAptId = String(apt.id || '').toLowerCase().includes(query);
+        const matchesReason = String(apt.reason || '').toLowerCase().includes(query);
+        if (!matchesName && !matchesId && !matchesAptId && !matchesReason) return false;
       }
-      
+
       return true;
     });
-  }, [allSlots, searchQuery, statusFilter, dateFilter]);
+  }, [allSlots, searchQuery, statusFilter, dateFilter, t]);
 
-  // Summary stats
   const totalToday = allSlots.filter(s => s.date === 'Today').length;
-  const totalCompleted = allSlots.filter(s => s.date === 'Today' && s.status === 'Completed').length;
-  const totalWaiting = allSlots.filter(s => s.date === 'Today' && (s.status === 'Scheduled' || s.status === 'Delayed')).length;
-  const totalDelayed = allSlots.filter(s => s.date === 'Today' && s.status === 'Delayed').length;
-  const totalNoShow = allSlots.filter(s => s.date === 'Today' && s.status === 'No-show').length;
-  const totalCancelled = allSlots.filter(s => s.date === 'Today' && s.status === 'Cancelled').length;
+  const totalCompleted = allSlots.filter(s => s.status === 'Completed').length;
+  const totalWaiting = allSlots.filter(s => s.status === 'Scheduled' || s.status === 'In Consultation' || s.status === 'Delayed').length;
+  const totalDelayed = allSlots.filter(s => s.status === 'Delayed').length;
+  const totalNoShow = allSlots.filter(s => s.status === 'No-show').length;
+  const totalCancelled = allSlots.filter(s => s.status === 'Cancelled').length;
 
   return (
     <div className="space-y-6 pb-16 font-sans select-none max-w-7xl mx-auto relative">
@@ -309,7 +232,6 @@ export const DoctorAppointmentsScheduleView: React.FC<DoctorAppointmentsSchedule
 
       {/* TOOLBAR */}
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-        {/* Search */}
         <div className="relative w-full lg:w-80">
           <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
             <Search className="h-4 w-4 text-slate-400" />
@@ -323,9 +245,7 @@ export const DoctorAppointmentsScheduleView: React.FC<DoctorAppointmentsSchedule
           />
         </div>
 
-        {/* Filters */}
         <div className="flex flex-wrap items-center gap-3">
-          {/* Date Picker */}
           <div className="relative">
             <select
               value={dateFilter}
@@ -342,7 +262,6 @@ export const DoctorAppointmentsScheduleView: React.FC<DoctorAppointmentsSchedule
             </div>
           </div>
           
-          {/* Status Pills */}
           <div className="flex items-center gap-1.5 p-1.5 rounded-xl bg-slate-100 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 overflow-x-auto max-w-[calc(100vw-3rem)] lg:max-w-none">
             {statuses.map(tab => (
               <button
@@ -372,7 +291,12 @@ export const DoctorAppointmentsScheduleView: React.FC<DoctorAppointmentsSchedule
           <AnimatePresence>
             {filteredSlots.length === 0 ? (
               <div className="p-10 text-center text-slate-500 bg-white dark:bg-[#0b1120] rounded-3xl border border-slate-200 dark:border-slate-800">
-                {t("doctor.appointments.empty", "No appointments found for this filter")}
+                <Calendar className="w-10 h-10 text-slate-300 dark:text-slate-700 mx-auto mb-3" />
+                <p className="font-bold text-slate-700 dark:text-slate-300">
+                  {allSlots.length === 0
+                    ? t("doctor.appointments.no_scheduled", "No appointments scheduled yet.")
+                    : t("doctor.appointments.empty", "No appointments found for this filter")}
+                </p>
               </div>
             ) : (
               filteredSlots.map((apt, i) => (
@@ -385,9 +309,8 @@ export const DoctorAppointmentsScheduleView: React.FC<DoctorAppointmentsSchedule
                   className={`p-5 lg:p-6 bg-white dark:bg-[#0b1120] rounded-[24px] border border-slate-200/80 dark:border-slate-800 shadow-sm flex flex-col lg:flex-row gap-6 hover:border-blue-500/30 transition-all border-l-[6px] ${apt.status === 'Delayed' ? 'border-l-orange-500' : apt.status === 'No-show' ? 'border-l-rose-500' : apt.status === 'Cancelled' ? 'border-l-slate-400' : apt.status === 'Completed' ? 'border-l-emerald-500' : 'border-l-blue-500'}`}
                 >
                   
-                  {/* Column 1: Patient Info (w-3/12 -> 25%) */}
+                  {/* Column 1: Patient Info */}
                   <div className="flex items-start gap-4 lg:w-[25%] min-w-0">
-                    {/* Avatar */}
                     <div className="w-12 h-12 rounded-full bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 flex items-center justify-center font-black text-slate-700 dark:text-slate-300 shrink-0 text-sm shadow-sm mt-0.5">
                       {getInitials(getLocalizedName(apt.patientName, t))}
                     </div>
@@ -400,7 +323,7 @@ export const DoctorAppointmentsScheduleView: React.FC<DoctorAppointmentsSchedule
                         </span>
                       </div>
                       <div className="text-[11px] text-slate-500 dark:text-slate-400 font-semibold mb-2">
-                        {apt.age.toString().replace(/years?|yrs?/i, '').trim()} {t("doctor.patients.years", "Yrs")} • {t(`doctor.patients.${apt.gender.toLowerCase()}`, apt.gender)}
+                        {apt.age !== 'N/A' ? `${String(apt.age).replace(/years?|yrs?/i, '').trim()} ${t("doctor.patients.years", "Yrs")}` : 'Age N/A'} • {t(`doctor.patients.${String(apt.gender || 'other').toLowerCase()}`, apt.gender || 'Not Specified')}
                       </div>
                       
                       <div className="flex items-center gap-2 text-xs font-semibold text-slate-700 dark:text-slate-300 bg-slate-50 dark:bg-slate-800/40 px-2 py-1.5 rounded-lg border border-slate-100 dark:border-slate-700/50 inline-flex">
@@ -410,7 +333,7 @@ export const DoctorAppointmentsScheduleView: React.FC<DoctorAppointmentsSchedule
                     </div>
                   </div>
 
-                  {/* Column 2: Schedule & Status (w-3/12 -> 25%) */}
+                  {/* Column 2: Schedule & Status */}
                   <div className="lg:w-[25%] flex flex-col justify-center border-t border-slate-100 dark:border-slate-800 lg:border-t-0 lg:border-l lg:pl-6 pt-4 lg:pt-0">
                     <div className="flex items-center gap-2 mb-2.5">
                       <span className={`text-[10px] font-black uppercase tracking-widest px-2 py-0.5 rounded border shadow-sm flex items-center gap-1.5 ${getStatusColor(apt.status)}`}>
@@ -423,49 +346,45 @@ export const DoctorAppointmentsScheduleView: React.FC<DoctorAppointmentsSchedule
                       {apt.status === 'Delayed' && (
                         <>
                           <p className="text-orange-600 dark:text-orange-400 font-bold flex items-center gap-1 mb-1">
-                            <Clock className="w-3 h-3" /> {t("doctor.appointments.delayed", "Delayed")} {apt.delayDuration}
+                            <Clock className="w-3 h-3" /> {t("doctor.appointments.delayed", "Delayed")} {apt.delayDuration || ''}
                           </p>
-                          <p className="flex justify-between max-w-[150px]"><span className="text-slate-500">{t("doctor.appointments.arrived", "Arrived")}:</span> <span className="text-slate-900 dark:text-slate-200">{apt.arrivedAt}</span></p>
                           <p className="flex justify-between max-w-[150px]"><span className="text-slate-500">{t("doctor.appointments.time_slot", "Scheduled")}:</span> <span className="text-slate-900 dark:text-slate-200">{apt.time}</span></p>
                         </>
                       )}
                       {apt.status === 'In Consultation' && (
                         <p className="flex items-center gap-1.5">
                           <span className="text-slate-500">{t("doctor.appointments.in_consultation", "Started")}:</span>
-                          <span className="text-blue-600 dark:text-blue-400 font-mono font-bold">{apt.startedAt}</span>
+                          <span className="text-blue-600 dark:text-blue-400 font-mono font-bold">{apt.startedAt || apt.time}</span>
                         </p>
                       )}
                       {apt.status === 'No-show' && (
-                        <>
-                          <p className="flex justify-between max-w-[150px]"><span className="text-slate-500">{t("doctor.appointments.status", "Expected")}:</span> <span className="text-slate-900 dark:text-slate-200">{apt.expectedArrival}</span></p>
-                          <p className="flex justify-between max-w-[150px]"><span className="text-slate-500">{t("doctor.appointments.status", "Updated")}:</span> <span className="text-slate-900 dark:text-slate-200">{apt.statusUpdated}</span></p>
-                        </>
+                        <p className="flex justify-between max-w-[150px]"><span className="text-slate-500">{t("doctor.appointments.time_slot", "Scheduled")}:</span> <span className="text-slate-900 dark:text-slate-200">{apt.time}</span></p>
                       )}
                       {apt.status === 'Cancelled' && (
-                        <p className="text-[11px] italic text-slate-500 bg-slate-50 dark:bg-slate-800/50 p-2 rounded-lg border border-slate-100 dark:border-slate-700">"{apt.cancelReason}"</p>
+                        <p className="text-[11px] italic text-slate-500 bg-slate-50 dark:bg-slate-800/50 p-2 rounded-lg border border-slate-100 dark:border-slate-700">"{apt.cancelReason || 'Cancelled'}"</p>
                       )}
                       {apt.status === 'Completed' && (
                         <p className="flex items-center gap-1.5">
                           <span className="text-slate-500">{t("doctor.appointments.completed", "Completed")}:</span>
-                          <span className="text-emerald-600 dark:text-emerald-400 font-mono font-bold">{apt.completedAt}</span>
+                          <span className="text-emerald-600 dark:text-emerald-400 font-mono font-bold">{apt.completedAt || apt.time}</span>
                         </p>
                       )}
                       {apt.status === 'Scheduled' && (
                         <p className="flex items-center gap-1.5">
                           <span className="text-slate-500">{t("doctor.appointments.time_slot", "Scheduled")}:</span>
-                          <span className="text-slate-900 dark:text-slate-200 font-mono font-bold">{apt.time}</span>
+                          <span className="text-slate-900 dark:text-slate-200 font-mono font-bold">{apt.date}, {apt.time}</span>
                         </p>
                       )}
                     </div>
                   </div>
 
-                  {/* Column 3: Reason for Visit (w-3/12 -> 25%) */}
+                  {/* Column 3: Reason for Visit */}
                   <div className="lg:w-[25%] flex flex-col justify-center border-t border-slate-100 dark:border-slate-800 lg:border-t-0 lg:border-l lg:pl-6 pt-4 lg:pt-0">
                     <span className="uppercase text-[9px] font-bold text-slate-400 tracking-widest mb-1.5 block">{t("doctor.appointments.reason", "Reason for visit")}</span>
                     <span className="text-xs text-slate-800 dark:text-slate-200 font-bold leading-relaxed pr-2">{apt.reason}</span>
                   </div>
 
-                  {/* Column 4: Actions (w-3/12 -> 25%) */}
+                  {/* Column 4: Actions */}
                   <div className="lg:w-[25%] flex flex-col justify-center items-end border-t border-slate-100 dark:border-slate-800 lg:border-t-0 lg:border-l lg:pl-6 pt-4 lg:pt-0 shrink-0 space-y-2.5">
                     <button 
                       onClick={() => setSelectedPatient(apt)}
@@ -518,7 +437,6 @@ export const DoctorAppointmentsScheduleView: React.FC<DoctorAppointmentsSchedule
       <AnimatePresence>
         {selectedPatient && (
           <div className="fixed inset-0 z-50 flex justify-center items-center p-4">
-            {/* Backdrop */}
             <motion.div
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
@@ -527,7 +445,6 @@ export const DoctorAppointmentsScheduleView: React.FC<DoctorAppointmentsSchedule
               className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm"
             />
             
-            {/* Modal Box */}
             <motion.div
               initial={{ opacity: 0, scale: 0.95, y: 10 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
@@ -554,13 +471,12 @@ export const DoctorAppointmentsScheduleView: React.FC<DoctorAppointmentsSchedule
                   </div>
                   <div className="min-w-0">
                     <h3 className="text-xl font-black text-slate-900 dark:text-white truncate">{getLocalizedName(selectedPatient.patientName, t)}</h3>
-                    <p className="text-sm font-semibold text-slate-500">{selectedPatient.age} years • {selectedPatient.gender}</p>
+                    <p className="text-sm font-semibold text-slate-500">{selectedPatient.age !== 'N/A' ? `${selectedPatient.age} years` : 'Age N/A'} • {selectedPatient.gender}</p>
                     <p className="text-[11px] font-mono font-bold text-slate-400 mt-0.5">ID: {selectedPatient.patientId}</p>
                   </div>
                 </div>
 
                 <div className="space-y-6">
-                  {/* Appointment Details */}
                   <div>
                     <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-3">{t("doctor.appointments.apt_details", "Appointment Details")}</h4>
                     <div className="bg-slate-50 dark:bg-slate-800/40 rounded-2xl p-4 border border-slate-100 dark:border-slate-700/50 space-y-3">

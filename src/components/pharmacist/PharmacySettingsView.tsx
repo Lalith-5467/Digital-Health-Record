@@ -1,15 +1,15 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { 
-  Settings, 
-  Building2, 
-  ShieldCheck, 
-  Save, 
-  FileText, 
-  MapPin, 
-  Phone, 
-  Mail, 
-  Clock, 
+import {
+  Settings,
+  Building2,
+  ShieldCheck,
+  Save,
+  FileText,
+  MapPin,
+  Phone,
+  Mail,
+  Clock,
   CheckCircle2,
   Lock
 } from 'lucide-react';
@@ -24,40 +24,67 @@ interface PharmacySettingsViewProps {
 }
 
 export const PharmacySettingsView: React.FC<PharmacySettingsViewProps> = ({ user }) => {
-  const [storeName, setStoreName] = useState(user?.hospitalAffiliation || localStorage.getItem('pharmacist_pharmacy_name') || 'Registered Pharmacy');
-  const [dlNumber, setDlNumber] = useState('DL-TN-2026-89412');
-  const [pciNumber, setPciNumber] = useState('PCI-REG-77419');
-  const [gstin, setGstin] = useState('29AABCU9603R1ZM');
-  const [phone, setPhone] = useState('+91 80 2234 5678');
-  const [email, setEmail] = useState(user?.email || 'dispensary@health.com');
-  const [address, setAddress] = useState('OPD Dispensary Block, Registered Health Network');
-  const [operatingHours, setOperatingHours] = useState('24 Hours / 7 Days Emergency Dispensary');
+  const [storeName, setStoreName] = useState(user?.hospitalAffiliation || '');
+  const [dlNumber, setDlNumber] = useState('');
+  const [pciNumber, setPciNumber] = useState('');
+  const [gstin, setGstin] = useState('');
+  const [phone, setPhone] = useState('');
+  const [email, setEmail] = useState(user?.email || '');
+  const [address, setAddress] = useState('');
+  const [operatingHours, setOperatingHours] = useState('24 Hours / 7 Days');
   const [saved, setSaved] = useState(false);
 
   React.useEffect(() => {
-    import('../../services/apiClient').then(({ apiClient }) => {
-      apiClient.get<any>('/profile/me').then((res) => {
-        if (res?.data?.pharmacist) {
-          const ph = res.data.pharmacist.pharmacy || res.data.pharmacist;
-          if (ph.name || ph.pharmacyName) setStoreName(ph.name || ph.pharmacyName);
+    import('../../services/dhrApis').then(({ profileApi }) => {
+      profileApi
+        .getPharmacistProfile()
+        .then((res) => {
+          const data = res?.data;
+          if (!data) return;
+          const ph = data.pharmacy || data;
+          if (ph.name || data.pharmacyName) setStoreName(ph.name || data.pharmacyName);
           if (ph.address) setAddress(ph.address);
           if (ph.licenseNumber) setDlNumber(ph.licenseNumber);
-          if (ph.phone || res.data.phoneNumber) setPhone(ph.phone || res.data.phoneNumber);
-          if (ph.email || res.data.email) setEmail(ph.email || res.data.email);
-        }
-      }).catch(() => {});
+          if (ph.pciNumber || data.pciRegistrationNo || data.licenseNumber) {
+            setPciNumber(ph.pciNumber || data.pciRegistrationNo || data.licenseNumber);
+          }
+          if (ph.gstin) setGstin(ph.gstin);
+          if (ph.phone) setPhone(ph.phone);
+          if (ph.email) setEmail(ph.email);
+          if (ph.operatingHours) setOperatingHours(ph.operatingHours);
+        })
+        .catch(() => { });
     });
   }, []);
 
-  const handleSave = (e: React.FormEvent) => {
+  const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
-    setSaved(true);
-    setTimeout(() => setSaved(false), 3000);
+    try {
+      const { profileApi } = await import('../../services/dhrApis');
+      await profileApi.updatePharmacistProfile({
+        pharmacyName: storeName,
+        pciRegistrationNo: pciNumber || undefined,
+        pharmacyDetails: {
+          name: storeName,
+          licenseNumber: dlNumber || undefined,
+          pciNumber: pciNumber || undefined,
+          gstin: gstin || undefined,
+          phone: phone || undefined,
+          email: email || undefined,
+          address: address || undefined,
+          operatingHours: operatingHours || undefined,
+        },
+      });
+      setSaved(true);
+      setTimeout(() => setSaved(false), 3000);
+    } catch (err) {
+      console.error('Failed to save pharmacy settings:', err);
+    }
   };
 
   return (
     <div className="space-y-6 pb-16 font-sans select-none max-w-5xl mx-auto">
-      
+
       {/* HEADER BANNER */}
       <div className="p-6 sm:p-8 rounded-3xl bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-white border border-slate-800 shadow-xl relative overflow-hidden flex flex-col md:flex-row md:items-center justify-between gap-6">
         <div className="space-y-2 relative z-10">

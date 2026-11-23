@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
   CreditCard, Search, Download, Calendar, Filter, X, 
@@ -8,9 +8,11 @@ import {
 } from 'lucide-react';
 import { useLanguage } from '../../../context/LanguageContext';
 import { showGlobalToast } from '../../common/GlobalToastManager';
+import { insuranceApi } from '../../../services/dhrApis';
 
 type Settlement = {
   id: string;
+  dbId?: string;
   patient: string;
   hospital: string;
   approvedAmount: number;
@@ -18,6 +20,7 @@ type Settlement = {
   paymentType: string;
   status: 'Settled' | 'Processing' | 'Pending' | 'Failed';
   date: string;
+  rawDate?: Date | null;
   policyId: string;
   treatment: string;
   hospitalDeduction: number;
@@ -26,90 +29,154 @@ type Settlement = {
   bankRef: string;
 };
 
-const SETTLEMENTS: Settlement[] = [
-  {
-    id: 'CLM-10245',
-    patient: 'Arun Kumar',
-    hospital: 'Apollo Central Health City',
-    approvedAmount: 185000,
-    settlementAmount: 175000,
-    paymentType: 'Hospital Settlement',
-    status: 'Settled',
-    date: '28 Aug 2026',
-    policyId: 'MED-2026-00125',
-    treatment: 'Cardiac Procedure',
-    hospitalDeduction: 10000,
-    paymentMethod: 'Bank Transfer',
-    transactionId: 'TXN847291',
-    bankRef: 'NEX458291'
-  },
-  {
-    id: 'CLM-10246',
-    patient: 'Priya S',
-    hospital: 'Kauvery Hospital',
-    approvedAmount: 92000,
-    settlementAmount: 85000,
-    paymentType: 'Hospital Settlement',
-    status: 'Processing',
-    date: '30 Aug 2026',
-    policyId: 'MED-2026-00342',
-    treatment: 'Appendectomy',
-    hospitalDeduction: 7000,
-    paymentMethod: 'NEFT Transfer',
-    transactionId: 'PENDING',
-    bankRef: 'PENDING'
-  },
-  {
-    id: 'CLM-10247',
-    patient: 'Rahul M',
-    hospital: 'Fortis Hospital',
-    approvedAmount: 240000,
-    settlementAmount: 240000,
-    paymentType: 'Hospital Settlement',
-    status: 'Settled',
-    date: '31 Aug 2026',
-    policyId: 'MED-2026-00812',
-    treatment: 'Orthopedic Surgery',
-    hospitalDeduction: 0,
-    paymentMethod: 'RTGS',
-    transactionId: 'TXN847298',
-    bankRef: 'HDF458299'
-  },
-  {
-    id: 'CLM-10248',
-    patient: 'Meena R',
-    hospital: 'MIOT International',
-    approvedAmount: 120000,
-    settlementAmount: 110000,
-    paymentType: 'Hospital Settlement',
-    status: 'Pending',
-    date: '01 Sep 2026',
-    policyId: 'MED-2026-00995',
-    treatment: 'Chemotherapy Session',
-    hospitalDeduction: 10000,
-    paymentMethod: 'Awaiting Initiation',
-    transactionId: 'N/A',
-    bankRef: 'N/A'
-  }
-];
-
-const PAYOUTS = [
-  { id: 'PAY-1021', claimId: 'CLM-10245', amount: 4250, date: 'Aug 28', status: 'Paid' },
-  { id: 'PAY-1022', claimId: 'CLM-10246', amount: 2800, date: 'Aug 30', status: 'Pending' },
-  { id: 'PAY-1023', claimId: 'CLM-10247', amount: 5100, date: 'Aug 31', status: 'Paid' },
-];
-
-const CHART_DATA = [
-  { month: 'April', approved: 42, settled: 38 },
-  { month: 'May', approved: 55, settled: 51 },
-  { month: 'June', approved: 48, settled: 45 },
-  { month: 'July', approved: 60, settled: 52 },
-  { month: 'August', approved: 75, settled: 68 },
-];
+const formatCompactRupees = (amount: number): string => {
+  if (amount >= 100000) return `₹${(amount / 100000).toFixed(2)}L`;
+  if (amount >= 1000) return `₹${(amount / 1000).toFixed(1)}k`;
+  return `₹${amount.toLocaleString('en-IN')}`;
+};
 
 export const SettlementsView: React.FC = () => {
   const { t } = useLanguage();
+  const [SETTLEMENTS, setSettlements] = useState<Settlement[]>([]);
+  const [PAYOUTS, setPayouts] = useState<any[]>([]);
+  const [claimsCount, setClaimsCount] = useState<number>(0);
   const [selectedSettlement, setSelectedSettlement] = useState<Settlement | null>(null);
+  const [updatingId, setUpdatingId] = useState<string | null>(null);
+
+  const loadSettlementData = () => {
+    Promise.all([
+      insuranceApi.getSettlements().catch(() => null),
+      insuranceApi.getAgentPayouts().catch(() => null),
+      insuranceApi.getClaims().catch(() => null),
+    ]).then(([stlRes, payRes, clmRes]) => {
+      if (Array.isArray(clmRes?.data)) {
+        setClaimsCount(clmRes.data.length);
+      }
+      if (stlRes?.data && Array.isArray(stlRes.data)) {
+        setSettlements(
+          stlRes.data.map((s: any) => ({
+            id: s.claim?.claimId || s.settlementId || s.id,
+            dbId: s.id,
+            patient: s.claim?.patient?.fullName || 'Patient',
+            hospital: s.claim?.hospital || 'Network Hospital',
+            approvedAmount: Number(s.claim?.approvedAmount ?? s.paidAmount ?? 0),
+            settlementAmount: Number(s.paidAmount ?? 0),
+            paymentType: s.paymentType || 'Hospital Settlement',
+            status:
+              s.status === 'Processed' || s.status === 'Settled'
+                ? 'Settled'
+                : s.status === 'In Transit' || s.status === 'Processing'
+                ? 'Processing'
+                : s.status === 'Failed'
+                ? 'Failed'
+                : 'Pending',
+            date: s.settlementDate
+              ? new Date(s.settlementDate).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
+              : '—',
+            rawDate: s.settlementDate ? new Date(s.settlementDate) : s.createdAt ? new Date(s.createdAt) : null,
+            policyId: s.claim?.policy?.policyNumber || '—',
+            treatment: s.claim?.treatment || 'Treatment',
+            hospitalDeduction: Number(s.hospitalDeduction ?? 0),
+            paymentMethod: s.paymentMode || 'NEFT / Direct Bank Transfer',
+            transactionId: s.referenceNumber || s.settlementId || 'PENDING',
+            bankRef: s.bankRef || s.referenceNumber || 'PENDING',
+          }))
+        );
+      }
+      if (payRes?.data && Array.isArray(payRes.data)) {
+        setPayouts(
+          payRes.data.map((p: any) => ({
+            id: p.referenceNo || p.id.slice(-8).toUpperCase(),
+            claimId: p.hospitalName || p.agentName,
+            amount: Number(p.amount ?? 0),
+            date: p.paidAt ? new Date(p.paidAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '—',
+            rawDate: p.paidAt ? new Date(p.paidAt) : null,
+            status: p.status === 'Processed' ? 'Paid' : p.status,
+          }))
+        );
+      }
+    });
+  };
+
+  useEffect(() => {
+    loadSettlementData();
+  }, []);
+
+  // Real computed metrics from DB records
+  const totalSettledAmount = SETTLEMENTS.filter((s) => s.status === 'Settled').reduce((sum, s) => sum + s.settlementAmount, 0);
+  const settledCount = SETTLEMENTS.filter((s) => s.status === 'Settled').length;
+  const pendingCount = SETTLEMENTS.filter((s) => s.status === 'Pending' || s.status === 'Processing').length;
+  const now = new Date();
+  const thisMonthPayouts = SETTLEMENTS.filter(
+    (s) => s.status === 'Settled' && s.rawDate && s.rawDate.getMonth() === now.getMonth() && s.rawDate.getFullYear() === now.getFullYear()
+  ).reduce((sum, s) => sum + s.settlementAmount, 0);
+
+  const paidPayoutsTotal = PAYOUTS.filter((p) => p.status === 'Paid').reduce((sum, p) => sum + p.amount, 0);
+  const pendingPayoutsTotal = PAYOUTS.filter((p) => p.status !== 'Paid').reduce((sum, p) => sum + p.amount, 0);
+  const totalPayoutsVolume = paidPayoutsTotal + pendingPayoutsTotal;
+
+  const successRate = SETTLEMENTS.length > 0 ? Math.round((settledCount / SETTLEMENTS.length) * 1000) / 10 : 0;
+
+  // Build dynamic last-5-months chart data from real settlements
+  const chartData = React.useMemo(() => {
+    const months: Array<{ month: string; key: string; approved: number; settled: number }> = [];
+    for (let i = 4; i >= 0; i--) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      months.push({
+        month: d.toLocaleDateString('en-US', { month: 'long' }),
+        key: `${d.getFullYear()}-${d.getMonth()}`,
+        approved: 0,
+        settled: 0,
+      });
+    }
+    SETTLEMENTS.forEach((s) => {
+      if (!s.rawDate) return;
+      const key = `${s.rawDate.getFullYear()}-${s.rawDate.getMonth()}`;
+      const bucket = months.find((m) => m.key === key);
+      if (bucket) {
+        bucket.approved += 1;
+        if (s.status === 'Settled') bucket.settled += 1;
+      }
+    });
+    return months;
+  }, [SETTLEMENTS]);
+
+  const maxChartVal = Math.max(1, ...chartData.map((d) => Math.max(d.approved, d.settled)));
+
+  const handleMarkSettled = async (s: Settlement) => {
+    if (!s.dbId) return;
+    setUpdatingId(s.dbId);
+    try {
+      await insuranceApi.updateSettlementStatus(s.dbId, { status: 'Processed' });
+      showGlobalToast(`Settlement ${s.id} marked Processed in MySQL.`, 'success', 'Settlement Updated');
+      loadSettlementData();
+      setSelectedSettlement(null);
+    } catch (err: any) {
+      showGlobalToast(err?.message || 'Failed to update settlement status', 'error', 'Update Failed');
+    } finally {
+      setUpdatingId(null);
+    }
+  };
+
+  const handleExportReport = () => {
+    if (SETTLEMENTS.length === 0) {
+      showGlobalToast(t('No settlement transactions to export.'), 'info', t('Export'));
+      return;
+    }
+    const headers = ['Claim ID', 'Patient', 'Hospital', 'Approved Amount', 'Settled Amount', 'Payment Type', 'Status', 'Date'];
+    const rows = SETTLEMENTS.map((s) => [
+      s.id, s.patient, s.hospital, s.approvedAmount, s.settlementAmount, s.paymentType, s.status, s.date
+    ]);
+    const csv = [headers.join(','), ...rows.map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(','))].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `settlements-report-${new Date().toISOString().slice(0, 10)}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+    showGlobalToast(t('Settlements report exported as CSV.'), 'success', t('Report Exported'));
+  };
   
   // Draft Filters
   const [searchQuery, setSearchQuery] = useState('');
@@ -169,7 +236,7 @@ export const SettlementsView: React.FC = () => {
             <Calendar className="w-4 h-4" /> {t('Last 30 Days')}
           </button>
           <button 
-            onClick={() => showGlobalToast(t('Settlements report exported successfully as CSV/PDF.'), 'success', t('Report Exported'))}
+            onClick={handleExportReport}
             className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-sm font-black flex items-center gap-2 shadow-lg shadow-blue-500/20 transition-all cursor-pointer"
           >
             <Download className="w-4 h-4" /> {t('Export Report')}
@@ -185,9 +252,9 @@ export const SettlementsView: React.FC = () => {
           </div>
           <div className="relative z-10">
             <p className="text-[10px] font-black uppercase tracking-wider text-slate-400 mb-2">{t('Total Settlement Amount')}</p>
-            <p className="text-2xl font-black text-slate-900 dark:text-white mb-2">₹48.6L</p>
+            <p className="text-2xl font-black text-slate-900 dark:text-white mb-2">{formatCompactRupees(totalSettledAmount)}</p>
             <p className="text-xs font-bold text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
-              <TrendingUp className="w-3.5 h-3.5" /> {t('+12.4% from last month')}
+              <TrendingUp className="w-3.5 h-3.5" /> {SETTLEMENTS.length} {t('total settlements')}
             </p>
           </div>
         </div>
@@ -198,9 +265,9 @@ export const SettlementsView: React.FC = () => {
           </div>
           <div className="relative z-10">
             <p className="text-[10px] font-black uppercase tracking-wider text-slate-400 mb-2">{t('Settled Claims')}</p>
-            <p className="text-2xl font-black text-slate-900 dark:text-white mb-2">328</p>
+            <p className="text-2xl font-black text-slate-900 dark:text-white mb-2">{settledCount}</p>
             <p className="text-xs font-bold text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
-              <TrendingUp className="w-3.5 h-3.5" /> {t('+8.2% this month')}
+              <TrendingUp className="w-3.5 h-3.5" /> {claimsCount} {t('total claims')}
             </p>
           </div>
         </div>
@@ -211,9 +278,9 @@ export const SettlementsView: React.FC = () => {
           </div>
           <div className="relative z-10">
             <p className="text-[10px] font-black uppercase tracking-wider text-slate-400 mb-2">{t('Pending Settlements')}</p>
-            <p className="text-2xl font-black text-slate-900 dark:text-white mb-2">42</p>
+            <p className="text-2xl font-black text-slate-900 dark:text-white mb-2">{pendingCount}</p>
             <p className="text-xs font-bold text-amber-600 dark:text-amber-500 flex items-center gap-1">
-              {t('Requires attention')}
+              {pendingCount > 0 ? t('Requires attention') : t('All cleared')}
             </p>
           </div>
         </div>
@@ -224,9 +291,9 @@ export const SettlementsView: React.FC = () => {
           </div>
           <div className="relative z-10">
             <p className="text-[10px] font-black uppercase tracking-wider text-slate-400 mb-2">This Month Payouts</p>
-            <p className="text-2xl font-black text-slate-900 dark:text-white mb-2">₹12.8L</p>
+            <p className="text-2xl font-black text-slate-900 dark:text-white mb-2">{formatCompactRupees(thisMonthPayouts)}</p>
             <p className="text-xs font-bold text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
-              <TrendingUp className="w-3.5 h-3.5" /> +15.6% from last month
+              <TrendingUp className="w-3.5 h-3.5" /> Live monthly total
             </p>
           </div>
         </div>
@@ -377,57 +444,61 @@ export const SettlementsView: React.FC = () => {
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div className="p-4 rounded-2xl bg-gradient-to-br from-blue-600 to-cyan-600 text-white shadow-lg shadow-blue-500/20 relative overflow-hidden">
               <div className="absolute top-0 right-0 p-3 opacity-20"><Wallet className="w-12 h-12" /></div>
-              <p className="text-[10px] font-black uppercase tracking-wider text-blue-100 mb-1 relative z-10">Available Payout</p>
-              <p className="text-2xl font-black relative z-10">₹1,24,500</p>
+              <p className="text-[10px] font-black uppercase tracking-wider text-blue-100 mb-1 relative z-10">Total Payouts Volume</p>
+              <p className="text-2xl font-black relative z-10">₹{totalPayoutsVolume.toLocaleString('en-IN')}</p>
             </div>
             
             <div className="p-4 rounded-2xl bg-white dark:bg-[#0b1120] border border-slate-200 dark:border-slate-800 shadow-sm relative overflow-hidden">
-              <p className="text-[10px] font-black uppercase tracking-wider text-slate-400 mb-1">Paid This Month</p>
-              <p className="text-2xl font-black text-emerald-600 dark:text-emerald-400">₹3,82,000</p>
+              <p className="text-[10px] font-black uppercase tracking-wider text-slate-400 mb-1">Paid Commissions</p>
+              <p className="text-2xl font-black text-emerald-600 dark:text-emerald-400">₹{paidPayoutsTotal.toLocaleString('en-IN')}</p>
             </div>
 
             <div className="p-4 rounded-2xl bg-white dark:bg-[#0b1120] border border-slate-200 dark:border-slate-800 shadow-sm relative overflow-hidden">
               <p className="text-[10px] font-black uppercase tracking-wider text-slate-400 mb-1">Pending Commission</p>
-              <p className="text-2xl font-black text-amber-600 dark:text-amber-500">₹42,500</p>
+              <p className="text-2xl font-black text-amber-600 dark:text-amber-500">₹{pendingPayoutsTotal.toLocaleString('en-IN')}</p>
             </div>
           </div>
 
           <div className="bg-white dark:bg-[#0b1120] rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden">
             <div className="p-4 border-b border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/30">
-              <h3 className="text-xs font-black uppercase tracking-wider text-slate-900 dark:text-white">Agent Payout History</h3>
+              <h3 className="text-xs font-black uppercase tracking-wider text-slate-900 dark:text-white">Agent Payout History ({PAYOUTS.length})</h3>
             </div>
             <div className="overflow-x-auto">
               <table className="w-full text-left">
                 <thead>
                   <tr className="text-[10px] uppercase tracking-wider font-bold text-slate-400 border-b border-slate-100 dark:border-slate-800/50">
                     <th className="px-4 py-3">Payout ID</th>
-                    <th className="px-4 py-3">Claim ID</th>
+                    <th className="px-4 py-3">Hospital / Agent</th>
                     <th className="px-4 py-3">Commission</th>
                     <th className="px-4 py-3">Date</th>
                     <th className="px-4 py-3">Status</th>
-                    <th className="px-4 py-3 text-right">Action</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-800/50">
-                  {PAYOUTS.map((p, i) => (
-                    <tr key={i} className="hover:bg-slate-50 dark:hover:bg-slate-800/30">
-                      <td className="px-4 py-3 text-xs font-bold text-slate-900 dark:text-white">{p.id}</td>
-                      <td className="px-4 py-3 text-xs font-medium text-slate-500">{p.claimId}</td>
-                      <td className="px-4 py-3 text-xs font-black text-slate-900 dark:text-white">₹{p.amount.toLocaleString('en-IN')}</td>
-                      <td className="px-4 py-3 text-xs font-medium text-slate-500">{p.date}</td>
-                      <td className="px-4 py-3">
-                        <span className={`inline-flex items-center gap-1 text-[10px] font-black uppercase ${
-                          p.status === 'Paid' ? 'text-emerald-600 dark:text-emerald-400' : 'text-orange-600 dark:text-orange-400'
-                        }`}>
-                          {p.status === 'Paid' ? <CheckCircle2 className="w-3 h-3" /> : <Clock className="w-3 h-3" />}
-                          {p.status}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3 text-right">
-                        <button className="text-xs font-bold text-blue-600 dark:text-cyan-400 cursor-pointer hover:underline">View</button>
+                  {PAYOUTS.length === 0 ? (
+                    <tr>
+                      <td colSpan={5} className="px-4 py-8 text-center text-xs font-bold text-slate-400">
+                        No agent payouts recorded yet.
                       </td>
                     </tr>
-                  ))}
+                  ) : (
+                    PAYOUTS.map((p, i) => (
+                      <tr key={i} className="hover:bg-slate-50 dark:hover:bg-slate-800/30">
+                        <td className="px-4 py-3 text-xs font-bold text-slate-900 dark:text-white">{p.id}</td>
+                        <td className="px-4 py-3 text-xs font-medium text-slate-500">{p.claimId}</td>
+                        <td className="px-4 py-3 text-xs font-black text-slate-900 dark:text-white">₹{p.amount.toLocaleString('en-IN')}</td>
+                        <td className="px-4 py-3 text-xs font-medium text-slate-500">{p.date}</td>
+                        <td className="px-4 py-3">
+                          <span className={`inline-flex items-center gap-1 text-[10px] font-black uppercase ${
+                            p.status === 'Paid' ? 'text-emerald-600 dark:text-emerald-400' : 'text-orange-600 dark:text-orange-400'
+                          }`}>
+                            {p.status === 'Paid' ? <CheckCircle2 className="w-3 h-3" /> : <Clock className="w-3 h-3" />}
+                            {p.status}
+                          </span>
+                        </td>
+                      </tr>
+                    ))
+                  )}
                 </tbody>
               </table>
             </div>
@@ -442,23 +513,22 @@ export const SettlementsView: React.FC = () => {
             <h3 className="text-xs font-black uppercase tracking-wider text-slate-500 mb-6">Monthly Processing</h3>
             
             <div className="flex-1 flex items-end gap-2 sm:gap-4 h-48 mt-auto border-b border-slate-200 dark:border-slate-700 pb-2 relative">
-              {/* Y-axis lines (decorative) */}
               <div className="absolute inset-x-0 bottom-1/4 border-t border-slate-100 dark:border-slate-800/50 w-full" />
               <div className="absolute inset-x-0 bottom-2/4 border-t border-slate-100 dark:border-slate-800/50 w-full" />
               <div className="absolute inset-x-0 bottom-3/4 border-t border-slate-100 dark:border-slate-800/50 w-full" />
               <div className="absolute inset-x-0 top-0 border-t border-slate-100 dark:border-slate-800/50 w-full" />
 
-              {CHART_DATA.map((d, i) => (
+              {chartData.map((d, i) => (
                 <div key={i} className="flex-1 flex flex-col justify-end items-center gap-1 group relative z-10 h-full">
                   <div className="w-full max-w-[40px] flex items-end gap-0.5 sm:gap-1 h-full">
                     <div 
                       className="w-1/2 bg-blue-500/80 rounded-t-sm transition-all duration-500 group-hover:bg-blue-400"
-                      style={{ height: `${(d.approved / 80) * 100}%` }}
-                      title={`Approved: ${d.approved}`}
+                      style={{ height: `${Math.max(4, (d.approved / maxChartVal) * 100)}%` }}
+                      title={`Total: ${d.approved}`}
                     />
                     <div 
                       className="w-1/2 bg-emerald-500/90 rounded-t-sm transition-all duration-500 group-hover:bg-emerald-400"
-                      style={{ height: `${(d.settled / 80) * 100}%` }}
+                      style={{ height: `${Math.max(4, (d.settled / maxChartVal) * 100)}%` }}
                       title={`Settled: ${d.settled}`}
                     />
                   </div>
@@ -479,12 +549,12 @@ export const SettlementsView: React.FC = () => {
 
           <div className="grid grid-cols-2 gap-4">
             <div className="p-4 rounded-2xl bg-emerald-50 dark:bg-emerald-900/10 border border-emerald-100 dark:border-emerald-800/30 flex flex-col justify-center items-center text-center">
-              <p className="text-[10px] font-black uppercase tracking-wider text-emerald-600 dark:text-emerald-500 mb-1">Success Rate</p>
-              <p className="text-xl font-black text-emerald-700 dark:text-emerald-400">97.4%</p>
+              <p className="text-[10px] font-black uppercase tracking-wider text-emerald-600 dark:text-emerald-500 mb-1">Completion Rate</p>
+              <p className="text-xl font-black text-emerald-700 dark:text-emerald-400">{successRate}%</p>
             </div>
             <div className="p-4 rounded-2xl bg-blue-50 dark:bg-blue-900/10 border border-blue-100 dark:border-blue-800/30 flex flex-col justify-center items-center text-center">
-              <p className="text-[10px] font-black uppercase tracking-wider text-blue-600 dark:text-cyan-500 mb-1">Avg Process Time</p>
-              <p className="text-xl font-black text-blue-700 dark:text-cyan-400">2.4 Days</p>
+              <p className="text-[10px] font-black uppercase tracking-wider text-blue-600 dark:text-cyan-500 mb-1">Active Queue</p>
+              <p className="text-xl font-black text-blue-700 dark:text-cyan-400">{pendingCount} Pending</p>
             </div>
           </div>
 
@@ -624,14 +694,29 @@ export const SettlementsView: React.FC = () => {
               
               <div className="p-4 sm:p-6 border-t border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-[#070c18] flex flex-col sm:flex-row gap-3 shrink-0">
                 <button 
-                  onClick={() => alert(`Receipt downloaded for TXN: ${selectedSettlement.transactionId}`)}
+                  onClick={() => {
+                    const text = `SETTLEMENT RECEIPT\nClaim ID: ${selectedSettlement.id}\nPatient: ${selectedSettlement.patient}\nHospital: ${selectedSettlement.hospital}\nSettled Amount: ₹${selectedSettlement.settlementAmount.toLocaleString('en-IN')}\nTransaction ID: ${selectedSettlement.transactionId}\nStatus: ${selectedSettlement.status}\nDate: ${selectedSettlement.date}\n`;
+                    const blob = new Blob([text], { type: 'text/plain;charset=utf-8;' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `Settlement-${selectedSettlement.transactionId}.txt`;
+                    a.click();
+                    URL.revokeObjectURL(url);
+                  }}
                   className="flex-1 py-3 px-4 bg-white dark:bg-[#0b1120] hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 rounded-xl font-bold text-sm transition-all shadow-sm cursor-pointer flex items-center justify-center gap-2"
                 >
                   <Download className="w-4 h-4" /> Download Receipt
                 </button>
-                <button className="flex-1 py-3 px-4 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-black text-sm transition-all shadow-lg shadow-blue-500/20 cursor-pointer">
-                  View Claim Details
-                </button>
+                {selectedSettlement.status !== 'Settled' && selectedSettlement.dbId && (
+                  <button
+                    disabled={updatingId === selectedSettlement.dbId}
+                    onClick={() => handleMarkSettled(selectedSettlement)}
+                    className="flex-1 py-3 px-4 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-black text-sm transition-all shadow-lg shadow-emerald-500/20 cursor-pointer disabled:opacity-60"
+                  >
+                    {updatingId === selectedSettlement.dbId ? 'Processing...' : 'Mark Settled'}
+                  </button>
+                )}
               </div>
 
             </motion.div>

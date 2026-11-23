@@ -51,6 +51,7 @@ const displayToRoleMap: Record<string, string> = {
   'Insurance': 'INSURANCE_PROVIDER',
   'Insurance / TPA': 'INSURANCE_PROVIDER',
   'Admin': 'ADMIN',
+  'Hospital Admin': 'ADMIN',
   'Super Admin': 'SUPER_ADMIN',
 };
 
@@ -64,10 +65,21 @@ export const AdminUserManagementView: React.FC = () => {
   const [availableHospitals, setAvailableHospitals] = useState<HospitalAdminRecord[]>([]);
 
   useEffect(() => {
-    setAvailableHospitals(getStoredHospitals());
-    const handleHospUpdate = () => setAvailableHospitals(getStoredHospitals());
-    window.addEventListener('admin_hospitals_updated', handleHospUpdate);
-    return () => window.removeEventListener('admin_hospitals_updated', handleHospUpdate);
+    const loadHospitals = () => {
+      adminApi
+        .getHospitals()
+        .then((res) => {
+          if (res?.data && Array.isArray(res.data)) {
+            setAvailableHospitals(res.data);
+          } else {
+            setAvailableHospitals([]);
+          }
+        })
+        .catch(() => setAvailableHospitals([]));
+    };
+    loadHospitals();
+    window.addEventListener('admin_hospitals_updated', loadHospitals);
+    return () => window.removeEventListener('admin_hospitals_updated', loadHospitals);
   }, []);
   
   // Modals
@@ -103,7 +115,16 @@ export const AdminUserManagementView: React.FC = () => {
   const fetchUsers = async (isManual = false) => {
     setLoading(true);
     try {
-      const res = await adminApi.getUsers({ limit: 100 });
+      const [res, hospRes] = await Promise.all([
+        adminApi.getUsers({ limit: 100 }),
+        adminApi.getHospitals().catch(() => null),
+      ]);
+
+      const hospitalList: HospitalAdminRecord[] = 
+        hospRes?.data && Array.isArray(hospRes.data) ? hospRes.data : [];
+      if (hospitalList.length > 0) {
+        setAvailableHospitals(hospitalList);
+      }
 
       let rawUsers: any[] = [];
       if (res && res.data) {
@@ -113,23 +134,46 @@ export const AdminUserManagementView: React.FC = () => {
       if (rawUsers && rawUsers.length > 0) {
         const mapped: DbUserItem[] = rawUsers.map((u: any) => {
           const profile = u.profile || u.patient || u.doctor || u.nurse || u.pharmacist || u.caregiver || u.insuranceProvider || {};
-          const name = profile.fullName || profile.providerName || u.email.split('@')[0];
-          const dept = u.role === 'DOCTOR' ? (profile.speciality || 'Clinical Doctor') :
-                       u.role === 'NURSE' ? (profile.department || 'Inpatient Telemetry') :
-                       u.role === 'PHARMACIST' ? (profile.pharmacyName || 'Central Pharmacy') :
-                       u.role === 'ADMIN' ? 'Hospital Governance' :
-                       u.role === 'SUPER_ADMIN' ? 'System Directorate' :
-                       u.role === 'INSURANCE_PROVIDER' ? 'Claims & TPA' :
-                       u.role === 'CAREGIVER' ? 'Family Care' : 'General OPD';
+          const name = u.fullName || profile.fullName || profile.providerName || u.email.split('@')[0];
 
-          const hosp = profile.hospital || 'MediCare Central Hospital';
+          // Identify if user is a Hospital Administrator
+          const matchedHospital = hospitalList.find(h =>
+            (h.adminEmail && h.adminEmail.toLowerCase() === u.email.toLowerCase()) ||
+            (h.email && h.email.toLowerCase() === u.email.toLowerCase()) ||
+            ((h as any).adminUserId && (h as any).adminUserId === u.id)
+          );
+          const managedHospName = Array.isArray(u.managedHospitals) && u.managedHospitals.length > 0
+            ? u.managedHospitals[0].name
+            : (matchedHospital?.name || u.hospital || null);
+
+          const isHospitalAdmin = u.role === 'ADMIN' && (
+            Boolean(managedHospName) ||
+            u.designation?.toLowerCase().includes('hospital') ||
+            (u.department && !u.department.toLowerCase().includes('directorate') && u.department !== 'System Administration' && u.department !== 'Admin Directorate')
+          );
+
+          const hosp = managedHospName || profile.hospital || (isHospitalAdmin ? (u.department || 'Hospital Facility') : 'MediCare Central Hospital');
+
+          const displayRole = isHospitalAdmin
+            ? 'Hospital Admin'
+            : (roleMapToDisplay[u.role] || u.role);
+
+          const dept = isHospitalAdmin
+            ? (hosp || 'Hospital Administration')
+            : u.role === 'DOCTOR' ? (profile.speciality || 'Clinical Doctor') :
+              u.role === 'NURSE' ? (profile.department || 'Inpatient Telemetry') :
+              u.role === 'PHARMACIST' ? (profile.pharmacyName || 'Central Pharmacy') :
+              u.role === 'ADMIN' ? (u.department || 'System Governance') :
+              u.role === 'SUPER_ADMIN' ? (u.department || 'System Directorate') :
+              u.role === 'INSURANCE_PROVIDER' ? 'Claims & TPA' :
+              u.role === 'CAREGIVER' ? 'Family Care' : 'General OPD';
 
           return {
             id: u.id,
             name,
             email: u.email,
             phone: u.phone || u.phoneNumber || '+91 98400 00000',
-            role: roleMapToDisplay[u.role] || u.role,
+            role: displayRole,
             rawRole: u.role,
             department: dept,
             hospital: hosp,
@@ -246,10 +290,13 @@ export const AdminUserManagementView: React.FC = () => {
     const matchesSearch = u.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
                           u.email.toLowerCase().includes(searchTerm.toLowerCase()) ||
                           u.id.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                          (u.hospital && u.hospital.toLowerCase().includes(searchTerm.toLowerCase())) ||
+                          (u.department && u.department.toLowerCase().includes(searchTerm.toLowerCase())) ||
                           (u.abhaId && u.abhaId.toLowerCase().includes(searchTerm.toLowerCase()));
     const matchesRole = roleFilter === 'All' || u.role === roleFilter;
     const matchesStatus = statusFilter === 'All' || u.status === statusFilter;
-    const matchesHospital = hospitalFilter === 'All' || u.hospital === hospitalFilter;
+    const matchesHospital = hospitalFilter === 'All' ||
+      (u.hospital && u.hospital.toLowerCase().trim() === hospitalFilter.toLowerCase().trim());
     return matchesSearch && matchesRole && matchesStatus && matchesHospital;
   });
 
@@ -276,7 +323,9 @@ export const AdminUserManagementView: React.FC = () => {
 
         <div className="flex items-center gap-3 relative z-10 shrink-0">
           <span className="px-4 py-2.5 rounded-xl bg-black/20 text-white text-xs font-mono font-bold border border-white/20 backdrop-blur-md shadow-xs">
-            {users.length} Registered Users
+            {filteredUsers.length !== users.length
+              ? `${filteredUsers.length} of ${users.length} Users`
+              : `${users.length} Registered Users`}
           </span>
           <button
             onClick={() => fetchUsers(true)}
@@ -344,6 +393,7 @@ export const AdminUserManagementView: React.FC = () => {
             <option value="Caregiver">Caregiver</option>
             <option value="Insurance">Insurance</option>
             <option value="Admin">Admin</option>
+            <option value="Hospital Admin">Hospital Admin</option>
             <option value="Super Admin">Super Admin</option>
           </select>
 
@@ -363,7 +413,15 @@ export const AdminUserManagementView: React.FC = () => {
       {/* 3. USER ACCOUNTS TABLE */}
       <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200/90 dark:border-slate-800 shadow-xs overflow-hidden">
         <div className="w-full overflow-hidden">
-          <table className="w-full text-left border-collapse table-auto">
+          <table className="w-full text-left border-collapse table-fixed">
+            <colgroup>
+              <col className="w-[30%]" />
+              <col className="w-[18%]" />
+              <col className="w-[16%]" />
+              <col className="w-[12%]" />
+              <col className="w-[12%]" />
+              <col className="w-[12%]" />
+            </colgroup>
             <thead>
               <tr className="bg-slate-50/90 dark:bg-slate-800/60 border-b border-slate-200/80 dark:border-slate-700/80 text-[11px] uppercase font-semibold tracking-wider text-slate-500 dark:text-slate-400">
                 <th className="py-3.5 px-5 text-left">User Profile</th>
@@ -400,22 +458,28 @@ export const AdminUserManagementView: React.FC = () => {
 
                     {/* Role & ABHA */}
                     <td className="py-3.5 px-4 align-middle whitespace-nowrap">
-                      <div className="space-y-0.5">
-                        <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium border ${
-                          u.role === 'Super Admin' || u.role === 'Admin'
-                            ? 'bg-purple-50 text-purple-700 border-purple-200/70 dark:bg-purple-950/40 dark:text-purple-300 dark:border-purple-800/50'
-                            : u.role === 'Doctor'
-                            ? 'bg-emerald-50 text-emerald-700 border-emerald-200/70 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800/50'
-                            : u.role === 'Nurse'
-                            ? 'bg-pink-50 text-pink-700 border-pink-200/70 dark:bg-pink-950/40 dark:text-pink-300 dark:border-pink-800/50'
-                            : u.role === 'Pharmacist'
-                            ? 'bg-cyan-50 text-cyan-700 border-cyan-200/70 dark:bg-cyan-950/40 dark:text-cyan-300 dark:border-cyan-800/50'
-                            : 'bg-blue-50 text-blue-700 border-blue-200/70 dark:bg-blue-950/40 dark:text-blue-300 dark:border-blue-800/50'
-                        }`}>
-                          {u.role}
-                        </span>
+                      <div className="inline-flex flex-col justify-center">
+                        <div>
+                          <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold border ${
+                            u.role === 'Super Admin'
+                              ? 'bg-purple-50 text-purple-700 border-purple-200/70 dark:bg-purple-950/40 dark:text-purple-300 dark:border-purple-800/50'
+                              : u.role === 'Hospital Admin'
+                              ? 'bg-blue-50 text-blue-700 border-blue-200/70 dark:bg-blue-950/40 dark:text-blue-300 dark:border-blue-800/50'
+                              : u.role === 'Admin'
+                              ? 'bg-teal-50 text-teal-700 border-teal-200/70 dark:bg-teal-950/40 dark:text-teal-300 dark:border-teal-800/50'
+                              : u.role === 'Doctor'
+                              ? 'bg-emerald-50 text-emerald-700 border-emerald-200/70 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800/50'
+                              : u.role === 'Nurse'
+                              ? 'bg-pink-50 text-pink-700 border-pink-200/70 dark:bg-pink-950/40 dark:text-pink-300 dark:border-pink-800/50'
+                              : u.role === 'Pharmacist'
+                              ? 'bg-cyan-50 text-cyan-700 border-cyan-200/70 dark:bg-cyan-950/40 dark:text-cyan-300 dark:border-cyan-800/50'
+                              : 'bg-slate-100 text-slate-700 border-slate-200/70 dark:bg-slate-800 dark:text-slate-300 dark:border-slate-700'
+                          }`}>
+                            {u.role}
+                          </span>
+                        </div>
                         {u.abhaId && (
-                          <p className="text-[11px] font-mono text-slate-400 dark:text-slate-500 font-medium tracking-tight">{u.abhaId}</p>
+                          <p className="text-[11px] font-mono text-slate-400 dark:text-slate-500 font-medium tracking-tight mt-0.5">{u.abhaId}</p>
                         )}
                       </div>
                     </td>
@@ -599,6 +663,7 @@ export const AdminUserManagementView: React.FC = () => {
                       <option value="Caregiver">Caregiver</option>
                       <option value="Insurance">Insurance / TPA</option>
                       <option value="Admin">Admin</option>
+                      <option value="Hospital Admin">Hospital Admin</option>
                       <option value="Super Admin">Super Admin</option>
                     </select>
                   </div>
@@ -698,6 +763,12 @@ export const AdminUserManagementView: React.FC = () => {
                   <span className="text-slate-500">Assigned Role:</span>
                   <strong className="text-slate-900 dark:text-white">{selectedUser.role}</strong>
                 </div>
+                {selectedUser.hospital && (
+                  <div className="flex justify-between">
+                    <span className="text-slate-500">Hospital Facility:</span>
+                    <strong className="text-teal-600 dark:text-teal-400 font-semibold">{selectedUser.hospital}</strong>
+                  </div>
+                )}
                 <div className="flex justify-between">
                   <span className="text-slate-500">ABHA Health ID:</span>
                   <span className="font-mono text-teal-600 font-bold">{selectedUser.abhaId || 'None'}</span>

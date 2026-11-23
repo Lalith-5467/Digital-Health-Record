@@ -1,6 +1,7 @@
 import { prisma } from '../config/prisma';
 import { ReminderStatus, ReminderType, Role } from '@prisma/client';
 import { AppError } from '../middleware/errorHandler';
+import { CaregiverService } from './caregiver.service';
 
 export interface CreateReminderDTO {
   patientId?: string;
@@ -44,7 +45,15 @@ export class ReminderService {
     if (role === Role.PATIENT) {
       const patient = await prisma.patient.findUnique({ where: { userId } });
       if (!patient) throw new AppError('Patient profile not found', 404);
+      if (patientIdQuery && patientIdQuery !== patient.id) {
+        throw new AppError('Forbidden: You can only view your own reminders', 403);
+      }
       patientId = patient.id;
+    } else if (role === Role.CAREGIVER) {
+      if (!patientId) throw new AppError('Patient ID is required', 400);
+      await CaregiverService.validateCaregiverAccess(userId, role, patientId);
+    } else if (role !== Role.DOCTOR && role !== Role.NURSE && role !== Role.ADMIN && role !== Role.SUPER_ADMIN) {
+      throw new AppError('Forbidden: Insufficient role to access reminders', 403);
     }
 
     if (!patientId) throw new AppError('Patient ID is required', 400);
@@ -58,13 +67,24 @@ export class ReminderService {
   /**
    * Create a new reminder
    */
-  static async createReminder(userId: string, role: Role, data: CreateReminderDTO) {
+  static async createReminder(userId: string, role: Role, data: CreateReminderDTO, isViewOnly?: boolean) {
+    if (isViewOnly) {
+      throw new AppError('Access denied: View-only Super Administrator accounts cannot create reminders', 403);
+    }
     let patientId = data.patientId;
 
     if (role === Role.PATIENT) {
       const patient = await prisma.patient.findUnique({ where: { userId } });
       if (!patient) throw new AppError('Patient profile not found', 404);
+      if (data.patientId && data.patientId !== patient.id) {
+        throw new AppError('Forbidden: You can only create reminders for yourself', 403);
+      }
       patientId = patient.id;
+    } else if (role === Role.CAREGIVER) {
+      if (!patientId) throw new AppError('Patient ID is required', 400);
+      await CaregiverService.validateCaregiverAccess(userId, role, patientId);
+    } else if (role !== Role.DOCTOR && role !== Role.NURSE && role !== Role.ADMIN && role !== Role.SUPER_ADMIN) {
+      throw new AppError('Forbidden: Insufficient role to create reminders', 403);
     }
 
     if (!patientId) throw new AppError('Patient ID is required', 400);
@@ -105,11 +125,15 @@ export class ReminderService {
   }
 
   /**
-   * Update a reminder
+   * Update a reminder (ownership-checked)
    */
-  static async updateReminder(id: string, data: UpdateReminderDTO) {
+  static async updateReminder(id: string, data: UpdateReminderDTO, userId: string, role: Role, isViewOnly?: boolean) {
+    if (isViewOnly) {
+      throw new AppError('Access denied: View-only Super Administrator accounts cannot modify reminders', 403);
+    }
     const existing = await prisma.reminder.findUnique({ where: { id } });
     if (!existing) throw new AppError('Reminder not found', 404);
+    await CaregiverService.validateCaregiverAccess(userId, role, existing.patientId);
 
     return prisma.reminder.update({
       where: { id },
@@ -131,11 +155,14 @@ export class ReminderService {
   /**
    * Update follow-up status (Accept / Decline)
    */
-  static async updateFollowUpStatus(id: string, followUpStatus: 'Accepted' | 'Declined') {
+  static async updateFollowUpStatus(id: string, followUpStatus: 'Accepted' | 'Declined', userId: string, role: Role, isViewOnly?: boolean) {
+    if (isViewOnly) {
+      throw new AppError('Access denied: View-only Super Administrator accounts cannot modify reminders', 403);
+    }
     const reminder = await this.updateReminder(id, {
       followUpStatus,
       priority: followUpStatus === 'Accepted' ? 'High Priority' : 'Normal',
-    });
+    }, userId, role, isViewOnly);
 
     // Create Notification
     const patient = await prisma.patient.findUnique({ where: { id: reminder.patientId } });
@@ -156,11 +183,15 @@ export class ReminderService {
   }
 
   /**
-   * Delete a reminder
+   * Delete a reminder (ownership-checked)
    */
-  static async deleteReminder(id: string) {
+  static async deleteReminder(id: string, userId: string, role: Role, isViewOnly?: boolean) {
+    if (isViewOnly) {
+      throw new AppError('Access denied: View-only Super Administrator accounts cannot delete reminders', 403);
+    }
     const existing = await prisma.reminder.findUnique({ where: { id } });
     if (!existing) throw new AppError('Reminder not found', 404);
+    await CaregiverService.validateCaregiverAccess(userId, role, existing.patientId);
 
     await prisma.reminder.delete({ where: { id } });
     return { success: true };

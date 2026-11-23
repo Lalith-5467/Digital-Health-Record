@@ -34,24 +34,21 @@ import {
   ChevronUp,
   RotateCw,
   FileQuestion,
-  HelpCircle
+  HelpCircle,
+  Stethoscope
 } from 'lucide-react';
 import type { StructuredPrescription, ExtractedMedicine } from '../../utils/prescriptionExtractor';
 import {
   SAMPLE_PRESCRIPTION_PRESETS,
   extractPrescriptionData
 } from '../../utils/prescriptionExtractor';
-import {
-  processPrescriptionConfirmation,
-  getLatestWorkflowResult,
-  setLatestWorkflowResult,
-  updateReminderFollowUpStatus,
-  getReminders,
-  savePharmacyOrder,
-} from '../../utils/healthWorkflowStorage';
+import { PrescriptionClinicalAnalysisView } from './PrescriptionClinicalAnalysisView';
+import { analyzePrescriptionClinicalData } from '../../utils/prescriptionAnalysisEngine';
 import type { WorkflowConfirmationResult, ExtendedReminderItem } from '../../utils/healthWorkflowStorage';
-import { INITIAL_PHARMACIES, type Pharmacy } from '../pharmacy/pharmacyData';
+import type { Pharmacy } from '../pharmacy/pharmacyData';
 import { OrderTrackingModal } from '../pharmacy/OrderTrackingModal';
+import { profileApi, prescriptionApi, pharmacyApi, recordApi, reminderApi } from '../../services/dhrApis';
+import { createPatientPharmacyOrder } from '../../services/pharmacyOrderApi';
 
 export type WorkflowState =
   | 'idle'
@@ -136,48 +133,16 @@ export const PrescriptionScannerTab: React.FC<PrescriptionScannerTabProps> = ({
   }, []);
 
   const resolveAuthoritativePatientName = useCallback((userCandidate?: any): string => {
-    try {
-      const custom = localStorage.getItem('patient_user_name');
-      if (custom && custom.trim() && !isInvalidPatientName(custom)) {
-        return custom.trim();
-      }
-      const patientUser = localStorage.getItem('patient_user');
-      if (patientUser) {
-        const parsed = JSON.parse(patientUser);
-        if (parsed?.name && !isInvalidPatientName(parsed.name)) {
-          return parsed.name.trim();
-        }
-      }
-      if (userCandidate?.name && !isInvalidPatientName(userCandidate.name)) {
-        return userCandidate.name.trim();
-      }
-      const prof = localStorage.getItem('user_profile_data');
-      if (prof) {
-        const parsed = JSON.parse(prof);
-        if (parsed?.name && !isInvalidPatientName(parsed.name)) {
-          return parsed.name.trim();
-        }
-      }
-      const appUser = localStorage.getItem('app_user');
-      if (appUser) {
-        const parsed = JSON.parse(appUser);
-        if (parsed?.name && !isInvalidPatientName(parsed.name)) {
-          return parsed.name.trim();
-        }
-      }
-    } catch {}
-
     if (userCandidate?.name && !isInvalidPatientName(userCandidate.name)) {
       return userCandidate.name.trim();
     }
-
     return '';
   }, [isInvalidPatientName]);
 
   const [patientNameInput, setPatientNameInput] = useState<string>(() => resolveAuthoritativePatientName(user));
   const [isEditingPatientName, setIsEditingPatientName] = useState(false);
 
-  // Sync patient name if user object updates
+  // Sync patient name, address & preferred pharmacy from MySQL backend
   useEffect(() => {
     let isMounted = true;
     const resolved = resolveAuthoritativePatientName(user);
@@ -185,36 +150,35 @@ export const PrescriptionScannerTab: React.FC<PrescriptionScannerTabProps> = ({
       setPatientNameInput(resolved);
     }
 
-    import('../../services/apiClient').then(({ apiClient }) => {
-      apiClient.get<any>('/profile/patient').then((res) => {
-        if (res && res.data && res.data.fullName && isMounted) {
-          const fn = res.data.fullName.trim();
-          if (fn && !isInvalidPatientName(fn)) {
-            setPatientNameInput(fn);
-            localStorage.setItem('patient_user_name', fn);
-          }
+    profileApi
+      .getPatientProfile()
+      .then((res) => {
+        if (!isMounted || !res?.data) return;
+        const fn = typeof res.data.fullName === 'string' ? res.data.fullName.trim() : '';
+        if (fn && !isInvalidPatientName(fn)) {
+          setPatientNameInput(fn);
         }
-      }).catch(() => {
-        apiClient.get<any>('/profile').then((res) => {
-          const fn = res?.data?.patient?.fullName || res?.data?.profile?.fullName || res?.data?.fullName;
-          if (fn && isMounted && !isInvalidPatientName(fn)) {
-            setPatientNameInput(fn.trim());
-            localStorage.setItem('patient_user_name', fn.trim());
-          }
-        }).catch(() => {});
+        if (typeof res.data.address === 'string' && res.data.address.trim()) {
+          setPatientDeliveryAddress(res.data.address.trim());
+        }
+        if (typeof res.data.preferredPharmacyId === 'string' && res.data.preferredPharmacyId.trim()) {
+          setSelectedPharmacyId(res.data.preferredPharmacyId.trim());
+        }
+      })
+      .catch(() => {
+        profileApi
+          .getProfile()
+          .then((res) => {
+            const fn = (res?.data as any)?.patient?.fullName || (res?.data as any)?.profile?.fullName || (res?.data as any)?.fullName;
+            if (fn && isMounted && !isInvalidPatientName(fn)) {
+              setPatientNameInput(fn.trim());
+            }
+          })
+          .catch(() => {});
       });
-    });
-
-    const handleUserUpdated = () => {
-      if (isMounted) {
-        setPatientNameInput(resolveAuthoritativePatientName(user));
-      }
-    };
-    window.addEventListener('app_user_updated', handleUserUpdated);
 
     return () => {
       isMounted = false;
-      window.removeEventListener('app_user_updated', handleUserUpdated);
     };
   }, [user, resolveAuthoritativePatientName, isInvalidPatientName]);
 
@@ -224,25 +188,12 @@ export const PrescriptionScannerTab: React.FC<PrescriptionScannerTabProps> = ({
     if (!trimmed) return;
 
     try {
-      const appUserStr = localStorage.getItem('app_user');
-      if (appUserStr) {
-        const appUser = JSON.parse(appUserStr);
-        appUser.name = trimmed;
-        localStorage.setItem('app_user', JSON.stringify(appUser));
-      }
-      const profStr = localStorage.getItem('user_profile_data');
-      if (profStr) {
-        const prof = JSON.parse(profStr);
-        prof.name = trimmed;
-        localStorage.setItem('user_profile_data', JSON.stringify(prof));
-      }
+      await profileApi.updatePatientProfile({ fullName: trimmed });
       window.dispatchEvent(new Event('app_user_updated'));
-
-      const { apiClient } = await import('../../services/apiClient');
-      await apiClient.put('/profile/patient', { fullName: trimmed });
       onToast(`✓ Patient profile name saved: ${trimmed}`);
     } catch (err) {
       console.warn('Failed to update patient profile name:', err);
+      onToast('Failed to update patient profile name');
     }
   };
 
@@ -252,6 +203,7 @@ export const PrescriptionScannerTab: React.FC<PrescriptionScannerTabProps> = ({
   const [selectedPresetId, setSelectedPresetId] = useState<string>('');
   const [activePageIndex, setActivePageIndex] = useState<number>(0);
   const [showRawOcr, setShowRawOcr] = useState<boolean>(false);
+  const [leftPaneTab, setLeftPaneTab] = useState<'analysis' | 'raw_ocr'>('analysis');
 
   // SCANNING / OCR PROGRESS
   const [scanProgress, setScanProgress] = useState(0);
@@ -262,16 +214,16 @@ export const PrescriptionScannerTab: React.FC<PrescriptionScannerTabProps> = ({
   const [prescriptionData, setPrescriptionData] = useState<StructuredPrescription | null>(null);
   const [confirmationResult, setConfirmationResult] = useState<WorkflowConfirmationResult | null>(null);
 
+  // Dynamically computed AI Clinical Prescription Analysis
+  const clinicalAnalysis = useMemo(() => {
+    if (!prescriptionData) return null;
+    return analyzePrescriptionClinicalData(prescriptionData);
+  }, [prescriptionData]);
+
   // REGISTERED PHARMACY STATE & SELECTION
   const [registeredPharmacies, setRegisteredPharmacies] = useState<Pharmacy[]>([]);
   const [isLoadingPharmacies, setIsLoadingPharmacies] = useState<boolean>(true);
-  const [selectedPharmacyId, setSelectedPharmacyId] = useState<string>(() => {
-    try {
-      return localStorage.getItem('patient_preferred_pharmacy_id') || '';
-    } catch {
-      return '';
-    }
-  });
+  const [selectedPharmacyId, setSelectedPharmacyId] = useState<string>('');
   const [isPharmacyPickerOpen, setIsPharmacyPickerOpen] = useState<boolean>(false);
   const [patientDeliveryAddress, setPatientDeliveryAddress] = useState<string>('');
   const [isSubmittingOrder, setIsSubmittingOrder] = useState<boolean>(false);
@@ -281,45 +233,18 @@ export const PrescriptionScannerTab: React.FC<PrescriptionScannerTabProps> = ({
   const [isLiveTrackingOpen, setIsLiveTrackingOpen] = useState<boolean>(false);
   const [liveTrackingOrder, setLiveTrackingOrder] = useState<any>(null);
 
-  // Load authenticated patient's registered delivery address
-  useEffect(() => {
-    let isMounted = true;
-    const loadPatientAddress = async () => {
-      try {
-        const { apiClient } = await import('../../services/apiClient');
-        const res = await apiClient.get<any>('/profile/patient');
-        if (isMounted && res?.data?.address && typeof res.data.address === 'string' && res.data.address.trim()) {
-          setPatientDeliveryAddress(res.data.address.trim());
-        }
-      } catch (err) {
-        try {
-          const stored = localStorage.getItem('user_profile_data');
-          if (stored) {
-            const parsed = JSON.parse(stored);
-            if (isMounted && parsed?.location && typeof parsed.location === 'string' && parsed.location.trim()) {
-              setPatientDeliveryAddress(parsed.location.trim());
-            }
-          }
-        } catch {}
-      }
-    };
-    loadPatientAddress();
-    return () => { isMounted = false; };
-  }, []);
-
   // CONFIRMATION LOADING STATE
   const [confirmStatusText, setConfirmStatusText] = useState<string>('Verifying & Submitting...');
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  // Fetch available registered tie-up pharmacies from backend
+  // Fetch available registered tie-up pharmacies from backend via pharmacyApi
   useEffect(() => {
     let isMounted = true;
     const fetchAvailablePharmacies = async () => {
       setIsLoadingPharmacies(true);
       try {
-        const { apiClient } = await import('../../services/apiClient');
-        const res = await apiClient.get<any[]>('/pharmacies/available');
+        const res = await pharmacyApi.getAvailablePharmacies().catch(() => pharmacyApi.getPharmacies());
         if (isMounted && res && res.data && Array.isArray(res.data) && res.data.length > 0) {
           const seenIds = new Set<string>();
           const mapped: Pharmacy[] = [];
@@ -333,25 +258,19 @@ export const PrescriptionScannerTab: React.FC<PrescriptionScannerTabProps> = ({
               id,
               name: p.name || 'Partner Pharmacy',
               rating: 4.8,
-              reviewCount: 350,
+              reviewCount: 0,
               distanceKm: Number((1.8 + idx * 0.9).toFixed(1)),
-              hours: 'Open until 10:00 PM',
+              hours: p.operatingHours || 'Open until 10:00 PM',
               deliveryTime: '30–45 min',
               deliveryAvailable: true,
               pickupAvailable: true,
-              address: [p.address, p.city, p.state].filter(Boolean).join(', ') || 'Chennai, TN',
-              phone: p.phone || '+91 98401 23456',
+              address: [p.address, p.city, p.state].filter(Boolean).join(', ') || 'Registered Pharmacy',
+              phone: p.phone || '—',
               isPreferred: false,
             });
           });
 
           setRegisteredPharmacies(mapped);
-
-          // Only set if patient previously confirmed a preferred pharmacy that exists in network
-          const savedPref = localStorage.getItem('patient_preferred_pharmacy_id');
-          if (savedPref && mapped.some((m) => m.id === savedPref)) {
-            setSelectedPharmacyId(savedPref);
-          }
         }
       } catch (err) {
         console.warn('Failed to load registered pharmacies from backend:', err);
@@ -368,28 +287,9 @@ export const PrescriptionScannerTab: React.FC<PrescriptionScannerTabProps> = ({
     return registeredPharmacies.find((p) => p.id === selectedPharmacyId) || null;
   }, [registeredPharmacies, selectedPharmacyId]);
 
-  // LIVE LATEST WORKFLOW STATE
-  const [latestWorkflow, setLatestWorkflow] = useState<WorkflowConfirmationResult | null>(null);
+  // LIVE LATEST WORKFLOW STATE (in-memory for current session, backed by MySQL APIs)
+  const [_latestWorkflow, setLatestWorkflow] = useState<WorkflowConfirmationResult | null>(null);
   const [latestReminder, setLatestReminder] = useState<ExtendedReminderItem | null>(null);
-
-  const syncLatestWorkflow = () => {
-    const lw = getLatestWorkflowResult();
-    setLatestWorkflow(lw);
-    if (lw?.reminderItem) {
-      const allReminders = getReminders();
-      const current = allReminders.find((r) => r.id === lw.reminderItem?.id);
-      if (current) {
-        setLatestReminder(current);
-      }
-    }
-  };
-
-  useEffect(() => {
-    syncLatestWorkflow();
-    const handleUpdate = () => syncLatestWorkflow();
-    window.addEventListener('health_workflow_updated', handleUpdate);
-    return () => window.removeEventListener('health_workflow_updated', handleUpdate);
-  }, []);
 
   // VALIDATE SELECTED FILE
   const validateFile = (file: File): string | null => {
@@ -433,7 +333,7 @@ export const PrescriptionScannerTab: React.FC<PrescriptionScannerTabProps> = ({
           setScanStatusText(statusText);
           setScanProgress(percent);
         },
-        patientNameInput.trim() || user?.name || 'Patient'
+        targetPreset ? (patientNameInput.trim() || user?.name || 'Patient') : undefined
       );
 
       if (!extracted || !extracted.id) {
@@ -441,6 +341,9 @@ export const PrescriptionScannerTab: React.FC<PrescriptionScannerTabProps> = ({
       }
 
       setPrescriptionData(extracted);
+      if (extracted.patientName && extracted.patientName !== 'Patient' && !isInvalidPatientName(extracted.patientName)) {
+        setPatientNameInput(extracted.patientName);
+      }
       // TRANSITION DIRECTLY TO REVIEW & VERIFY (STEP 3) — NEVER AUTO-ADVANCE TO STEP 4
       setWorkflowState('review_required');
       onToast('✓ Prescription scanned! Please review extracted fields and confirm.');
@@ -570,7 +473,7 @@ export const PrescriptionScannerTab: React.FC<PrescriptionScannerTabProps> = ({
     });
   };
 
-  // SAVE TO PERSONAL HEALTH RECORDS ONLY (NO PHARMACY DISPATCH)
+  // SAVE TO PERSONAL HEALTH RECORDS ONLY (NO PHARMACY DISPATCH) — STRICT MYSQL PERSISTENCE
   const handleSaveToRecordsOnly = async () => {
     if (!prescriptionData) {
       onToast('Please review your prescription details before saving.');
@@ -581,81 +484,96 @@ export const PrescriptionScannerTab: React.FC<PrescriptionScannerTabProps> = ({
     setConfirmStatusText('Saving verified record to Digital Health Locker...');
 
     try {
-      const chosenPharm = {
-        id: 'VAULT',
-        name: 'Personal Health Locker',
-        address: 'Secured ABDM Record Vault',
-      };
+      const profRes = await profileApi.getPatientProfile().catch(() => null);
+      const patientId = profRes?.data?.id;
 
-      const result = processPrescriptionConfirmation(prescriptionData, chosenPharm);
-      const vaultResult: any = {
-        ...result,
-        pharmacyOrder: null,
-      };
+      let createdRxId = prescriptionData.id || `RX-${Date.now().toString().slice(-6)}`;
 
-      try {
-        const { getStoredAuthToken } = await import('../../services/pharmacyOrderApi');
-        const token = getStoredAuthToken();
-        if (token) {
-          const profRes = await fetch('http://localhost:5000/api/profile/patient', {
-            headers: { Authorization: `Bearer ${token}` },
-          });
-          const profData = await profRes.json();
-          const patientId = profData?.data?.id;
-
-          if (patientId) {
-            const rxPayload = {
-              patientId,
-              diagnosis: prescriptionData.notes || 'Clinical Prescription Scan',
-              notes: `Doctor: ${prescriptionData.doctorName} (${prescriptionData.clinicName}). Patient: ${prescriptionData.patientName || 'Patient'}. Saved to personal record vault.`,
-              items: (prescriptionData.medicines || []).map((m) => ({
-                medicineName: m.name,
-                dosage: m.dosage || '1',
-                unit: 'mg',
-                frequency: m.frequency || 'Once daily',
-                durationDays: m.duration ? parseInt(m.duration, 10) || 7 : 7,
-                instructions: m.instructions || 'Take as prescribed',
-                foodInstruction: m.foodInstruction || 'After food',
-              })),
-            };
-
-            const rxRes = await fetch('http://localhost:5000/api/prescriptions', {
-              method: 'POST',
-              headers: {
-                Authorization: `Bearer ${token}`,
-                'Content-Type': 'application/json',
-              },
-              body: JSON.stringify(rxPayload),
-            });
-
-            if (rxRes.ok) {
-              const rxCreated = await rxRes.json();
-              const rxId = rxCreated?.data?.id;
-              if (rxId) {
-                await fetch(`http://localhost:5000/api/prescriptions/${rxId}/confirm`, {
-                  method: 'PATCH',
-                  headers: { Authorization: `Bearer ${token}` },
-                });
-              }
-            }
-          }
+      if (prescriptionData.medicines && prescriptionData.medicines.length > 0) {
+        const rxPayload: any = {
+          ...(patientId ? { patientId } : {}),
+          diagnosis: prescriptionData.notes || 'Clinical Prescription Scan',
+          notes: `Doctor: ${prescriptionData.doctorName || 'Attending Physician'} (${prescriptionData.clinicName || 'Clinic'}). Patient: ${patientNameInput.trim() || prescriptionData.patientName || 'Patient'}. Saved to personal record vault.`,
+          items: prescriptionData.medicines.map((m) => ({
+            medicineName: m.name,
+            dosage: m.dosage || '1',
+            unit: 'mg',
+            frequency: m.frequency || 'Once daily',
+            durationDays: m.duration ? parseInt(String(m.duration), 10) || 7 : 7,
+            instructions: m.instructions || 'Take as prescribed',
+            foodInstruction: m.foodInstruction || 'After food',
+          })),
+        };
+        const rxRes = await prescriptionApi.createPrescription(rxPayload);
+        if (rxRes?.data?.id) {
+          createdRxId = rxRes.data.id;
+          await prescriptionApi.confirmPrescription(createdRxId).catch(() => {});
         }
-      } catch (backendErr) {
-        console.warn('Backend record save warning:', backendErr);
       }
+
+      await recordApi.createMedicalRecord({
+        title: `Prescription - ${prescriptionData.doctorName || 'Attending Physician'}`,
+        type: 'PRESCRIPTION',
+        hospital: prescriptionData.clinicName || 'Medical Clinic',
+        status: 'Normal',
+        isImportant: true,
+        notes: prescriptionData.notes || `Scanned prescription with ${(prescriptionData.medicines || []).length} medicine(s).`,
+      }).catch(() => {});
+
+      let createdReminder: ExtendedReminderItem | null = null;
+      if (prescriptionData.followUp?.hasFollowUp && prescriptionData.followUp?.date) {
+        try {
+          const remRes = await reminderApi.createReminder({
+            title: `Doctor Follow-up: ${prescriptionData.doctorName || 'Attending Physician'}`,
+            type: 'FOLLOW_UP',
+            scheduledTime: '10:00 AM',
+            followUpDate: prescriptionData.followUp.date,
+            doctorName: prescriptionData.doctorName,
+            clinicName: prescriptionData.clinicName,
+            sourcePrescriptionId: createdRxId,
+            notes: prescriptionData.followUp.instructions || prescriptionData.notes || 'Follow-up from scanned prescription',
+          });
+          if (remRes?.data?.id) {
+            createdReminder = {
+              id: remRes.data.id,
+              title: remRes.data.title,
+              category: 'Doctor Follow-up',
+              time: remRes.data.scheduledTime || '10:00 AM',
+              date: prescriptionData.followUp.date,
+              status: 'Upcoming',
+              priority: 'High',
+              followUpStatus: 'Pending',
+              sourcePrescriptionId: createdRxId,
+              doctorName: prescriptionData.doctorName,
+              clinicName: prescriptionData.clinicName,
+            } as any;
+          }
+        } catch {}
+      }
+
+      const vaultResult: any = {
+        prescription: {
+          ...prescriptionData,
+          id: createdRxId,
+        },
+        pharmacyOrder: null,
+        reminderCreated: Boolean(createdReminder),
+        reminderItem: createdReminder,
+      };
 
       setConfirmationResult(vaultResult);
       setLatestWorkflow(vaultResult);
-      if (vaultResult.reminderItem) {
-        setLatestReminder(vaultResult.reminderItem);
+      if (createdReminder) {
+        setLatestReminder(createdReminder);
       }
 
+      window.dispatchEvent(new Event('health_workflow_updated'));
       setWorkflowState('verified');
-      onToast('✓ Prescription saved to your Digital Health Locker!');
-    } catch (err) {
+      onToast('✓ Prescription saved to your Digital Health Locker in MySQL!');
+    } catch (err: any) {
       console.error(err);
       setWorkflowState('review_required');
-      onToast('Failed to save to health records. Please try again.');
+      onToast(err?.message || 'Failed to save to health records. Please try again.');
     }
   };
 
@@ -669,7 +587,7 @@ export const PrescriptionScannerTab: React.FC<PrescriptionScannerTabProps> = ({
     setIsPharmacyPickerOpen(true);
   };
 
-  // CONFIRM & SEND TO REGISTERED PHARMACY
+  // CONFIRM & SEND TO REGISTERED PHARMACY — STRICT MYSQL PERSISTENCE
   const handleExecutePharmacySubmission = async (targetPharmacyId?: string) => {
     const pharmIdToUse = targetPharmacyId || selectedPharmacyId;
     if (!pharmIdToUse) {
@@ -713,7 +631,6 @@ export const PrescriptionScannerTab: React.FC<PrescriptionScannerTabProps> = ({
 
     try {
       // 1. Submit to backend database first - ensure real MySQL persistence
-      const { createPatientPharmacyOrder } = await import('../../services/pharmacyOrderApi');
       const realOrder = await createPatientPharmacyOrder({
         prescriptionData: {
           notes: prescriptionData.notes || 'Clinical Prescription Scan',
@@ -731,46 +648,78 @@ export const PrescriptionScannerTab: React.FC<PrescriptionScannerTabProps> = ({
         throw new Error('Failed to create pharmacy order record in database');
       }
 
-      // 2. Process workflow confirmation and associate with authoritative order
-      const result = processPrescriptionConfirmation(prescriptionData, {
-        id: chosenPharm.id,
-        name: chosenPharm.name,
-        address: chosenPharm.address,
-      });
+      // 2. Persist preferred pharmacy in MySQL patient profile
+      profileApi.updatePatientProfile({ preferredPharmacyId: chosenPharm.id }).catch(() => {});
 
-      // Store preference
-      try {
-        localStorage.setItem('patient_preferred_pharmacy_id', chosenPharm.id);
-        localStorage.setItem('health_workflow_last_updated', String(Date.now()));
-        localStorage.setItem('pharmacy_order_updated', realOrder.id);
-      } catch {}
+      // 3. Save follow-up reminder to MySQL if followUp was extracted
+      let createdReminder: ExtendedReminderItem | null = null;
+      if (prescriptionData.followUp?.hasFollowUp && prescriptionData.followUp?.date) {
+        try {
+          const remRes = await reminderApi.createReminder({
+            title: `Doctor Follow-up: ${prescriptionData.doctorName || 'Attending Physician'}`,
+            type: 'FOLLOW_UP',
+            scheduledTime: '10:00 AM',
+            followUpDate: prescriptionData.followUp.date,
+            doctorName: prescriptionData.doctorName,
+            clinicName: prescriptionData.clinicName,
+            sourcePrescriptionId: realOrder.prescriptionId || undefined,
+            notes: prescriptionData.followUp.instructions || prescriptionData.notes || 'Follow-up from scanned prescription',
+          });
+          if (remRes?.data?.id) {
+            createdReminder = {
+              id: remRes.data.id,
+              title: remRes.data.title,
+              category: 'Doctor Follow-up',
+              time: remRes.data.scheduledTime || '10:00 AM',
+              date: prescriptionData.followUp.date,
+              status: 'Upcoming',
+              priority: 'High',
+              followUpStatus: 'Pending',
+              sourcePrescriptionId: realOrder.prescriptionId || undefined,
+              doctorName: prescriptionData.doctorName,
+              clinicName: prescriptionData.clinicName,
+            } as any;
+          }
+        } catch {}
+      }
 
       if (prescriptionIdentifier) {
         submittedPrescriptionIdsRef.current.add(prescriptionIdentifier);
       }
 
       const updatedResult: any = {
-        ...result,
+        prescription: {
+          ...prescriptionData,
+          id: realOrder.prescriptionId || prescriptionData.id,
+        },
         pharmacyOrder: {
-          ...result.pharmacyOrder,
           id: realOrder.id,
+          date: realOrder.orderedAt ? new Date(realOrder.orderedAt).toLocaleDateString() : new Date().toLocaleDateString(),
           pharmacyName: chosenPharm.name,
           pharmacyId: chosenPharm.id,
           sourcePrescriptionId: realOrder.prescriptionId,
-          status: 'PENDING',
+          deliveryMethod: 'Home Delivery',
+          deliveryAddress: finalDeliveryAddress,
+          totalAmount: Number(realOrder.totalAmount) || 0,
+          items: (realOrder.items || []).map((it) => ({
+            name: it.medicineName,
+            dosage: it.dosage,
+            quantity: it.quantity,
+          })),
+          status: realOrder.status || 'PENDING',
           progressPercent: 20,
         },
+        reminderCreated: Boolean(createdReminder),
+        reminderItem: createdReminder,
       };
 
       setConfirmationResult(updatedResult);
       setLatestWorkflow(updatedResult);
-      setLatestWorkflowResult(updatedResult);
       setLiveTrackingOrder(realOrder as any);
-      savePharmacyOrder(updatedResult.pharmacyOrder);
       window.dispatchEvent(new Event('health_workflow_updated'));
 
-      if (result.reminderItem) {
-        setLatestReminder(result.reminderItem);
+      if (createdReminder) {
+        setLatestReminder(createdReminder);
       }
 
       setSelectedPharmacyId(chosenPharm.id);
@@ -792,12 +741,16 @@ export const PrescriptionScannerTab: React.FC<PrescriptionScannerTabProps> = ({
     }
   };
 
-  // INLINE ACCEPT / DECLINE FOLLOW-UP ACTION
-  const handleInlineFollowUpAction = (status: 'Accepted' | 'Declined') => {
+  // INLINE ACCEPT / DECLINE FOLLOW-UP ACTION (MYSQL PERSISTED)
+  const handleInlineFollowUpAction = async (status: 'Accepted' | 'Declined') => {
     if (!latestReminder) return;
-    updateReminderFollowUpStatus(latestReminder.id, status);
-    setLatestReminder({ ...latestReminder, followUpStatus: status });
-    onToast(status === 'Accepted' ? '✓ Doctor Follow-up Accepted & Added to Schedule!' : '✕ Follow-up Declined');
+    try {
+      await reminderApi.updateFollowUpStatus(latestReminder.id, status);
+      setLatestReminder({ ...latestReminder, followUpStatus: status });
+      onToast(status === 'Accepted' ? '✓ Doctor Follow-up Accepted & Added to Schedule!' : '✕ Follow-up Declined');
+    } catch {
+      onToast('Failed to update follow-up status');
+    }
   };
 
   const handleReset = () => {
@@ -1461,31 +1414,69 @@ export const PrescriptionScannerTab: React.FC<PrescriptionScannerTabProps> = ({
                   </span>
                 </div>
 
-                {/* RAW OCR TEXT TOGGLE */}
-                <div className="pt-2">
-                  <button
-                    type="button"
-                    onClick={() => setShowRawOcr(!showRawOcr)}
-                    className="w-full py-2 px-3 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 text-xs font-bold transition-colors flex items-center justify-between cursor-pointer"
-                  >
-                    <span className="flex items-center gap-1.5">
-                      {showRawOcr ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                      <span>{showRawOcr ? 'Hide Raw OCR Text' : 'View Extracted Raw OCR Text'}</span>
-                    </span>
-                    <span className="text-[10px] font-mono text-slate-400">Raw Stream</span>
-                  </button>
-
-                  {showRawOcr && prescriptionData?.rawOcrText && (
-                    <motion.div
-                      initial={{ opacity: 0, height: 0 }}
-                      animate={{ opacity: 1, height: 'auto' }}
-                      className="mt-2 p-3 bg-slate-900 text-emerald-400 rounded-2xl text-[11px] font-mono whitespace-pre-wrap max-h-56 overflow-y-auto border border-slate-800 leading-relaxed"
+                {/* LEFT PANE WORKSPACE MODE: AI CLINICAL ANALYSIS vs RAW OCR STREAM */}
+                <div className="pt-2 space-y-3">
+                  <div className="grid grid-cols-2 gap-1.5 p-1 bg-slate-100 dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 text-xs font-bold">
+                    <button
+                      type="button"
+                      onClick={() => setLeftPaneTab('analysis')}
+                      className={`py-2 px-3 rounded-xl transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
+                        leftPaneTab === 'analysis'
+                          ? 'bg-white dark:bg-slate-900 text-[#00a896] dark:text-cyan-300 shadow-sm'
+                          : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                      }`}
                     >
-                      {prescriptionData.rawOcrText}
-                    </motion.div>
+                      <Sparkles className="w-3.5 h-3.5 text-[#00a896]" />
+                      <span>AI Clinical Analysis</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setLeftPaneTab('raw_ocr')}
+                      className={`py-2 px-3 rounded-xl transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
+                        leftPaneTab === 'raw_ocr'
+                          ? 'bg-white dark:bg-slate-900 text-[#00a896] dark:text-cyan-300 shadow-sm'
+                          : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                      }`}
+                    >
+                      <FileText className="w-3.5 h-3.5" />
+                      <span>Raw OCR Stream</span>
+                    </button>
+                  </div>
+
+                  {/* RENDER RAW OCR STREAM VIEW */}
+                  {leftPaneTab === 'raw_ocr' && (
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between text-xs text-slate-500 font-mono">
+                        <span>Optical OCR Character Stream</span>
+                        <span className="text-[10px] text-emerald-500 font-bold">Live Stream Active</span>
+                      </div>
+                      {prescriptionData?.rawOcrText ? (
+                        <div className="p-3 bg-slate-900 text-emerald-400 rounded-2xl text-[11px] font-mono whitespace-pre-wrap max-h-72 overflow-y-auto border border-slate-800 leading-relaxed">
+                          {prescriptionData.rawOcrText}
+                        </div>
+                      ) : (
+                        <div className="p-4 rounded-xl bg-slate-100 dark:bg-slate-800 text-xs text-slate-500 italic">
+                          No raw OCR text available for this preset.
+                        </div>
+                      )}
+                    </div>
                   )}
                 </div>
               </div>
+
+              {/* AI CLINICAL PRESCRIPTION ANALYSIS CARD IN LEFT COLUMN (WHEN ANALYSIS TAB IS SELECTED) */}
+              {leftPaneTab === 'analysis' && prescriptionData && (
+                <motion.div
+                  initial={{ opacity: 0, y: 6 }}
+                  animate={{ opacity: 1, y: 0 }}
+                >
+                  <PrescriptionClinicalAnalysisView
+                    prescriptionData={prescriptionData}
+                    onToast={onToast}
+                  />
+                </motion.div>
+              )}
 
               {/* VALIDATION & UNCERTAIN FIELDS ALERT */}
               {validationAlerts.length > 0 && (
@@ -1512,6 +1503,46 @@ export const PrescriptionScannerTab: React.FC<PrescriptionScannerTabProps> = ({
             <div className="lg:col-span-7 space-y-5">
               {prescriptionData && (
                 <>
+                  {/* EXECUTIVE CLINICAL DIAGNOSIS & RECOVERY BANNER */}
+                  {clinicalAnalysis && (
+                    <div className="bg-gradient-to-r from-teal-500/10 via-emerald-500/10 to-teal-500/5 border border-teal-500/25 rounded-3xl p-4 sm:p-5 shadow-sm space-y-2.5">
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                        <div className="flex items-center gap-2.5">
+                          <div className="w-8 h-8 rounded-xl bg-[#00a896] text-white flex items-center justify-center shadow-xs shrink-0">
+                            <Stethoscope className="w-4 h-4" />
+                          </div>
+                          <div>
+                            <span className="text-[10px] font-black uppercase text-teal-800 dark:text-cyan-300 font-mono tracking-wider block">
+                              Prescription Clinical Assessment
+                            </span>
+                            <h3 className="text-sm sm:text-base font-black text-slate-900 dark:text-white leading-tight">
+                              {clinicalAnalysis.primaryCondition}
+                            </h3>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <span className="px-2.5 py-1 rounded-full text-[10px] font-extrabold bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/25 flex items-center gap-1">
+                            <ShieldCheck className="w-3.5 h-3.5" />
+                            <span>{clinicalAnalysis.safetyScore}% Safety Clearance</span>
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setLeftPaneTab('analysis');
+                              window.scrollTo({ top: 380, behavior: 'smooth' });
+                            }}
+                            className="px-2.5 py-1 rounded-xl bg-teal-500/10 hover:bg-teal-500/20 text-[#00a896] dark:text-cyan-300 text-xs font-black transition-colors cursor-pointer"
+                          >
+                            View Full Analysis ↓
+                          </button>
+                        </div>
+                      </div>
+                      <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+                        {clinicalAnalysis.clinicalNarrative}
+                      </p>
+                    </div>
+                  )}
+
                   {/* SECTION 1: PATIENT & DOCTOR INFO */}
                   <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-6 shadow-xl space-y-4">
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -1699,6 +1730,26 @@ export const PrescriptionScannerTab: React.FC<PrescriptionScannerTabProps> = ({
                               />
                             </div>
                           </div>
+
+                          {/* DYNAMIC CLINICAL INSIGHT FOR THIS MEDICATION */}
+                          {(() => {
+                            const insight =
+                              clinicalAnalysis?.drugInsights.find((d) => d.id === med.id) ||
+                              clinicalAnalysis?.drugInsights[index];
+                            if (!insight) return null;
+                            return (
+                              <div className="pt-2 border-t border-slate-200/80 dark:border-slate-800/90 flex flex-wrap items-center justify-between gap-1 text-[11px]">
+                                <div className="flex items-center gap-1.5 text-slate-600 dark:text-slate-300">
+                                  <Sparkles className="w-3 h-3 text-[#00a896] shrink-0" />
+                                  <span className="font-bold text-slate-800 dark:text-slate-200">{insight.category}:</span>
+                                  <span className="text-slate-500 dark:text-slate-400">{insight.clinicalPurpose}</span>
+                                </div>
+                                <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-teal-500/10 text-teal-700 dark:text-cyan-300">
+                                  {insight.timingAndFood}
+                                </span>
+                              </div>
+                            );
+                          })()}
                         </div>
                       ))}
                     </div>

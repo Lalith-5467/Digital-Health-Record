@@ -55,9 +55,9 @@ export const assignPatientHealthTopic = async (req: Request, res: Response): Pro
       return;
     }
 
-    // Authorization: Only DOCTOR or Admin can assign
-    if (user.role === Role.PATIENT) {
-      res.status(403).json({ success: false, message: 'Patients cannot assign their own health topics' });
+    // Authorization: Only DOCTOR, ADMIN, or SUPER_ADMIN can assign
+    if (user.role !== Role.DOCTOR && user.role !== Role.ADMIN && user.role !== Role.SUPER_ADMIN) {
+      res.status(403).json({ success: false, message: 'Only clinicians or admins can assign health topics' });
       return;
     }
 
@@ -108,8 +108,8 @@ export const removePatientHealthTopic = async (req: Request, res: Response): Pro
     const user = (req as any).user;
 
     // Authorization
-    if (user.role === Role.PATIENT) {
-      res.status(403).json({ success: false, message: 'Patients cannot remove health topics' });
+    if (user.role !== Role.DOCTOR && user.role !== Role.ADMIN && user.role !== Role.SUPER_ADMIN) {
+      res.status(403).json({ success: false, message: 'Only clinicians or admins can remove health topics' });
       return;
     }
 

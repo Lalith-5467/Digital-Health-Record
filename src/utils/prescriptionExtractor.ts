@@ -29,6 +29,7 @@ export interface StructuredPrescription {
   followUp: FollowUpInfo;
   status: 'pending-review' | 'confirmed';
   notes?: string;
+  diagnosis?: string;
   rawImagePreview?: string;
   rawOcrText?: string;
   confidence?: number;

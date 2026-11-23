@@ -27,7 +27,7 @@ import {
   ClipboardList,
   Check
 } from 'lucide-react';
-import { useNurseWorkflow, type BookingStatus, type CareRequest } from '../../../utils/nurseWorkflowStorage';
+import type { BookingStatus, CareRequest } from '../../../utils/nurseWorkflowStorage';
 import { clinicalApi } from '../../../services/dhrApis';
 
 interface NurseBookingViewProps {
@@ -67,7 +67,6 @@ export const ALL_HOME_CARE_SERVICES = [
 ];
 
 export const NurseBookingView: React.FC<NurseBookingViewProps> = ({ user }) => {
-  const { bookings, createBooking, updateBookingStatus, refreshBookings } = useNurseWorkflow();
   const [isBookingModalOpen, setIsBookingModalOpen] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [myBookings, setMyBookings] = useState<CareRequest[]>([]);
@@ -135,32 +134,23 @@ export const NurseBookingView: React.FC<NurseBookingViewProps> = ({ user }) => {
     }
   }, [user]);
 
-  // Fetch patient's own bookings from backend
+  // Fetch patient's own bookings strictly from backend MySQL database
   const loadMyBookings = async () => {
     try {
       const res = await clinicalApi.getMyCareRequests();
       if (res && res.data && Array.isArray(res.data)) {
         setMyBookings(res.data);
       } else {
-        // Filter local bookings for this patient
-        const currentPatientName = user?.name || '';
-        const filtered = currentPatientName 
-          ? bookings.filter(b => b.patientName.toLowerCase().includes(currentPatientName.toLowerCase()) || b.patientUserId === user?.id)
-          : (user?.id ? bookings.filter(b => b.patientUserId === user.id) : bookings);
-        setMyBookings(filtered);
+        setMyBookings([]);
       }
     } catch {
-      const currentPatientName = user?.name || '';
-      const filtered = currentPatientName 
-        ? bookings.filter(b => b.patientName.toLowerCase().includes(currentPatientName.toLowerCase()) || b.patientUserId === user?.id)
-        : (user?.id ? bookings.filter(b => b.patientUserId === user.id) : bookings);
-      setMyBookings(filtered);
+      setMyBookings([]);
     }
   };
 
   useEffect(() => {
     loadMyBookings();
-  }, [bookings, user]);
+  }, [user]);
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
@@ -259,10 +249,6 @@ export const NurseBookingView: React.FC<NurseBookingViewProps> = ({ user }) => {
       const res = await clinicalApi.createNurseCareRequest(requestPayload);
 
       if (res && res.data) {
-
-        const current = JSON.parse(localStorage.getItem('medicare_nurse_bookings_v2') || '[]');
-        const updated = [res.data, ...current.filter((b: any) => b.id !== res.data.id)];
-        localStorage.setItem('medicare_nurse_bookings_v2', JSON.stringify(updated));
         window.dispatchEvent(new Event('medicare_sync_nurse'));
         await loadMyBookings();
         setIsBookingModalOpen(false);
@@ -284,10 +270,14 @@ export const NurseBookingView: React.FC<NurseBookingViewProps> = ({ user }) => {
     }
   };
 
-  const handleCancelBooking = (id: string) => {
-    updateBookingStatus(id, 'Cancelled');
-    showToast('Booking cancelled successfully.');
-    loadMyBookings();
+  const handleCancelBooking = async (id: string) => {
+    try {
+      await clinicalApi.updateCareRequest(id, { status: 'Cancelled' });
+      showToast('Booking cancelled successfully.');
+      await loadMyBookings();
+    } catch (err: any) {
+      showToast(`⚠️ Failed to cancel booking: ${err?.message || 'Server error'}`);
+    }
   };
 
   const getTimelineStep = (status: BookingStatus) => {
@@ -1114,7 +1104,7 @@ export const NurseBookingView: React.FC<NurseBookingViewProps> = ({ user }) => {
                       type="text" 
                       value={emergencyInstructions}
                       onChange={(e) => setEmergencyInstructions(e.target.value)}
-                      placeholder="e.g. In case of blood pressure drop, administer emergency saline and call Dr. Rajesh immediately"
+                      placeholder="e.g. In case of blood pressure drop, alert emergency contact and attending physician"
                       className="w-full bg-white dark:bg-slate-900 border border-rose-200 dark:border-rose-900/60 rounded-xl px-3.5 py-2 font-medium dark:text-white"
                     />
                   </div>

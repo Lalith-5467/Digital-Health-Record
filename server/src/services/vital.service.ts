@@ -21,14 +21,41 @@ export class VitalService {
    * Helper to verify if the user is authorized to access the given patient's vitals
    */
   private static async checkAuthorization(userId: string, role: Role, patientId: string): Promise<boolean> {
+    if (role === Role.ADMIN || role === Role.SUPER_ADMIN) {
+      return true;
+    }
+
     if (role === Role.PATIENT) {
       const patient = await prisma.patient.findUnique({ where: { userId } });
       return !!patient && patient.id === patientId;
     }
 
+    if (role === Role.NURSE) {
+      const nurse = await prisma.nurse.findUnique({ where: { userId } });
+      if (!nurse) return false;
+      const careReq = await prisma.careRequest.findFirst({
+        where: {
+          patientId,
+          OR: [{ nurseId: nurse.id }, { status: 'Pending' }],
+        },
+      });
+      if (careReq) return true;
+      if (nurse.hospitalId) {
+        const pat = await prisma.patient.findUnique({ where: { id: patientId }, select: { hospitalId: true } });
+        if (pat?.hospitalId && pat.hospitalId === nurse.hospitalId) return true;
+      }
+      return false;
+    }
+
     if (role === Role.CAREGIVER) {
       const caregiver = await prisma.caregiver.findUnique({ where: { userId } });
       if (!caregiver) return false;
+      const activeLink = await prisma.patientCaregiverLink.findUnique({
+        where: { patientId_caregiverId: { patientId, caregiverId: caregiver.id } },
+      });
+      if (activeLink) {
+        return activeLink.consentStatus === 'ACTIVE';
+      }
       const linked = await prisma.patient.findFirst({
         where: {
           id: patientId,
@@ -99,7 +126,10 @@ export class VitalService {
   /**
    * Record new vitals reading
    */
-  static async createVital(userId: string, role: Role, data: CreateVitalDTO) {
+  static async createVital(userId: string, role: Role, data: CreateVitalDTO, isViewOnly?: boolean) {
+    if (isViewOnly) {
+      throw new AppError('Access denied: View-only Super Administrator clearance cannot create vitals', 403);
+    }
     let patientId = data.patientId;
 
     if (role === Role.PATIENT) {

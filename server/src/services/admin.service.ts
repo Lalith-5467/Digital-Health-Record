@@ -38,20 +38,30 @@ export interface HospitalRecord {
   departments: string[];
 }
 
-// Dynamic persistent hospital store
-let customRegisteredHospitals: HospitalRecord[] = [];
-let hospitalRegistryStore: HospitalRecord[] = [];
-
 export class AdminService {
   /**
    * List users with pagination, filters, and safe projection
    */
-  static async getUsers(options: UserQueryOptions) {
+  static async getUsers(options: UserQueryOptions, actor?: { id?: string; isHospitalAdmin?: boolean; managedHospitalId?: string; managedHospitalName?: string }) {
     const page = Math.max(1, Number(options.page) || 1);
     const limit = Math.min(100, Math.max(1, Number(options.limit) || 20));
     const skip = (page - 1) * limit;
 
     const where: Prisma.UserWhereInput = {};
+
+    // Hospital Administrator tenant isolation: Only view users belonging to their hospital facility
+    if (actor?.isHospitalAdmin && actor?.managedHospitalName) {
+      where.OR = [
+        { id: actor.id },
+        { department: actor.managedHospitalName },
+        { doctor: { hospital: actor.managedHospitalName } },
+        { nurse: { hospital: actor.managedHospitalName } },
+        { pharmacist: { pharmacyName: actor.managedHospitalName } },
+        { patient: { hospitalRef: { id: actor.managedHospitalId } } },
+        { patient: { appointments: { some: { doctor: { hospital: actor.managedHospitalName } } } } },
+        { managedHospitals: { some: { id: actor.managedHospitalId } } },
+      ];
+    }
 
     // Filter by role if specified
     if (options.role && Object.values(Role).includes(options.role.toUpperCase() as Role)) {
@@ -81,9 +91,15 @@ export class AdminService {
           id: true,
           email: true,
           role: true,
+          fullName: true,
+          department: true,
+          designation: true,
+          location: true,
           phoneNumber: true,
           abhaId: true,
           isActive: true,
+          isOriginalSuperAdmin: true,
+          isViewOnly: true,
           createdAt: true,
           updatedAt: true,
           patient: true,
@@ -92,11 +108,12 @@ export class AdminService {
           pharmacist: true,
           caregiver: true,
           insuranceProvider: true,
-        },
+          managedHospitals: true,
+        } as any,
       }),
     ]);
 
-    const formattedUsers = users.map((u) => {
+    const formattedUsers = users.map((u: any) => {
       const profile =
         u.patient ||
         u.doctor ||
@@ -106,10 +123,29 @@ export class AdminService {
         u.insuranceProvider ||
         null;
 
+      const managedHosp = Array.isArray(u.managedHospitals) && u.managedHospitals.length > 0
+        ? u.managedHospitals[0].name
+        : null;
+
+      const hosp = managedHosp ||
+        (u.doctor as any)?.hospital ||
+        (u.nurse as any)?.hospital ||
+        (u.pharmacist as any)?.hospital ||
+        (u.patient as any)?.preferredHospital ||
+        (u.department && !u.department.toLowerCase().includes('directorate') && u.department !== 'System Administration' ? u.department : null);
+
       return {
         id: u.id,
         email: u.email,
         role: u.role,
+        isOriginalSuperAdmin: Boolean(u.isOriginalSuperAdmin),
+        isViewOnly: Boolean(u.isViewOnly || (u.role === Role.SUPER_ADMIN && !u.isOriginalSuperAdmin)),
+        fullName: u.fullName,
+        department: u.department,
+        designation: u.designation,
+        location: u.location,
+        hospital: hosp,
+        managedHospitals: u.managedHospitals,
         phone: u.phoneNumber,
         phoneNumber: u.phoneNumber,
         abhaId: u.abhaId,
@@ -139,9 +175,41 @@ export class AdminService {
   }
 
   /**
+   * Helper to verify if target user belongs to a hospital
+   */
+  static async checkUserHospitalAffiliation(userId: string, hospitalName?: string, hospitalId?: string): Promise<boolean> {
+    if (!hospitalName && !hospitalId) return false;
+    const target = await prisma.user.findUnique({
+      where: { id: userId },
+      include: {
+        doctor: true,
+        nurse: true,
+        pharmacist: true,
+        patient: {
+          include: {
+            appointments: { include: { doctor: true } },
+            medicalRecords: true,
+          },
+        },
+      },
+    });
+    if (!target) return false;
+    const hospName = hospitalName?.trim().toLowerCase();
+    if (hospName) {
+      if (target.doctor?.hospital?.trim().toLowerCase() === hospName) return true;
+      if (target.nurse?.hospital?.trim().toLowerCase() === hospName) return true;
+      if (target.pharmacist?.pharmacyName?.trim().toLowerCase() === hospName) return true;
+      if (target.patient?.appointments?.some((a) => a.doctor?.hospital?.trim().toLowerCase() === hospName)) return true;
+      if (target.patient?.medicalRecords?.some((m) => m.hospital?.trim().toLowerCase() === hospName)) return true;
+    }
+    if (hospitalId && target.patient?.hospitalId === hospitalId) return true;
+    return false;
+  }
+
+  /**
    * Get single user with profile (excluding passwordHash)
    */
-  static async getUserById(id: string) {
+  static async getUserById(id: string, actor?: any) {
     const user = await prisma.user.findUnique({
       where: { id },
       select: {
@@ -153,7 +221,12 @@ export class AdminService {
         isActive: true,
         createdAt: true,
         updatedAt: true,
-        patient: true,
+        patient: {
+          include: {
+            appointments: { select: { doctor: { select: { hospital: true } } } },
+            medicalRecords: { select: { hospital: true } },
+          },
+        },
         doctor: true,
         nurse: true,
         pharmacist: true,
@@ -166,6 +239,32 @@ export class AdminService {
       const err: AppError = new Error(`User with ID ${id} not found`);
       err.statusCode = 404;
       throw err;
+    }
+
+    // Tenant isolation: Hospital Admin can only view themselves or staff/patients of their own hospital
+    if (actor?.isHospitalAdmin && actor?.managedHospitalName) {
+      if (user.id !== actor.id) {
+        if (user.role === Role.ADMIN || user.role === Role.SUPER_ADMIN) {
+          const err: AppError = new Error('Access denied: Hospital administrators cannot view platform administrative accounts');
+          err.statusCode = 403;
+          throw err;
+        }
+
+        const hospName = actor.managedHospitalName.trim().toLowerCase();
+        const hospId = actor.managedHospitalId;
+        const docMatch = user.doctor?.hospital?.trim().toLowerCase() === hospName;
+        const nurseMatch = user.nurse?.hospital?.trim().toLowerCase() === hospName;
+        const pharmMatch = user.pharmacist?.pharmacyName?.trim().toLowerCase() === hospName;
+        const patientHospMatch = user.patient?.hospitalId && hospId && user.patient.hospitalId === hospId;
+        const patientApptMatch = user.patient?.appointments?.some((a: any) => a.doctor?.hospital?.trim().toLowerCase() === hospName);
+        const patientRecMatch = user.patient?.medicalRecords?.some((m: any) => m.hospital?.trim().toLowerCase() === hospName);
+
+        if (!docMatch && !nurseMatch && !pharmMatch && !patientHospMatch && !patientApptMatch && !patientRecMatch) {
+          const err: AppError = new Error('Access denied: Cannot view user details outside your hospital');
+          err.statusCode = 403;
+          throw err;
+        }
+      }
     }
 
     const profile =
@@ -197,12 +296,52 @@ export class AdminService {
     targetUserId: string,
     statusInput: string | boolean,
     actorId: string,
-    ipAddress?: string
+    ipAddress?: string,
+    actorRole?: Role,
+    actorIsOriginal?: boolean,
+    actorIsViewOnly?: boolean,
+    actorIsHospitalAdmin?: boolean,
+    actorHospitalId?: string,
+    actorHospitalName?: string
   ) {
+    if (actorIsViewOnly) {
+      const err: AppError = new Error('Access denied: Secondary Super Admin accounts have view-only clearance and cannot change user status');
+      err.statusCode = 403;
+      throw err;
+    }
+
     const user = await prisma.user.findUnique({ where: { id: targetUserId } });
     if (!user) {
       const err: AppError = new Error(`User with ID ${targetUserId} not found`);
       err.statusCode = 404;
+      throw err;
+    }
+
+    if (actorIsHospitalAdmin) {
+      if (user.role === Role.ADMIN || user.role === Role.SUPER_ADMIN) {
+        const err: AppError = new Error('Access denied: Hospital administrators cannot modify administrative account status');
+        err.statusCode = 403;
+        throw err;
+      }
+      if (user.id !== actorId) {
+        const isAffiliated = await AdminService.checkUserHospitalAffiliation(targetUserId, actorHospitalName, actorHospitalId);
+        if (!isAffiliated) {
+          const err: AppError = new Error('Access denied: Cannot change status of users outside your hospital');
+          err.statusCode = 403;
+          throw err;
+        }
+      }
+    }
+
+    if ((user as any).isOriginalSuperAdmin && !actorIsOriginal) {
+      const err: AppError = new Error('Access denied: Cannot modify the status of the Original Root Super Admin account');
+      err.statusCode = 403;
+      throw err;
+    }
+
+    if (user.role === Role.SUPER_ADMIN && actorRole !== Role.SUPER_ADMIN) {
+      const err: AppError = new Error('Access denied: Ordinary Admin cannot modify a Super Admin account status');
+      err.statusCode = 403;
       throw err;
     }
 
@@ -229,6 +368,13 @@ export class AdminService {
       },
     });
 
+    if (!isActive) {
+      await prisma.userSession.updateMany({
+        where: { userId: targetUserId, isRevoked: false },
+        data: { isRevoked: true },
+      });
+    }
+
     await AuditService.log({
       userId: actorId,
       action: 'USER_STATUS_CHANGED',
@@ -253,18 +399,19 @@ export class AdminService {
   }
 
   /**
-   * Change user role (SUPER_ADMIN ONLY)
+   * Change user role (SUPER_ADMIN ONLY - Strict Root Check)
    */
   static async updateUserRole(
     targetUserId: string,
     newRole: Role,
     actorRole: Role,
     actorId: string,
-    ipAddress?: string
+    ipAddress?: string,
+    actorIsOriginal?: boolean,
+    actorIsViewOnly?: boolean
   ) {
-    // Strict enforcement: Only SUPER_ADMIN can change roles
-    if (actorRole !== Role.SUPER_ADMIN) {
-      const err: AppError = new Error('Access denied: Only SUPER_ADMIN is authorized to change user roles');
+    if (actorIsViewOnly || !actorIsOriginal || actorRole !== Role.SUPER_ADMIN) {
+      const err: AppError = new Error('Access denied: Only the Original Root Super Admin is authorized to change user roles');
       err.statusCode = 403;
       throw err;
     }
@@ -273,6 +420,12 @@ export class AdminService {
     if (!user) {
       const err: AppError = new Error(`User with ID ${targetUserId} not found`);
       err.statusCode = 404;
+      throw err;
+    }
+
+    if ((user as any).isOriginalSuperAdmin) {
+      const err: AppError = new Error('Access denied: Cannot change the role of the Original Root Super Admin');
+      err.statusCode = 403;
       throw err;
     }
 
@@ -414,6 +567,11 @@ export class AdminService {
     // Actor info
     actorId: string;
     actorRole?: Role;
+    actorIsOriginalSuperAdmin?: boolean;
+    actorIsViewOnly?: boolean;
+    actorIsHospitalAdmin?: boolean;
+    actorHospitalId?: string;
+    actorHospitalName?: string;
     ipAddress?: string;
   }) {
     const {
@@ -451,13 +609,34 @@ export class AdminService {
       supportPhone,
       supportEmail,
       actorRole,
+      actorIsOriginalSuperAdmin,
+      actorIsViewOnly,
+      actorIsHospitalAdmin,
+      actorHospitalId,
+      actorHospitalName,
     } = data;
 
-    // Security check: Only SUPER_ADMIN can create another SUPER_ADMIN
-    if (role === Role.SUPER_ADMIN && actorRole !== Role.SUPER_ADMIN) {
-      const err: AppError = new Error('Access denied: Only Super Admin can provision another Super Admin account');
+    if (actorIsViewOnly) {
+      const err: AppError = new Error('Access denied: Secondary Super Admin accounts have view-only clearance and cannot create users');
       err.statusCode = 403;
       throw err;
+    }
+
+    if (actorIsHospitalAdmin) {
+      if (role === Role.ADMIN || role === Role.SUPER_ADMIN) {
+        const err: AppError = new Error('Access denied: Hospital administrators cannot provision platform administrator or super administrator accounts');
+        err.statusCode = 403;
+        throw err;
+      }
+    }
+
+    // Security check: Only the Original Root Super Admin can create another Super Admin account
+    if (role === Role.SUPER_ADMIN) {
+      if (actorRole !== Role.SUPER_ADMIN || !actorIsOriginalSuperAdmin) {
+        const err: AppError = new Error('Access denied: Only the Original Root Super Admin can provision another Super Admin account');
+        err.statusCode = 403;
+        throw err;
+      }
     }
 
     const normalizedEmail = email.toLowerCase().trim();
@@ -488,6 +667,10 @@ export class AdminService {
     const activeBool = typeof isActive === 'string' ? isActive.toUpperCase() === 'ACTIVE' : Boolean(isActive);
 
     const createdUser = await prisma.$transaction(async (tx) => {
+      // New Super Admin accounts are ALWAYS secondary with isOriginalSuperAdmin=false, isViewOnly=true
+      const isOriginal = false;
+      const isView = role === Role.SUPER_ADMIN ? true : false;
+
       const user = await tx.user.create({
         data: {
           email: normalizedEmail,
@@ -496,7 +679,9 @@ export class AdminService {
           phoneNumber: phoneNumber?.trim() || null,
           abhaId: trimmedAbha,
           isActive: activeBool,
-        },
+          isOriginalSuperAdmin: isOriginal,
+          isViewOnly: isView,
+        } as any,
       });
 
       switch (role) {
@@ -513,6 +698,7 @@ export class AdminService {
               emergencyContactPhone: emergencyContactPhone?.trim() || null,
               familyPhone: familyPhone?.trim() || null,
               heightCm: heightCm ? parseFloat(String(heightCm)) : null,
+              hospitalId: (actorIsHospitalAdmin && actorHospitalId) ? actorHospitalId : undefined,
             },
           });
 
@@ -541,6 +727,7 @@ export class AdminService {
           break;
         }
         case Role.DOCTOR: {
+          const effectiveHospital = (actorIsHospitalAdmin && actorHospitalName) ? actorHospitalName : (hospital?.trim() || null);
           await tx.doctor.create({
             data: {
               userId: user.id,
@@ -548,7 +735,7 @@ export class AdminService {
               speciality: speciality?.trim() || 'General Medicine',
               qualification: qualification?.trim() || null,
               licenseNumber: trimmedLicense,
-              hospital: hospital?.trim() || null,
+              hospital: effectiveHospital,
               experienceYears: experienceYears ? parseInt(String(experienceYears), 10) : 0,
               consultationFee: consultationFee ? parseFloat(String(consultationFee)) : 0.0,
               about: about?.trim() || null,
@@ -557,11 +744,12 @@ export class AdminService {
           break;
         }
         case Role.NURSE: {
+          const effectiveHospital = (actorIsHospitalAdmin && actorHospitalName) ? actorHospitalName : (hospital?.trim() || null);
           await tx.nurse.create({
             data: {
               userId: user.id,
               fullName: name,
-              hospital: hospital?.trim() || null,
+              hospital: effectiveHospital,
               department: department?.trim() || null,
               licenseNumber: trimmedLicense,
             },
@@ -569,11 +757,12 @@ export class AdminService {
           break;
         }
         case Role.PHARMACIST: {
+          const effectivePharmacy = (actorIsHospitalAdmin && actorHospitalName) ? actorHospitalName : (pharmacyName?.trim() || hospital?.trim() || null);
           await tx.pharmacist.create({
             data: {
               userId: user.id,
               fullName: name,
-              pharmacyName: pharmacyName?.trim() || hospital?.trim() || null,
+              pharmacyName: effectivePharmacy,
               licenseNumber: trimmedLicense,
             },
           });
@@ -634,11 +823,32 @@ export class AdminService {
       password?: string;
       role?: Role;
       status?: string | boolean;
+      gender?: string;
+      bloodGroup?: string;
+      address?: string;
+      dateOfBirth?: string;
+      speciality?: string;
+      specialization?: string;
+      hospital?: string;
+      licenseNumber?: string;
+      department?: string;
+      pharmacyName?: string;
       actorId: string;
       actorRole?: Role;
+      actorIsOriginalSuperAdmin?: boolean;
+      actorIsViewOnly?: boolean;
+      actorIsHospitalAdmin?: boolean;
+      actorHospitalId?: string;
+      actorHospitalName?: string;
       ipAddress?: string;
     }
   ) {
+    if (data.actorIsViewOnly) {
+      const err: AppError = new Error('Access denied: Secondary Super Admin accounts have view-only clearance and cannot modify users');
+      err.statusCode = 403;
+      throw err;
+    }
+
     const user = await prisma.user.findUnique({
       where: { id },
       include: {
@@ -654,6 +864,39 @@ export class AdminService {
     if (!user) {
       const err: AppError = new Error(`User with ID ${id} not found`);
       err.statusCode = 404;
+      throw err;
+    }
+
+    if (data.actorIsHospitalAdmin) {
+      if (user.id !== data.actorId) {
+        if (user.role === Role.ADMIN || user.role === Role.SUPER_ADMIN) {
+          const err: AppError = new Error('Access denied: Hospital administrators cannot modify platform administrative accounts');
+          err.statusCode = 403;
+          throw err;
+        }
+        const isAffiliated = await AdminService.checkUserHospitalAffiliation(id, data.actorHospitalName, data.actorHospitalId);
+        if (!isAffiliated) {
+          const err: AppError = new Error('Access denied: Cannot modify users outside your hospital');
+          err.statusCode = 403;
+          throw err;
+        }
+      }
+      if (data.role && (data.role === Role.ADMIN || data.role === Role.SUPER_ADMIN)) {
+        const err: AppError = new Error('Access denied: Hospital administrators cannot assign administrative roles');
+        err.statusCode = 403;
+        throw err;
+      }
+    }
+
+    if ((user as any).isOriginalSuperAdmin && !data.actorIsOriginalSuperAdmin) {
+      const err: AppError = new Error('Access denied: Cannot modify the Original Root Super Admin account');
+      err.statusCode = 403;
+      throw err;
+    }
+
+    if (user.role === Role.SUPER_ADMIN && data.actorRole !== Role.SUPER_ADMIN) {
+      const err: AppError = new Error('Access denied: Ordinary Admin cannot modify a Super Admin account');
+      err.statusCode = 403;
       throw err;
     }
 
@@ -696,8 +939,8 @@ export class AdminService {
     }
 
     if (data.role && Object.values(Role).includes(data.role)) {
-      if (data.role !== user.role && data.actorRole !== Role.SUPER_ADMIN) {
-        const err: AppError = new Error('Access denied: Only Super Admin is authorized to change user roles');
+      if (data.role !== user.role && (!data.actorIsOriginalSuperAdmin || data.actorRole !== Role.SUPER_ADMIN)) {
+        const err: AppError = new Error('Access denied: Only the Original Root Super Admin is authorized to change user roles');
         err.statusCode = 403;
         throw err;
       }
@@ -709,20 +952,62 @@ export class AdminService {
       data: updateData,
     });
 
-    // Update profile fullName if provided
-    if (data.fullName && data.fullName.trim()) {
-      const name = data.fullName.trim();
-      if (user.patient) await prisma.patient.update({ where: { id: user.patient.id }, data: { fullName: name } });
-      else if (user.doctor) await prisma.doctor.update({ where: { id: user.doctor.id }, data: { fullName: name } });
-      else if (user.nurse) await prisma.nurse.update({ where: { id: user.nurse.id }, data: { fullName: name } });
-      else if (user.pharmacist) await prisma.pharmacist.update({ where: { id: user.pharmacist.id }, data: { fullName: name } });
-      else if (user.caregiver) await prisma.caregiver.update({ where: { id: user.caregiver.id }, data: { fullName: name } });
-      else if (user.insuranceProvider) await prisma.insuranceProvider.update({ where: { id: user.insuranceProvider.id }, data: { providerName: name } });
-      else {
-        if (updatedUser.role === Role.PATIENT) await prisma.patient.create({ data: { userId: id, fullName: name } });
-        else if (updatedUser.role === Role.DOCTOR) await prisma.doctor.create({ data: { userId: id, fullName: name, speciality: 'General Practice' } });
-      }
+    // Persist fullName & extended profile fields on User + role-specific profile in MySQL
+    const trimmedName = data.fullName?.trim();
+    if (trimmedName) {
+      await prisma.user.update({ where: { id }, data: { fullName: trimmedName } });
     }
+    if (user.patient) {
+      await prisma.patient.update({
+        where: { id: user.patient.id },
+        data: {
+          ...(trimmedName ? { fullName: trimmedName } : {}),
+          ...(data.gender !== undefined ? { gender: data.gender || null } : {}),
+          ...(data.bloodGroup !== undefined ? { bloodGroup: data.bloodGroup || null } : {}),
+          ...(data.address !== undefined ? { address: data.address || null } : {}),
+          ...(data.dateOfBirth ? { dateOfBirth: new Date(data.dateOfBirth) } : {}),
+        },
+      });
+    } else if (user.doctor) {
+      const spec = data.speciality ?? data.specialization;
+      await prisma.doctor.update({
+        where: { id: user.doctor.id },
+        data: {
+          ...(trimmedName ? { fullName: trimmedName } : {}),
+          ...(spec !== undefined ? { speciality: spec || user.doctor.speciality } : {}),
+          ...(data.hospital !== undefined ? { hospital: data.hospital || null } : {}),
+          ...(data.licenseNumber !== undefined ? { licenseNumber: data.licenseNumber || null } : {}),
+        },
+      });
+    } else if (user.nurse) {
+      await prisma.nurse.update({
+        where: { id: user.nurse.id },
+        data: {
+          ...(trimmedName ? { fullName: trimmedName } : {}),
+          ...(data.hospital !== undefined ? { hospital: data.hospital || null } : {}),
+          ...(data.department !== undefined ? { department: data.department || null } : {}),
+          ...(data.licenseNumber !== undefined ? { licenseNumber: data.licenseNumber || null } : {}),
+        },
+      });
+    } else if (user.pharmacist) {
+      await prisma.pharmacist.update({
+        where: { id: user.pharmacist.id },
+        data: {
+          ...(trimmedName ? { fullName: trimmedName } : {}),
+          ...(data.pharmacyName !== undefined ? { pharmacyName: data.pharmacyName || null } : {}),
+          ...(data.licenseNumber !== undefined ? { licenseNumber: data.licenseNumber || null } : {}),
+        },
+      });
+    } else if (user.caregiver && trimmedName) {
+      await prisma.caregiver.update({ where: { id: user.caregiver.id }, data: { fullName: trimmedName } });
+    } else if (user.insuranceProvider && trimmedName) {
+      await prisma.insuranceProvider.update({ where: { id: user.insuranceProvider.id }, data: { providerName: trimmedName } });
+    } else if (trimmedName) {
+      if (updatedUser.role === Role.PATIENT) await prisma.patient.create({ data: { userId: id, fullName: trimmedName } });
+      else if (updatedUser.role === Role.DOCTOR) await prisma.doctor.create({ data: { userId: id, fullName: trimmedName, speciality: 'General Practice' } });
+    }
+
+    const { passwordHash: _redacted, ...safeUpdateData } = updateData as any;
 
     await AuditService.log({
       userId: data.actorId,
@@ -730,7 +1015,7 @@ export class AdminService {
       entityType: 'users',
       entityId: id,
       ipAddress: data.ipAddress,
-      details: { updateData, fullName: data.fullName },
+      details: { updateData: safeUpdateData, fullName: data.fullName },
     });
 
     return this.getUserById(id);
@@ -739,7 +1024,23 @@ export class AdminService {
   /**
    * Delete user from MySQL (cascades to profile)
    */
-  static async deleteUser(id: string, actorId: string, ipAddress?: string) {
+  static async deleteUser(
+    id: string,
+    actorId: string,
+    ipAddress?: string,
+    actorRole?: Role,
+    actorIsOriginal?: boolean,
+    actorIsViewOnly?: boolean,
+    actorIsHospitalAdmin?: boolean,
+    actorHospitalId?: string,
+    actorHospitalName?: string
+  ) {
+    if (actorIsViewOnly) {
+      const err: AppError = new Error('Access denied: Secondary Super Admin accounts have view-only clearance and cannot delete users');
+      err.statusCode = 403;
+      throw err;
+    }
+
     const user = await prisma.user.findUnique({ where: { id } });
     if (!user) {
       const err: AppError = new Error(`User with ID ${id} not found`);
@@ -747,8 +1048,28 @@ export class AdminService {
       throw err;
     }
 
-    if (user.role === Role.SUPER_ADMIN && user.email === 'superadmin@dhr-medicare.in') {
-      const err: AppError = new Error('Cannot delete root system Super Admin');
+    if (actorIsHospitalAdmin) {
+      if (user.role === Role.ADMIN || user.role === Role.SUPER_ADMIN) {
+        const err: AppError = new Error('Access denied: Hospital administrators cannot delete administrative accounts');
+        err.statusCode = 403;
+        throw err;
+      }
+      const isAffiliated = await AdminService.checkUserHospitalAffiliation(id, actorHospitalName, actorHospitalId);
+      if (!isAffiliated) {
+        const err: AppError = new Error('Access denied: Cannot delete users outside your hospital');
+        err.statusCode = 403;
+        throw err;
+      }
+    }
+
+    if ((user as any).isOriginalSuperAdmin || user.email === 'superadmin@dhr-medicare.in') {
+      const err: AppError = new Error('Access denied: Cannot delete the Original Root Super Admin account');
+      err.statusCode = 403;
+      throw err;
+    }
+
+    if (user.role === Role.SUPER_ADMIN && (!actorIsOriginal || actorRole !== Role.SUPER_ADMIN)) {
+      const err: AppError = new Error('Access denied: Only the Original Root Super Admin can delete a Super Admin account');
       err.statusCode = 403;
       throw err;
     }
@@ -770,7 +1091,24 @@ export class AdminService {
   /**
    * Reset user password (ADMIN & SUPER_ADMIN)
    */
-  static async resetPassword(targetUserId: string, newPassword?: string, actorId?: string, ipAddress?: string) {
+  static async resetPassword(
+    targetUserId: string,
+    newPassword?: string,
+    actorId?: string,
+    ipAddress?: string,
+    actorRole?: Role,
+    actorIsOriginal?: boolean,
+    actorIsViewOnly?: boolean,
+    actorIsHospitalAdmin?: boolean,
+    actorHospitalId?: string,
+    actorHospitalName?: string
+  ) {
+    if (actorIsViewOnly) {
+      const err: AppError = new Error('Access denied: Secondary Super Admin accounts have view-only clearance and cannot reset passwords');
+      err.statusCode = 403;
+      throw err;
+    }
+
     const user = await prisma.user.findUnique({ where: { id: targetUserId } });
     if (!user) {
       const err: AppError = new Error(`User with ID ${targetUserId} not found`);
@@ -778,13 +1116,47 @@ export class AdminService {
       throw err;
     }
 
+    if (actorIsHospitalAdmin) {
+      if (user.id !== actorId) {
+        if (user.role === Role.ADMIN || user.role === Role.SUPER_ADMIN) {
+          const err: AppError = new Error('Access denied: Hospital administrators cannot reset passwords for administrative accounts');
+          err.statusCode = 403;
+          throw err;
+        }
+        const isAffiliated = await AdminService.checkUserHospitalAffiliation(targetUserId, actorHospitalName, actorHospitalId);
+        if (!isAffiliated) {
+          const err: AppError = new Error('Access denied: Cannot reset password for users outside your hospital');
+          err.statusCode = 403;
+          throw err;
+        }
+      }
+    }
+
+    if ((user as any).isOriginalSuperAdmin && !actorIsOriginal) {
+      const err: AppError = new Error('Access denied: Only the Original Root Super Admin can reset their password');
+      err.statusCode = 403;
+      throw err;
+    }
+
+    if (user.role === Role.SUPER_ADMIN && (!actorIsOriginal || actorRole !== Role.SUPER_ADMIN)) {
+      const err: AppError = new Error('Access denied: Only the Original Root Super Admin can reset a Super Admin password');
+      err.statusCode = 403;
+      throw err;
+    }
+
     const passwordToSet = newPassword && newPassword.trim().length > 0 ? newPassword.trim() : 'Password@123';
     const passwordHash = await bcrypt.hash(passwordToSet, 10);
 
-    await prisma.user.update({
-      where: { id: targetUserId },
-      data: { passwordHash },
-    });
+    await prisma.$transaction([
+      prisma.user.update({
+        where: { id: targetUserId },
+        data: { passwordHash },
+      }),
+      prisma.userSession.updateMany({
+        where: { userId: targetUserId, isRevoked: false },
+        data: { isRevoked: true },
+      }),
+    ]);
 
     await AuditService.log({
       userId: actorId || null,
@@ -932,10 +1304,16 @@ export class AdminService {
   }
 
   // --- Database-Backed Hospital Management Methods ---
-  static async getHospitals() {
+  static async getHospitals(actor?: any) {
     try {
+      const whereClause: any = {};
+      if (actor?.isHospitalAdmin && actor?.managedHospitalId) {
+        whereClause.id = actor.managedHospitalId;
+      }
+
       // 1. Fetch hospitals permanently stored in MySQL
       const dbHospitals = await prisma.hospital.findMany({
+        where: Object.keys(whereClause).length > 0 ? whereClause : undefined,
         orderBy: { createdAt: 'desc' },
       });
 
@@ -998,61 +1376,25 @@ export class AdminService {
         hospMap.set(h.name.trim().toLowerCase(), record);
       }
 
-      // Also ensure any affiliated hospitals from existing doctors/nurses are present
-      const getOrInitHospital = (hospName: string): HospitalRecord => {
-        const key = hospName.trim().toLowerCase();
-        if (hospMap.has(key)) return hospMap.get(key)!;
-
-        const code = hospName.trim().length >= 3 ? hospName.trim().slice(0, 3).toUpperCase() : 'HOS';
-        const nextId = hospMap.size + 1;
-
-        const record: HospitalRecord = {
-          id: `HOSP-${String(nextId).padStart(2, '0')}`,
-          hospitalId: `HOSP-${code}-${String(nextId).padStart(3, '0')}`,
-          name: hospName.trim(),
-          code,
-          city: 'Chennai',
-          state: 'Tamil Nadu',
-          address: `${hospName.trim()}, Tamil Nadu`,
-          contactPhone: '+91 44 2800 0000',
-          email: `admin@${hospName.trim().toLowerCase().replace(/[^a-z0-9]/g, '')}.in`,
-          adminName: 'Medical Director',
-          adminEmail: `director@${hospName.trim().toLowerCase().replace(/[^a-z0-9]/g, '')}.in`,
-          bedCapacity: 0,
-          activeDoctors: 0,
-          activeNurses: 0,
-          activePatients: 0,
-          activePharmacists: 0,
-          activeCaregivers: 0,
-          insurancePartnersCount: 0,
-          status: 'Active',
-          establishedYear: new Date().getFullYear(),
-          accreditation: 'NABH Accredited',
-          departments: ['General OPD', 'Emergency Care', 'In-Patient Ward'],
-        };
-        hospMap.set(key, record);
-        return record;
-      };
-
-      // Tally practitioner affiliations
+      // Tally practitioner affiliations ONLY onto genuine MySQL Hospital rows (no fabricated hospitals)
       docs.forEach((d) => {
         if (d.hospital) {
-          const h = getOrInitHospital(d.hospital);
-          h.activeDoctors++;
+          const h = hospMap.get(d.hospital.trim().toLowerCase());
+          if (h) h.activeDoctors++;
         }
       });
 
       nurses.forEach((n) => {
         if (n.hospital) {
-          const h = getOrInitHospital(n.hospital);
-          h.activeNurses++;
+          const h = hospMap.get(n.hospital.trim().toLowerCase());
+          if (h) h.activeNurses++;
         }
       });
 
       pharm.forEach((p) => {
         if (p.pharmacyName) {
-          const h = getOrInitHospital(p.pharmacyName);
-          h.activePharmacists++;
+          const h = hospMap.get(p.pharmacyName.trim().toLowerCase());
+          if (h) h.activePharmacists++;
         }
       });
 
@@ -1063,21 +1405,19 @@ export class AdminService {
         ].filter(Boolean) as string[]);
 
         ptHospitals.forEach((hName) => {
-          const h = getOrInitHospital(hName);
-          h.activePatients++;
+          const h = hospMap.get(hName.trim().toLowerCase());
+          if (h) h.activePatients++;
         });
       });
 
-      const liveList = Array.from(hospMap.values());
-      hospitalRegistryStore = liveList;
-      return liveList;
+      return Array.from(hospMap.values());
     } catch (e: any) {
-      console.warn('Error reading hospitals from database:', e?.message);
-      return hospitalRegistryStore;
+      console.error('Error reading hospitals from database:', e?.message);
+      throw new AppError('Failed to load hospitals from MySQL database', 500);
     }
   }
 
-  static async getHospitalById(id: string) {
+  static async getHospitalById(id: string, actor?: any) {
     const cleanId = String(id).trim();
     // Try database by id, code, or email
     const dbHosp = await prisma.hospital.findFirst({
@@ -1093,6 +1433,10 @@ export class AdminService {
     });
 
     if (dbHosp) {
+      if (actor?.isHospitalAdmin && actor?.managedHospitalId && dbHosp.id !== actor.managedHospitalId) {
+        throw new AppError('Access denied: Hospital administrators cannot view details of other healthcare institutions', 403);
+      }
+
       let uiStatus: 'Active' | 'Under Review' | 'Suspended' = 'Under Review';
       if (dbHosp.status === 'ACTIVE') uiStatus = 'Active';
       else if (dbHosp.status === 'SUSPENDED' || dbHosp.status === 'REJECTED') uiStatus = 'Suspended';
@@ -1128,13 +1472,14 @@ export class AdminService {
       };
     }
 
-    const inMemory = hospitalRegistryStore.find((h) => h.id === id || h.hospitalId === id || h.name.toLowerCase() === cleanId.toLowerCase());
-    if (inMemory) return inMemory;
-
     throw new AppError('Hospital record not found', 404);
   }
 
-  static async createHospital(data: Partial<HospitalRecord>) {
+  static async createHospital(data: Partial<HospitalRecord>, actor?: any) {
+    if (actor?.isHospitalAdmin) {
+      throw new AppError('Access denied: Hospital administrators cannot register new healthcare institutions', 403);
+    }
+
     if (!data.name?.trim()) throw new AppError('Hospital name is required', 400);
     if (!data.adminEmail?.trim()) throw new AppError('Administrator email is required', 400);
 
@@ -1232,7 +1577,7 @@ export class AdminService {
     return newHospital;
   }
 
-  static async updateHospital(id: string, updates: Partial<HospitalRecord>) {
+  static async updateHospital(id: string, updates: Partial<HospitalRecord>, actor?: any) {
     const cleanId = String(id).trim();
 
     // Map status from UI string to DB enum
@@ -1264,6 +1609,16 @@ export class AdminService {
       });
     }
 
+    if (actor?.isHospitalAdmin) {
+      if (!existing || existing.id !== actor.managedHospitalId) {
+        throw new AppError('Access denied: Hospital administrators can only update their own hospital record', 403);
+      }
+      delete updates.code;
+      delete updates.adminEmail;
+      updates.status = undefined;
+      dbStatus = undefined;
+    }
+
     if (existing) {
       const updated = await prisma.hospital.update({
         where: { id: existing.id },
@@ -1280,6 +1635,27 @@ export class AdminService {
           ...(updates.departments ? { departments: JSON.stringify(updates.departments) } : {}),
         },
       });
+
+      // Synchronize linked hospital admin user account activation on approval/suspension
+      if (dbStatus && updated.adminUserId) {
+        if (dbStatus === 'ACTIVE') {
+          await prisma.user.update({
+            where: { id: updated.adminUserId },
+            data: { isActive: true, approvalStatus: 'APPROVED' as any },
+          }).catch(() => {});
+        } else if (dbStatus === 'SUSPENDED' || dbStatus === 'REJECTED') {
+          await prisma.$transaction([
+            prisma.user.update({
+              where: { id: updated.adminUserId },
+              data: { isActive: false, approvalStatus: (dbStatus === 'REJECTED' ? 'REJECTED' : 'SUSPENDED') as any },
+            }),
+            prisma.userSession.updateMany({
+              where: { userId: updated.adminUserId, isRevoked: false },
+              data: { isRevoked: true },
+            }),
+          ]).catch(() => {});
+        }
+      }
 
       let uiStatus: 'Active' | 'Under Review' | 'Suspended' = 'Under Review';
       if (updated.status === 'ACTIVE') uiStatus = 'Active';
@@ -1363,7 +1739,10 @@ export class AdminService {
     };
   }
 
-  static async deleteHospital(id: string) {
+  static async deleteHospital(id: string, actor?: any) {
+    if (actor?.isHospitalAdmin) {
+      throw new AppError('Access denied: Hospital administrators cannot remove hospitals from the platform', 403);
+    }
     const cleanId = String(id).trim();
     const existing = await prisma.hospital.findFirst({
       where: {
@@ -1382,9 +1761,6 @@ export class AdminService {
       return { id: existing.id, name: existing.name };
     }
 
-    const index = hospitalRegistryStore.findIndex((h) => h.id === id || h.hospitalId === id);
-    if (index === -1) throw new AppError('Hospital record not found', 404);
-    const removed = hospitalRegistryStore.splice(index, 1)[0];
-    return removed;
+    throw new AppError('Hospital record not found', 404);
   }
 }

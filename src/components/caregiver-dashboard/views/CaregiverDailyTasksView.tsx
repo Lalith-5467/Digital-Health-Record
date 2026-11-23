@@ -17,6 +17,7 @@ import {
   ClipboardList
 } from 'lucide-react';
 import { useCaregiverWorkflow } from '../../../utils/caregiverWorkflowStorage';
+import { caregiverApi, patientClinicalApi } from '../../../services/dhrApis';
 import { useLanguage } from '../../../context/LanguageContext';
 import { 
   getLocalizedTaskTitle, 
@@ -35,11 +36,24 @@ export const CaregiverDailyTasksView: React.FC = () => {
     updateTaskStatus, 
     startTask, 
     reopenTask, 
-    addTask 
+    addTask,
+    refreshAll
   } = useCaregiverWorkflow();
 
   const [isAddTaskOpen, setIsAddTaskOpen] = useState(false);
   const [selectedTask, setSelectedTask] = useState<any | null>(null);
+  const [showNoteForm, setShowNoteForm] = useState(false);
+  const [noteInput, setNoteInput] = useState('');
+  const [showIssueForm, setShowIssueForm] = useState(false);
+  const [issueInput, setIssueInput] = useState('');
+  const [submittingNote, setSubmittingNote] = useState(false);
+  const [submittingIssue, setSubmittingIssue] = useState(false);
+  const [toastMsg, setToastMsg] = useState<string | null>(null);
+
+  const showToast = (msg: string) => {
+    setToastMsg(msg);
+    setTimeout(() => setToastMsg(null), 3500);
+  };
   
   // Search & Filters
   const [searchQuery, setSearchQuery] = useState('');
@@ -94,10 +108,10 @@ export const CaregiverDailyTasksView: React.FC = () => {
     return matchesSearch && matchesFilter && matchesDate && matchesPatient;
   });
 
-  const handleAddTaskSubmit = (e: React.FormEvent) => {
+  const handleAddTaskSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!taskTitle) return;
-    addTask({
+    await addTask({
       wardId: activeWard.id,
       title: taskTitle,
       category: category as any,
@@ -105,12 +119,65 @@ export const CaregiverDailyTasksView: React.FC = () => {
       time,
       priority,
       status: 'Pending',
-      assignedTo: 'Anita Sharma',
+      assignedTo: 'Caregiver',
       instructions
     });
     setIsAddTaskOpen(false);
     setTaskTitle('');
     setInstructions('');
+  };
+
+  const handleSaveTaskNote = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedTask || !activeWard?.id || !noteInput.trim()) return;
+    setSubmittingNote(true);
+    try {
+      await caregiverApi.createWardNote({
+        patientId: activeWard.id,
+        category: selectedTask.category || 'Care Task',
+        content: `[${selectedTask.title}] ${noteInput.trim()}`,
+      });
+      setNoteInput('');
+      setShowNoteForm(false);
+      await refreshAll();
+      window.dispatchEvent(new Event('medicare_caregiver_sync'));
+      showToast('Care note saved to MySQL database.');
+    } catch (err: any) {
+      showToast(err?.message || 'Failed to save care note.');
+    } finally {
+      setSubmittingNote(false);
+    }
+  };
+
+  const handleReportTaskIssue = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedTask || !activeWard?.id) return;
+    const issueDesc = issueInput.trim() || `Issue reported during task: ${selectedTask.title}`;
+    setSubmittingIssue(true);
+    try {
+      await caregiverApi.createWardNote({
+        patientId: activeWard.id,
+        category: 'Issue Reported',
+        content: `[ISSUE - ${selectedTask.title}] ${issueDesc}`,
+      });
+      await patientClinicalApi
+        .triggerSosAlert({
+          patientId: activeWard.id,
+          eventType: 'Manual Alert',
+          locationLabel: activeWard.currentLocation || 'Home',
+          notes: `Task Issue (${selectedTask.title}): ${issueDesc}`,
+        })
+        .catch(() => {});
+      setIssueInput('');
+      setShowIssueForm(false);
+      await refreshAll();
+      window.dispatchEvent(new Event('medicare_caregiver_sync'));
+      showToast('Issue logged & emergency alert dispatched.');
+    } catch (err: any) {
+      showToast(err?.message || 'Failed to report issue.');
+    } finally {
+      setSubmittingIssue(false);
+    }
   };
 
   const getPriorityColor = (p: string) => {
@@ -136,6 +203,23 @@ export const CaregiverDailyTasksView: React.FC = () => {
 
   return (
     <div className="space-y-6 pb-12">
+      {/* TOAST */}
+      <AnimatePresence>
+        {toastMsg && (
+          <div className="fixed top-5 left-1/2 -translate-x-1/2 z-[90] flex flex-col items-center pointer-events-none select-none max-w-md w-full px-4">
+            <motion.div
+              initial={{ opacity: 0, y: -16, scale: 0.96 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: -16, scale: 0.96 }}
+              className="pointer-events-auto select-auto bg-slate-900 text-white px-5 py-3 rounded-2xl shadow-2xl border border-teal-500/40 flex items-center gap-3 backdrop-blur-xl text-xs font-bold"
+            >
+              <Check className="w-4 h-4 text-teal-400 shrink-0" />
+              <span>{toastMsg}</span>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
       {/* HEADER */}
       <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
         <div>
@@ -320,13 +404,20 @@ export const CaregiverDailyTasksView: React.FC = () => {
                     {/* TASK ACTIONS */}
                     <div className="mt-4 pt-4 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between">
                       <div className="flex items-center gap-2">
-                        <div className="w-6 h-6 rounded-full bg-slate-200 dark:bg-slate-700 flex items-center justify-center text-[8px] font-black">AS</div>
-                        <span className="text-[10px] font-semibold text-slate-500">{t('caregiver.tasks.assigned_to', 'Assigned to:')} {task.assignedTo || 'Anita Sharma'}</span>
+                        <div className="w-6 h-6 rounded-full bg-slate-200 dark:bg-slate-700 flex items-center justify-center text-[8px] font-black">
+                          {(task.assignedTo || 'CG').slice(0, 2).toUpperCase()}
+                        </div>
+                        <span className="text-[10px] font-semibold text-slate-500">{t('caregiver.tasks.assigned_to', 'Assigned to:')} {task.assignedTo || 'Caregiver'}</span>
                       </div>
                       <div className="flex gap-2">
                         <button 
-                          onClick={(e) => { e.stopPropagation(); setSelectedTask(task); }}
-                          className="px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 text-[10px] font-black transition-colors"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setSelectedTask(task);
+                            setShowNoteForm(true);
+                            setShowIssueForm(false);
+                          }}
+                          className="px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 text-[10px] font-black transition-colors cursor-pointer"
                         >
                           {t('caregiver.tasks.add_note', 'Add Note')}
                         </button>
@@ -423,30 +514,111 @@ export const CaregiverDailyTasksView: React.FC = () => {
                   </div>
                   <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-900/50 border border-slate-100 dark:border-slate-800">
                     <p className="text-[10px] font-bold text-slate-400 uppercase mb-1">{t('caregiver.tasks.assign_to', 'Assign To')}</p>
-                    <p className="text-xs font-black text-slate-900 dark:text-white">{selectedTask.assignedTo || 'Anita Sharma'}</p>
+                    <p className="text-xs font-black text-slate-900 dark:text-white">{selectedTask.assignedTo || 'Caregiver'}</p>
                   </div>
                 </div>
 
                 <div className="space-y-2">
                   <h4 className="text-[11px] font-black uppercase text-slate-500">{t('caregiver.tasks.instructions', 'Instructions')}</h4>
                   <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-900/50 border border-slate-100 dark:border-slate-800 text-xs font-medium text-slate-700 dark:text-slate-300 leading-relaxed">
-                    {selectedTask.instructions || 'Ensure medication is taken after meals. Keep patient hydrated. Verify BP before administering if feeling dizzy.'}
+                    {selectedTask.instructions || selectedTask.notes || 'No specific clinical instructions provided for this task.'}
                   </div>
                 </div>
 
                 <div className="space-y-2">
                   <h4 className="text-[11px] font-black uppercase text-slate-500 flex items-center justify-between">
                     <span>{t('caregiver.tasks.care_notes', 'Care Notes')}</span>
-                    <button className="text-teal-600 dark:text-teal-400 font-bold hover:underline">+ {t('caregiver.tasks.add_note', 'Add Note')}</button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowNoteForm((prev) => !prev);
+                        setShowIssueForm(false);
+                      }}
+                      className="text-teal-600 dark:text-teal-400 font-bold hover:underline cursor-pointer"
+                    >
+                      + {t('caregiver.tasks.add_note', 'Add Note')}
+                    </button>
                   </h4>
-                  <div className="space-y-3">
-                    <div className="p-3 rounded-xl bg-white dark:bg-[#0b1120] border border-slate-200 dark:border-slate-700 flex gap-3">
-                      <div className="w-6 h-6 rounded-full bg-teal-100 text-teal-700 flex items-center justify-center text-[8px] font-black shrink-0">AS</div>
-                      <div>
-                        <p className="text-xs font-bold text-slate-900 dark:text-white">Patient resting well.</p>
-                        <p className="text-[10px] text-slate-400 mt-0.5">Today at 10:15 AM</p>
+
+                  {showNoteForm && (
+                    <form onSubmit={handleSaveTaskNote} className="p-3 rounded-xl bg-slate-50 dark:bg-slate-900/60 border border-teal-500/30 space-y-2">
+                      <textarea
+                        rows={2}
+                        required
+                        value={noteInput}
+                        onChange={(e) => setNoteInput(e.target.value)}
+                        placeholder="Record caregiver observation or task note..."
+                        className="w-full p-2.5 rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-medium text-slate-900 dark:text-white focus:outline-none focus:border-teal-500"
+                      />
+                      <div className="flex justify-end gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setShowNoteForm(false)}
+                          className="px-3 py-1.5 rounded-lg text-[11px] font-bold text-slate-500 hover:bg-slate-200 dark:hover:bg-slate-800 cursor-pointer"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          type="submit"
+                          disabled={submittingNote || !noteInput.trim()}
+                          className="px-3 py-1.5 rounded-lg text-[11px] font-black bg-teal-500 hover:bg-teal-400 disabled:opacity-50 text-slate-950 cursor-pointer"
+                        >
+                          {submittingNote ? 'Saving...' : 'Save Note'}
+                        </button>
                       </div>
-                    </div>
+                    </form>
+                  )}
+
+                  {showIssueForm && (
+                    <form onSubmit={handleReportTaskIssue} className="p-3 rounded-xl bg-rose-50/70 dark:bg-rose-950/30 border border-rose-300 dark:border-rose-800 space-y-2">
+                      <p className="text-[11px] font-black text-rose-700 dark:text-rose-300 flex items-center gap-1.5">
+                        <AlertOctagon className="w-3.5 h-3.5" /> Report Care Issue / Trigger Alert
+                      </p>
+                      <textarea
+                        rows={2}
+                        required
+                        value={issueInput}
+                        onChange={(e) => setIssueInput(e.target.value)}
+                        placeholder="Describe the clinical issue, missed dose, or urgent symptom..."
+                        className="w-full p-2.5 rounded-lg bg-white dark:bg-slate-900 border border-rose-200 dark:border-rose-800 text-xs font-medium text-slate-900 dark:text-white focus:outline-none focus:border-rose-500"
+                      />
+                      <div className="flex justify-end gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setShowIssueForm(false)}
+                          className="px-3 py-1.5 rounded-lg text-[11px] font-bold text-slate-500 hover:bg-slate-200 dark:hover:bg-slate-800 cursor-pointer"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          type="submit"
+                          disabled={submittingIssue || !issueInput.trim()}
+                          className="px-3 py-1.5 rounded-lg text-[11px] font-black bg-rose-600 hover:bg-rose-500 disabled:opacity-50 text-white cursor-pointer"
+                        >
+                          {submittingIssue ? 'Reporting...' : 'Submit Issue Report'}
+                        </button>
+                      </div>
+                    </form>
+                  )}
+
+                  <div className="space-y-2.5">
+                    {!activeWard.notes || activeWard.notes.length === 0 ? (
+                      <div className="p-3 rounded-xl bg-white dark:bg-[#0b1120] border border-slate-200 dark:border-slate-700 text-xs text-slate-400 text-center">
+                        No care notes recorded yet for this dependent.
+                      </div>
+                    ) : (
+                      activeWard.notes.slice(0, 5).map((n) => (
+                        <div key={n.id} className="p-3 rounded-xl bg-white dark:bg-[#0b1120] border border-slate-200 dark:border-slate-700 flex gap-3">
+                          <div className="w-6 h-6 rounded-full bg-teal-100 text-teal-700 flex items-center justify-center text-[8px] font-black shrink-0">
+                            {(n.author || 'CG').slice(0, 2).toUpperCase()}
+                          </div>
+                          <div>
+                            <p className="text-xs font-bold text-slate-900 dark:text-white">{n.text}</p>
+                            <p className="text-[10px] text-slate-400 mt-0.5">{n.author} • {n.date} at {n.time}</p>
+                          </div>
+                        </div>
+                      ))
+                    )}
                   </div>
                 </div>
               </div>
@@ -458,7 +630,7 @@ export const CaregiverDailyTasksView: React.FC = () => {
                       reopenTask(selectedTask.id);
                       setSelectedTask({...selectedTask, completed: false, status: 'Pending'});
                     }}
-                    className="py-2.5 rounded-xl text-xs font-black bg-slate-200 text-slate-700 dark:bg-slate-700 dark:text-slate-300 transition-all flex justify-center items-center gap-2"
+                    className="py-2.5 rounded-xl text-xs font-black bg-slate-200 text-slate-700 dark:bg-slate-700 dark:text-slate-300 transition-all flex justify-center items-center gap-2 cursor-pointer"
                   >
                     <RotateCcw className="w-4 h-4" />
                     {t('caregiver.tasks.reopen_task', 'Reopen Task')}
@@ -469,14 +641,21 @@ export const CaregiverDailyTasksView: React.FC = () => {
                       updateTaskStatus(selectedTask.id, 'Completed');
                       setSelectedTask({...selectedTask, completed: true, status: 'Completed'});
                     }}
-                    className="py-2.5 rounded-xl text-xs font-black bg-teal-500 text-white shadow-lg shadow-teal-500/30 transition-all flex justify-center items-center gap-2"
+                    className="py-2.5 rounded-xl text-xs font-black bg-teal-500 text-white shadow-lg shadow-teal-500/30 transition-all flex justify-center items-center gap-2 cursor-pointer"
                   >
                     <Check className="w-4 h-4 stroke-[3]" />
                     {t('caregiver.tasks.mark_complete', 'Mark Complete')}
                   </button>
                 )}
                 
-                <button className="py-2.5 rounded-xl text-xs font-black bg-rose-50 text-rose-600 hover:bg-rose-100 border border-rose-200 dark:bg-rose-900/30 dark:border-rose-800 dark:text-rose-400 flex justify-center items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowIssueForm((prev) => !prev);
+                    setShowNoteForm(false);
+                  }}
+                  className="py-2.5 rounded-xl text-xs font-black bg-rose-50 text-rose-600 hover:bg-rose-100 border border-rose-200 dark:bg-rose-900/30 dark:border-rose-800 dark:text-rose-400 flex justify-center items-center gap-2 cursor-pointer"
+                >
                   <AlertOctagon className="w-4 h-4" />
                   {t('caregiver.tasks.report_issue', 'Report Issue')}
                 </button>

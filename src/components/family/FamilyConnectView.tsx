@@ -29,15 +29,6 @@ import type {
   EmergencyContact,
   SharingPermissionState
 } from './familyData';
-import {
-  INITIAL_FAMILY_MEMBERS,
-  INITIAL_PENDING_REQUESTS,
-  INITIAL_SHARED_APPOINTMENTS,
-  INITIAL_SHARED_REMINDERS,
-  INITIAL_FAMILY_ACTIVITIES,
-  INITIAL_EMERGENCY_CONTACTS,
-  DEFAULT_SHARING_PERMISSIONS
-} from './familyData';
 import { AddFamilyMemberModal } from './AddFamilyMemberModal';
 import { FamilyProfileDrawer } from './FamilyProfileDrawer';
 import { ManagePermissionsModal } from './ManagePermissionsModal';
@@ -47,6 +38,7 @@ import { ShareReminderModal } from './ShareReminderModal';
 import { AddEmergencyContactModal } from './AddEmergencyContactModal';
 import { FamilyFilterDrawer } from './FamilyFilterDrawer';
 import type { FamilyFilterState } from './FamilyFilterDrawer';
+import { patientExtendedApi, patientClinicalApi } from '../../services/dhrApis';
 
 interface UserProfile {
   name: string;
@@ -69,15 +61,15 @@ export const FamilyConnectView: React.FC<FamilyConnectViewProps> = ({
   const { t } = useLanguage();
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
-  // MAIN STATE & LOCALSTORAGE
-  const [members, setMembers] = useState<FamilyMember[]>(INITIAL_FAMILY_MEMBERS);
-  const [pendingRequests, setPendingRequests] = useState<PendingRequest[]>(INITIAL_PENDING_REQUESTS);
-  const [sharedAppointments, setSharedAppointments] = useState<SharedAppointment[]>(INITIAL_SHARED_APPOINTMENTS);
-  const [sharedReminders, setSharedReminders] = useState<SharedReminder[]>(INITIAL_SHARED_REMINDERS);
-  const [activities] = useState<FamilyActivityItem[]>(INITIAL_FAMILY_ACTIVITIES);
-  const [emergencyContacts, setEmergencyContacts] = useState<EmergencyContact[]>(INITIAL_EMERGENCY_CONTACTS);
-  const [permissions, setPermissions] = useState<SharingPermissionState[]>(DEFAULT_SHARING_PERMISSIONS);
-  const [removedMembers, setRemovedMembers] = useState<FamilyMember[]>([]);
+  // MAIN STATE (Hydrated from MySQL)
+  const [members, setMembers] = useState<FamilyMember[]>([]);
+  const [pendingRequests, setPendingRequests] = useState<PendingRequest[]>([]);
+  const [sharedAppointments, setSharedAppointments] = useState<SharedAppointment[]>([]);
+  const [sharedReminders, setSharedReminders] = useState<SharedReminder[]>([]);
+  const [_activities, setActivities] = useState<FamilyActivityItem[]>([]);
+  const [emergencyContacts, setEmergencyContacts] = useState<EmergencyContact[]>([]);
+  const [permissions, setPermissions] = useState<SharingPermissionState[]>([]);
+  const [_removedMembers, setRemovedMembers] = useState<FamilyMember[]>([]);
 
   // PROFILE SWITCHER
   const [activeProfileView, setActiveProfileView] = useState<string>('My Profile');
@@ -100,24 +92,152 @@ export const FamilyConnectView: React.FC<FamilyConnectViewProps> = ({
   const [shareRemModalOpen, setShareRemModalOpen] = useState(false);
   const [addEmergencyModalOpen, setAddEmergencyModalOpen] = useState(false);
 
-  // Load from localStorage on mount
+  const loadFamilyData = async () => {
+    try {
+      const [famRes, ecRes] = await Promise.all([
+        patientExtendedApi.getFamilyConnections().catch(() => null),
+        patientClinicalApi.getEmergencyContacts().catch(() => null),
+      ]);
+      if (famRes?.data && Array.isArray(famRes.data)) {
+        const active: FamilyMember[] = [];
+        const pending: PendingRequest[] = [];
+        const removed: FamilyMember[] = [];
+        const perms: SharingPermissionState[] = [];
+        const aptsMap = new Map<string, SharedAppointment>();
+        const remsMap = new Map<string, SharedReminder>();
+        const acts: FamilyActivityItem[] = [];
+
+        famRes.data.forEach((fc: any) => {
+          const item: FamilyMember = {
+            id: fc.id,
+            name: fc.memberName,
+            relationship: fc.relationship || 'Family',
+            status: fc.status === 'REMOVED' ? 'Removed' : 'Connected',
+            avatarUrl: '',
+            connectedSince: fc.createdAt ? new Date(fc.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : 'Connected',
+            sharedItemsCount: Array.isArray(fc.sharedItems) ? fc.sharedItems.length : 0,
+            lastActivity: fc.updatedAt ? new Date(fc.updatedAt).toLocaleDateString() : 'Active',
+          };
+          if (fc.status === 'REMOVED') removed.push(item);
+          else if (fc.status === 'PENDING') {
+            pending.push({
+              id: fc.id,
+              name: fc.memberName,
+              relationship: fc.relationship || 'Family',
+              contact: fc.contact || fc.email || '',
+              type: 'Outgoing',
+              timeAgo: fc.createdAt ? new Date(fc.createdAt).toLocaleDateString() : 'Recent',
+              status: 'Pending',
+            });
+          } else {
+            active.push(item);
+          }
+          if (fc.permissionsJson) {
+            try {
+              perms.push({ memberId: fc.id, ...JSON.parse(fc.permissionsJson) });
+            } catch { }
+          }
+
+          const memberLabel = `${fc.memberName} (${fc.relationship || 'Family'})`;
+
+          if (Array.isArray(fc.sharedItems)) {
+            fc.sharedItems.forEach((si: any) => {
+              let meta: any = {};
+              if (si.metadataJson) {
+                try { meta = JSON.parse(si.metadataJson); } catch { }
+              }
+              const itemType = String(si.itemType || '').toUpperCase();
+              if (itemType === 'APPOINTMENT') {
+                const key = si.itemId || si.id;
+                const existing = aptsMap.get(key);
+                if (existing) {
+                  if (!existing.sharedWith.includes(memberLabel)) {
+                    existing.sharedWith.push(memberLabel);
+                  }
+                } else {
+                  aptsMap.set(key, {
+                    id: si.id,
+                    doctorName: meta.doctorName || si.title || 'Consultation',
+                    speciality: meta.speciality || 'Consultation',
+                    type: meta.type || 'Clinic Visit',
+                    date: meta.date || (si.createdAt ? new Date(si.createdAt).toLocaleDateString() : ''),
+                    time: meta.time || '',
+                    sharedWith: [memberLabel],
+                    status: meta.status || 'Upcoming',
+                  });
+                }
+              } else if (itemType === 'REMINDER') {
+                const key = si.itemId || si.id;
+                const existing = remsMap.get(key);
+                if (existing) {
+                  if (!existing.sharedWith.includes(memberLabel)) {
+                    existing.sharedWith.push(memberLabel);
+                  }
+                } else {
+                  remsMap.set(key, {
+                    id: si.id,
+                    title: si.title || meta.title || 'Medication Reminder',
+                    dosage: meta.dosage || 'As prescribed',
+                    time: meta.time || 'Scheduled',
+                    sharedWith: [memberLabel],
+                    status: meta.status || 'Active',
+                  });
+                }
+              }
+
+              const siDt = si.createdAt ? new Date(si.createdAt) : new Date();
+              acts.push({
+                id: `ACT-SI-${si.id}`,
+                title: `Shared ${itemType.toLowerCase()}: ${si.title || meta.doctorName || 'Health item'}`,
+                subtitle: `Shared with ${fc.memberName}`,
+                memberName: fc.memberName,
+                type: itemType === 'APPOINTMENT' ? 'Appointment' : itemType === 'REMINDER' ? 'Reminder' : 'Connection',
+                date: siDt.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }),
+                time: siDt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+              });
+            });
+          }
+
+          if (Array.isArray(fc.messages)) {
+            fc.messages.forEach((m: any) => {
+              const mDt = m.createdAt ? new Date(m.createdAt) : new Date();
+              acts.push({
+                id: `ACT-MSG-${m.id}`,
+                title: `Message: ${String(m.text || '').slice(0, 60)}`,
+                subtitle: `Chat with ${fc.memberName}`,
+                memberName: fc.memberName,
+                type: 'Message',
+                date: mDt.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }),
+                time: mDt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+              });
+            });
+          }
+        });
+
+        setMembers(active);
+        setPendingRequests(pending);
+        setRemovedMembers(removed);
+        setPermissions(perms);
+        setSharedAppointments(Array.from(aptsMap.values()));
+        setSharedReminders(Array.from(remsMap.values()));
+        setActivities(acts);
+      }
+      if (ecRes?.data && Array.isArray(ecRes.data)) {
+        setEmergencyContacts(
+          ecRes.data.map((c: any) => ({
+            id: c.id,
+            name: c.name,
+            relationship: c.relationship,
+            phone: c.phone,
+            priority: c.priority === 'PRIMARY' ? 'Primary Contact' : 'Secondary Contact',
+          }))
+        );
+      }
+    } catch { }
+  };
+
   useEffect(() => {
-    const savedMembers = localStorage.getItem('user_family_members');
-    if (savedMembers) {
-      try {
-        setMembers(JSON.parse(savedMembers));
-      } catch (e) {
-        console.error(e);
-      }
-    }
-    const savedEmergency = localStorage.getItem('user_emergency_contacts');
-    if (savedEmergency) {
-      try {
-        setEmergencyContacts(JSON.parse(savedEmergency));
-      } catch (e) {
-        console.error(e);
-      }
-    }
+    loadFamilyData();
   }, []);
 
   const showToast = (msg: string) => {
@@ -125,84 +245,92 @@ export const FamilyConnectView: React.FC<FamilyConnectViewProps> = ({
     setTimeout(() => setToastMessage(null), 3000);
   };
 
-  const saveMembersState = (newMembers: FamilyMember[]) => {
-    setMembers(newMembers);
-    localStorage.setItem('user_family_members', JSON.stringify(newMembers));
+  // HANDLERS (Persisted in MySQL)
+  const handleSendInvitation = async (newReq: PendingRequest) => {
+    try {
+      await patientExtendedApi.createFamilyConnection({
+        memberName: newReq.name,
+        relationship: (newReq as any).relationship || 'Family',
+        contact: (newReq as any).contact || (newReq as any).phone || 'Not provided',
+        email: (newReq as any).email || undefined,
+      });
+      await loadFamilyData();
+      showToast(`✓ Family connection for ${newReq.name} saved to MySQL`);
+    } catch {
+      showToast('Failed to add family connection');
+    }
   };
 
-  const saveEmergencyState = (newEmergency: EmergencyContact[]) => {
-    setEmergencyContacts(newEmergency);
-    localStorage.setItem('user_emergency_contacts', JSON.stringify(newEmergency));
+  const handleAcceptRequest = async (reqId: string, reqName: string) => {
+    try {
+      await patientExtendedApi.updateFamilyConnection(reqId, { status: 'CONNECTED' });
+      setPendingRequests((prev) => prev.filter((r) => r.id !== reqId));
+      await loadFamilyData();
+      showToast(`✓ ${reqName} connected to family care vault`);
+    } catch {
+      showToast('Failed to accept request');
+    }
   };
 
-  // HANDLERS
-  const handleSendInvitation = (newReq: PendingRequest) => {
-    setPendingRequests([newReq, ...pendingRequests]);
-    showToast(`✓ Mock invitation sent to ${newReq.name}`);
-  };
-
-  const handleAcceptRequest = (reqId: string, reqName: string) => {
-    setPendingRequests(pendingRequests.filter((r) => r.id !== reqId));
-    const newMember: FamilyMember = {
-      id: `MEM-${Date.now().toString().slice(-4)}`,
-      name: reqName,
-      relationship: 'Mother',
-      status: 'Connected',
-      avatarUrl: 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=300&q=80',
-      connectedSince: 'Today',
-      sharedItemsCount: 2,
-      lastActivity: 'Just now'
-    };
-    saveMembersState([...members, newMember]);
-    showToast(`✓ ${reqName} connected to family care vault`);
-  };
-
-  const handleDeclineRequest = (reqId: string) => {
-    setPendingRequests(pendingRequests.filter((r) => r.id !== reqId));
+  const handleDeclineRequest = async (reqId: string) => {
+    await patientExtendedApi.updateFamilyConnection(reqId, { status: 'DECLINED' }).catch(() => { });
+    setPendingRequests((prev) => prev.filter((r) => r.id !== reqId));
     showToast('Invitation declined');
   };
 
-  const handleRemoveConnection = (memberId: string) => {
-    const target = members.find((m) => m.id === memberId);
-    if (target) {
-      const updatedMembers = members.filter((m) => m.id !== memberId);
-      saveMembersState(updatedMembers);
-      setRemovedMembers([{ ...target, status: 'Removed' }, ...removedMembers]);
-      showToast(`Removed connection with ${target.name}`);
+  const handleRemoveConnection = async (memberId: string) => {
+    try {
+      await patientExtendedApi.updateFamilyConnection(memberId, { status: 'REMOVED' });
+      await loadFamilyData();
+      showToast('Removed family connection in database');
+    } catch {
+      showToast('Failed to remove connection');
     }
   };
 
-  const handleReconnect = (memberId: string) => {
-    const target = removedMembers.find((m) => m.id === memberId);
-    if (target) {
-      setRemovedMembers(removedMembers.filter((m) => m.id !== memberId));
-      saveMembersState([...members, { ...target, status: 'Connected' }]);
-      showToast(`✓ Reconnected with ${target.name}`);
+  const handleReconnect = async (memberId: string) => {
+    try {
+      await patientExtendedApi.updateFamilyConnection(memberId, { status: 'CONNECTED' });
+      await loadFamilyData();
+      showToast('✓ Reconnected family member');
+    } catch {
+      showToast('Failed to reconnect member');
     }
   };
 
-  const handleSavePermissions = (updated: SharingPermissionState) => {
-    const existingIndex = permissions.findIndex((p) => p.memberId === updated.memberId);
-    if (existingIndex >= 0) {
-      const copy = [...permissions];
-      copy[existingIndex] = updated;
-      setPermissions(copy);
-    } else {
-      setPermissions([...permissions, updated]);
+  const handleSavePermissions = async (updated: SharingPermissionState) => {
+    try {
+      await patientExtendedApi.updateFamilyConnection(updated.memberId, { permissions: updated });
+      await loadFamilyData();
+      showToast('✓ Sharing permissions saved to MySQL');
+    } catch {
+      showToast('Failed to save permissions');
     }
-    showToast('✓ Sharing permissions updated');
   };
 
-  const handleAddEmergencyContact = (newContact: EmergencyContact) => {
-    const updated = [newContact, ...emergencyContacts];
-    saveEmergencyState(updated);
-    showToast('✓ Emergency contact saved');
+  const handleAddEmergencyContact = async (newContact: EmergencyContact) => {
+    try {
+      await patientClinicalApi.createEmergencyContact({
+        name: newContact.name,
+        relationship: newContact.relationship,
+        phone: newContact.phone,
+        priority: newContact.priority === 'Primary Contact' ? 'PRIMARY' : 'SECONDARY',
+      });
+      await loadFamilyData();
+      showToast('✓ Emergency contact saved to MySQL');
+    } catch {
+      showToast('Failed to save emergency contact');
+    }
   };
 
-  const handleDeleteEmergencyContact = (id: string) => {
-    const updated = emergencyContacts.filter((c) => c.id !== id);
-    saveEmergencyState(updated);
-    showToast('✓ Emergency contact removed');
+  const handleDeleteEmergencyContact = async (id: string) => {
+    try {
+      await patientClinicalApi.deleteEmergencyContact(id);
+      await loadFamilyData();
+      showToast('✓ Emergency contact removed');
+    } catch {
+      showToast('Failed to remove emergency contact');
+    }
   };
 
   return (
@@ -330,45 +458,51 @@ export const FamilyConnectView: React.FC<FamilyConnectViewProps> = ({
             };
 
             return (
-            <div key={mem.id} className="bg-white dark:bg-slate-900 p-5 rounded-3xl border border-slate-200/80 dark:border-slate-800 space-y-4 shadow-[0_4px_20px_-4px_rgba(0,0,0,0.05)] hover:shadow-[0_8px_30px_-4px_rgba(0,168,150,0.15)] group hover:border-[#00a896]/30 transition-all duration-300 relative">
-              <div className="flex items-center gap-3">
-                <div className="relative">
-                  <img
-                    src={mem.avatarUrl}
-                    alt={mem.name}
-                    className="w-12 h-12 rounded-2xl object-cover border-2 border-slate-100 dark:border-slate-800 group-hover:border-teal-500/40 transition-colors shadow-sm"
-                  />
-                  <div className="absolute -bottom-1 -right-1 w-3.5 h-3.5 bg-emerald-500 rounded-full border-2 border-white dark:border-slate-900 shadow-sm" />
+              <div key={mem.id} className="bg-white dark:bg-slate-900 p-5 rounded-3xl border border-slate-200/80 dark:border-slate-800 space-y-4 shadow-[0_4px_20px_-4px_rgba(0,0,0,0.05)] hover:shadow-[0_8px_30px_-4px_rgba(0,168,150,0.15)] group hover:border-[#00a896]/30 transition-all duration-300 relative">
+                <div className="flex items-center gap-3">
+                  <div className="relative">
+                    {mem.avatarUrl ? (
+                      <img
+                        src={mem.avatarUrl}
+                        alt={mem.name}
+                        className="w-12 h-12 rounded-2xl object-cover border-2 border-slate-100 dark:border-slate-800 group-hover:border-teal-500/40 transition-colors shadow-sm"
+                      />
+                    ) : (
+                      <div className="w-12 h-12 rounded-2xl bg-teal-500/15 text-[#00a896] font-extrabold text-sm flex items-center justify-center border-2 border-slate-100 dark:border-slate-800 shadow-sm">
+                        {mem.name?.slice(0, 2).toUpperCase() || 'FM'}
+                      </div>
+                    )}
+                    <div className="absolute -bottom-1 -right-1 w-3.5 h-3.5 bg-emerald-500 rounded-full border-2 border-white dark:border-slate-900 shadow-sm" />
+                  </div>
+                  <div>
+                    <h4 className="font-extrabold text-slate-900 dark:text-white text-sm line-clamp-1">{mem.name}</h4>
+                    <span className={`text-[9px] font-extrabold px-2 py-0.5 mt-0.5 inline-block rounded-full ring-1 uppercase tracking-wider ${getRoleColor(mem.relationship)}`}>
+                      {mem.relationship}
+                    </span>
+                  </div>
                 </div>
-                <div>
-                  <h4 className="font-extrabold text-slate-900 dark:text-white text-sm line-clamp-1">{mem.name}</h4>
-                  <span className={`text-[9px] font-extrabold px-2 py-0.5 mt-0.5 inline-block rounded-full ring-1 uppercase tracking-wider ${getRoleColor(mem.relationship)}`}>
-                    {mem.relationship}
-                  </span>
+
+                <div className="space-y-2 text-[11px] text-slate-600 dark:text-slate-400 border-t border-slate-100 dark:border-slate-800/80 pt-3">
+                  <div className="flex justify-between items-center"><span>{t('family.records_synced', 'Shared Items:')}</span><span className="font-mono bg-[#00a896]/10 text-[#00897b] dark:text-cyan-400 px-1.5 py-0.5 rounded font-bold">{mem.sharedItemsCount} items</span></div>
+                  <div className="flex justify-between items-center"><span>Last Activity:</span><span className="text-slate-800 dark:text-slate-300 font-semibold">{mem.lastActivity}</span></div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2 pt-2">
+                  <button
+                    onClick={() => setProfileDrawerTarget(mem)}
+                    className="py-2.5 px-2 rounded-xl bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 border border-slate-200/80 dark:border-slate-700 text-slate-700 dark:text-slate-200 text-[11px] font-bold transition-colors cursor-pointer shadow-sm"
+                  >
+                    {t('family.view_profile', 'View Profile')}
+                  </button>
+                  <button
+                    onClick={() => setChatDrawerTarget(mem)}
+                    className="py-2.5 px-2 rounded-xl bg-gradient-to-r from-[#00a896] to-cyan-500 hover:from-[#00897b] hover:to-cyan-600 text-slate-900 dark:text-white text-[11px] font-extrabold transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-md shadow-teal-500/20 active:scale-95"
+                  >
+                    <MessageSquare className="w-3.5 h-3.5" />
+                    <span>{t('family.message', 'Message')}</span>
+                  </button>
                 </div>
               </div>
-
-              <div className="space-y-2 text-[11px] text-slate-600 dark:text-slate-400 border-t border-slate-100 dark:border-slate-800/80 pt-3">
-                <div className="flex justify-between items-center"><span>{t('family.records_synced', 'Shared Items:')}</span><span className="font-mono bg-[#00a896]/10 text-[#00897b] dark:text-cyan-400 px-1.5 py-0.5 rounded font-bold">{mem.sharedItemsCount} items</span></div>
-                <div className="flex justify-between items-center"><span>Last Activity:</span><span className="text-slate-800 dark:text-slate-300 font-semibold">{mem.lastActivity}</span></div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-2 pt-2">
-                <button
-                  onClick={() => setProfileDrawerTarget(mem)}
-                  className="py-2.5 px-2 rounded-xl bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 border border-slate-200/80 dark:border-slate-700 text-slate-700 dark:text-slate-200 text-[11px] font-bold transition-colors cursor-pointer shadow-sm"
-                >
-                  {t('family.view_profile', 'View Profile')}
-                </button>
-                <button
-                  onClick={() => setChatDrawerTarget(mem)}
-                  className="py-2.5 px-2 rounded-xl bg-gradient-to-r from-[#00a896] to-cyan-500 hover:from-[#00897b] hover:to-cyan-600 text-slate-900 dark:text-white text-[11px] font-extrabold transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-md shadow-teal-500/20 active:scale-95"
-                >
-                  <MessageSquare className="w-3.5 h-3.5" />
-                  <span>{t('family.message', 'Message')}</span>
-                </button>
-              </div>
-            </div>
             );
           })}
         </div>
@@ -441,7 +575,7 @@ export const FamilyConnectView: React.FC<FamilyConnectViewProps> = ({
                     <h4 className="font-extrabold text-slate-900 dark:text-white leading-tight">{apt.doctorName}</h4>
                     <p className="text-[11px] text-[#00a896] dark:text-teal-400 font-extrabold mt-0.5">{apt.speciality} • {apt.type}</p>
                   </div>
-                  <span className="font-mono text-[#00897b] dark:text-cyan-300 font-bold bg-teal-50 dark:bg-teal-900/30 px-2 py-1 rounded-lg text-[10px] text-right shrink-0">{apt.date}<br/>{apt.time}</span>
+                  <span className="font-mono text-[#00897b] dark:text-cyan-300 font-bold bg-teal-50 dark:bg-teal-900/30 px-2 py-1 rounded-lg text-[10px] text-right shrink-0">{apt.date}<br />{apt.time}</span>
                 </div>
 
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between pt-3 border-t border-slate-100 dark:border-slate-800 gap-2">
@@ -509,7 +643,7 @@ export const FamilyConnectView: React.FC<FamilyConnectViewProps> = ({
       <div className="bg-gradient-to-r from-rose-50/80 to-white dark:from-rose-950/20 dark:to-slate-900/80 border border-rose-200/80 dark:border-rose-900/50 rounded-3xl p-6 sm:p-8 space-y-5 shadow-xl relative overflow-hidden group">
         <div className="absolute left-0 top-0 w-1 h-full bg-rose-400 dark:bg-rose-500 rounded-l-3xl opacity-80" />
         <div className="absolute right-0 top-0 w-64 h-64 bg-rose-500/5 rounded-full blur-3xl -z-10" />
-        
+
         <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 border-b border-rose-100 dark:border-rose-900/50 pb-4">
           <div className="flex items-center gap-3">
             <div className="p-2.5 rounded-xl bg-rose-100 dark:bg-rose-900/40 text-rose-600 dark:text-rose-400">
@@ -588,15 +722,46 @@ export const FamilyConnectView: React.FC<FamilyConnectViewProps> = ({
         member={chatDrawerTarget}
         isOpen={!!chatDrawerTarget}
         onClose={() => setChatDrawerTarget(null)}
+        onMessageSent={loadFamilyData}
       />
 
       <ShareAppointmentModal
         isOpen={shareAptModalOpen}
         onClose={() => setShareAptModalOpen(false)}
         members={members}
-        onShare={(apt) => {
-          setSharedAppointments([apt, ...sharedAppointments]);
-          showToast('✓ Appointment shared with family');
+        onShare={async (apt) => {
+          const targetMembers = members.filter((m) =>
+            apt.sharedWith.some((label) => label.includes(m.name))
+          );
+          const recipients = targetMembers.length > 0 ? targetMembers : members.slice(0, 1);
+          if (recipients.length === 0) {
+            showToast('Add a connected family member first to share appointments');
+            return;
+          }
+          try {
+            await Promise.all(
+              recipients.map((m) =>
+                patientExtendedApi.shareFamilyItem({
+                  connectionId: m.id,
+                  itemType: 'APPOINTMENT',
+                  itemId: apt.id,
+                  title: apt.doctorName,
+                  metadata: {
+                    doctorName: apt.doctorName,
+                    speciality: apt.speciality,
+                    type: apt.type,
+                    date: apt.date,
+                    time: apt.time,
+                    status: apt.status,
+                  },
+                })
+              )
+            );
+            await loadFamilyData();
+            showToast('✓ Appointment shared with family in database');
+          } catch {
+            showToast('Failed to share appointment');
+          }
         }}
       />
 
@@ -604,9 +769,37 @@ export const FamilyConnectView: React.FC<FamilyConnectViewProps> = ({
         isOpen={shareRemModalOpen}
         onClose={() => setShareRemModalOpen(false)}
         members={members}
-        onShare={(rem) => {
-          setSharedReminders([rem, ...sharedReminders]);
-          showToast('✓ Reminder shared with family');
+        onShare={async (rem) => {
+          const targetMembers = members.filter((m) =>
+            rem.sharedWith.some((label) => label.includes(m.name))
+          );
+          const recipients = targetMembers.length > 0 ? targetMembers : members.slice(0, 1);
+          if (recipients.length === 0) {
+            showToast('Add a connected family member first to share reminders');
+            return;
+          }
+          try {
+            await Promise.all(
+              recipients.map((m) =>
+                patientExtendedApi.shareFamilyItem({
+                  connectionId: m.id,
+                  itemType: 'REMINDER',
+                  itemId: rem.id,
+                  title: rem.title,
+                  metadata: {
+                    title: rem.title,
+                    dosage: rem.dosage,
+                    time: rem.time,
+                    status: rem.status,
+                  },
+                })
+              )
+            );
+            await loadFamilyData();
+            showToast('✓ Reminder shared with family in database');
+          } catch {
+            showToast('Failed to share reminder');
+          }
         }}
       />
 

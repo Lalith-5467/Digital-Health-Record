@@ -82,7 +82,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
           return parsed.name.trim();
         }
       }
-    } catch {}
+    } catch { }
 
     return '';
   };
@@ -182,29 +182,9 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
   };
 
   const handleSaveProfile = async (newData: ProfileFormData) => {
-    setProfileData(newData);
-    
-    // Save locally
-    try {
-      localStorage.setItem('user_profile_data', JSON.stringify(newData));
-      if (user?.email) {
-        localStorage.setItem(`user_profile_data_${user.email}`, JSON.stringify(newData));
-      }
+    const parsedHeight = newData.height ? parseFloat(String(newData.height).replace(/[^0-9.]/g, '')) : undefined;
+    const parsedWeight = newData.weight ? parseFloat(String(newData.weight).replace(/[^0-9.]/g, '')) : undefined;
 
-      // Update app_user in localStorage
-      const appUserStr = localStorage.getItem('app_user');
-      if (appUserStr) {
-        const appUser = JSON.parse(appUserStr);
-        appUser.name = newData.name;
-        appUser.bloodGroup = newData.bloodGroup;
-        localStorage.setItem('app_user', JSON.stringify(appUser));
-        window.dispatchEvent(new Event('app_user_updated'));
-      }
-    } catch (e) {
-      console.error(e);
-    }
-
-    // Persist to backend database
     try {
       const { apiClient } = await import('../../services/apiClient');
       await apiClient.put('/profile/patient', {
@@ -212,13 +192,17 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
         gender: newData.gender,
         bloodGroup: newData.bloodGroup,
         address: newData.location,
+        phoneNumber: newData.phone,
         emergencyContactPhone: newData.phone,
+        ...(parsedHeight && !isNaN(parsedHeight) ? { heightCm: parsedHeight } : {}),
+        ...(parsedWeight && !isNaN(parsedWeight) ? { weightKg: parsedWeight } : {}),
       });
-    } catch (backendErr) {
-      console.warn('Backend profile update note:', backendErr);
+      setProfileData(newData);
+      window.dispatchEvent(new Event('app_user_updated'));
+      showToast(t('profile.updated_toast', '✓ Profile saved to database successfully.'));
+    } catch (backendErr: any) {
+      showToast(backendErr?.message || 'Failed to save profile to database.');
     }
-
-    showToast(t('profile.updated_toast', '✓ Profile updated successfully.'));
   };
 
   return (

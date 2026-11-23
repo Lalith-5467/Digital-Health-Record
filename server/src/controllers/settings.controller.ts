@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { prisma } from '../config/prisma';
+import { invalidateRbacCache } from '../middleware/role.middleware';
 
 export const DEFAULT_BRANDING = {
   appName: 'MediCare Digital Health Record',
@@ -489,7 +490,24 @@ export const getAdminSettings = async (_req: Request, res: Response, next: NextF
  */
 export const updateSettings = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
+    if (req.user?.isViewOnly) {
+      res.status(403).json({
+        success: false,
+        message: 'Access denied: View-only Super Administrator accounts cannot modify platform settings.',
+      });
+      return;
+    }
+
+    if (req.user?.isHospitalAdmin) {
+      res.status(403).json({
+        success: false,
+        message: 'Access denied: Hospital administrators are restricted to their institutional portal and cannot modify platform-wide system settings.',
+      });
+      return;
+    }
+
     const isSuperAdmin = req.user?.role === 'SUPER_ADMIN';
+    const isOriginalSuperAdmin = Boolean(req.user?.isOriginalSuperAdmin && !req.user?.isViewOnly);
     const {
       hospitalName,
       tagline,
@@ -512,18 +530,18 @@ export const updateSettings = async (req: Request, res: Response, next: NextFunc
       asDraft = false,
     } = req.body;
 
-    if (publish && !isSuperAdmin) {
+    if (publish && !isOriginalSuperAdmin) {
       res.status(403).json({
         success: false,
-        message: 'Only Super Administrators are authorized to publish global live frontend configurations.',
+        message: 'Only the Original Root Super Administrator is authorized to publish global live frontend configurations.',
       });
       return;
     }
 
-    if (maintenanceMode !== undefined && !isSuperAdmin) {
+    if (maintenanceMode !== undefined && !isOriginalSuperAdmin) {
       res.status(403).json({
         success: false,
-        message: 'Only Super Administrators are authorized to modify global maintenance mode.',
+        message: 'Only the Original Root Super Administrator is authorized to modify global maintenance mode.',
       });
       return;
     }
@@ -739,6 +757,14 @@ export const updateSettings = async (req: Request, res: Response, next: NextFunc
  */
 export const publishDraftSettings = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
+    if (req.user?.role !== 'SUPER_ADMIN' || !req.user?.isOriginalSuperAdmin || req.user?.isViewOnly) {
+      res.status(403).json({
+        success: false,
+        message: 'Access denied: Only the Original Root Super Administrator is authorized to publish global configurations.',
+      });
+      return;
+    }
+
     const raw = await getOrCreateSystemSetting();
     const draft = safeJsonParse<any>(raw.draftConfig, null);
 
@@ -806,7 +832,7 @@ export const publishDraftSettings = async (req: Request, res: Response, next: Ne
           ipAddress: req.ip || '127.0.0.1',
         },
       });
-    } catch {}
+    } catch { }
 
     res.status(200).json({
       success: true,
@@ -823,6 +849,14 @@ export const publishDraftSettings = async (req: Request, res: Response, next: Ne
  */
 export const resetSettingsToDefault = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
+    if (req.user?.role !== 'SUPER_ADMIN' || !req.user?.isOriginalSuperAdmin || req.user?.isViewOnly) {
+      res.status(403).json({
+        success: false,
+        message: 'Access denied: Only the Original Root Super Administrator is authorized to reset platform settings.',
+      });
+      return;
+    }
+
     const updaterIdentifier = req.user?.id || req.user?.email || 'SUPER_ADMIN';
 
     const updated = await prisma.systemSetting.update({
@@ -854,6 +888,8 @@ export const resetSettingsToDefault = async (req: Request, res: Response, next: 
         updatedBy: updaterIdentifier,
       },
     });
+
+    invalidateRbacCache();
 
     res.status(200).json({
       success: true,
@@ -887,6 +923,14 @@ export const getRbacMatrix = async (_req: Request, res: Response, next: NextFunc
  */
 export const updateRbacMatrix = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
+    if (req.user?.role !== 'SUPER_ADMIN' || !req.user?.isOriginalSuperAdmin || req.user?.isViewOnly) {
+      res.status(403).json({
+        success: false,
+        message: 'Access denied: Only the Original Root Super Administrator is authorized to modify the RBAC permissions matrix.',
+      });
+      return;
+    }
+
     const { matrix } = req.body;
     if (!matrix || typeof matrix !== 'object') {
       res.status(400).json({
@@ -906,6 +950,8 @@ export const updateRbacMatrix = async (req: Request, res: Response, next: NextFu
       },
     });
 
+    invalidateRbacCache();
+
     try {
       await prisma.auditLog.create({
         data: {
@@ -920,7 +966,7 @@ export const updateRbacMatrix = async (req: Request, res: Response, next: NextFu
           ipAddress: req.ip || '127.0.0.1',
         },
       });
-    } catch {}
+    } catch { }
 
     res.status(200).json({
       success: true,
@@ -937,6 +983,11 @@ export const updateRbacMatrix = async (req: Request, res: Response, next: NextFu
  */
 export const createRoleAnnouncement = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
+    if (req.user?.isViewOnly || req.user?.isHospitalAdmin) {
+      res.status(403).json({ success: false, message: 'Access denied: View-only accounts and Hospital Administrators cannot modify role dashboard configuration.' });
+      return;
+    }
+
     const role = String(req.params.role || '');
     const { title, message, type = 'info', priority = 'normal', enabled = false, startDate, endDate } = req.body;
 
@@ -997,6 +1048,11 @@ export const createRoleAnnouncement = async (req: Request, res: Response, next: 
  */
 export const updateRoleAnnouncement = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
+    if (req.user?.isViewOnly || req.user?.isHospitalAdmin) {
+      res.status(403).json({ success: false, message: 'Access denied: View-only accounts and Hospital Administrators cannot modify role dashboard configuration.' });
+      return;
+    }
+
     const role = String(req.params.role || '');
     const id = String(req.params.id || '');
     const { title, message, type, priority, enabled, startDate, endDate } = req.body;
@@ -1073,6 +1129,11 @@ export const updateRoleAnnouncement = async (req: Request, res: Response, next: 
  */
 export const deleteRoleAnnouncement = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
+    if (req.user?.isViewOnly || req.user?.isHospitalAdmin) {
+      res.status(403).json({ success: false, message: 'Access denied: View-only accounts and Hospital Administrators cannot modify role dashboard configuration.' });
+      return;
+    }
+
     const role = String(req.params.role || '');
     const id = String(req.params.id || '');
 
@@ -1123,6 +1184,11 @@ export const deleteRoleAnnouncement = async (req: Request, res: Response, next: 
  */
 export const toggleRoleAnnouncement = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
+    if (req.user?.isViewOnly || req.user?.isHospitalAdmin) {
+      res.status(403).json({ success: false, message: 'Access denied: View-only accounts and Hospital Administrators cannot modify role dashboard configuration.' });
+      return;
+    }
+
     const role = String(req.params.role || '');
     const id = String(req.params.id || '');
 
@@ -1185,6 +1251,11 @@ export const toggleRoleAnnouncement = async (req: Request, res: Response, next: 
  */
 export const updateRoleWidgets = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
+    if (req.user?.isViewOnly || req.user?.isHospitalAdmin) {
+      res.status(403).json({ success: false, message: 'Access denied: View-only accounts and Hospital Administrators cannot modify role dashboard configuration.' });
+      return;
+    }
+
     const role = String(req.params.role || '');
     const { widgets, widgetList } = req.body;
 
@@ -1252,6 +1323,11 @@ export const updateRoleWidgets = async (req: Request, res: Response, next: NextF
  */
 export const resetRoleWidgets = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
+    if (req.user?.isViewOnly || req.user?.isHospitalAdmin) {
+      res.status(403).json({ success: false, message: 'Access denied: View-only accounts and Hospital Administrators cannot modify role dashboard configuration.' });
+      return;
+    }
+
     const role = String(req.params.role || '');
 
     const currentSetting = await getOrCreateSystemSetting();

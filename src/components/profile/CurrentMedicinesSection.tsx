@@ -1,6 +1,7 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { Pill, ArrowRight } from 'lucide-react';
 import { useLanguage } from '../../context/LanguageContext';
+import { medicineApi } from '../../services/dhrApis';
 
 interface CurrentMedicinesSectionProps {
   onNavigate: (id: string) => void;
@@ -8,11 +9,24 @@ interface CurrentMedicinesSectionProps {
 
 export const CurrentMedicinesSection: React.FC<CurrentMedicinesSectionProps> = ({ onNavigate }) => {
   const { t } = useLanguage();
-  const meds = [
-    { id: 1, name: 'Medicine A (Amoxicillin)', dosage: '500 mg', freq: 'Twice daily after meals' },
-    { id: 2, name: 'Medicine B (Metformin)', dosage: '10 mg', freq: 'Once daily after lunch' },
-    { id: 3, name: 'Medicine C (Atorvastatin)', dosage: '5 mg', freq: 'Once daily before bedtime' }
-  ];
+  const [meds, setMeds] = useState<Array<{ id: string; name: string; dosage: string; freq: string }>>([]);
+
+  useEffect(() => {
+    medicineApi
+      .getActiveMedications()
+      .then((res) => {
+        const list = res?.data?.medications || [];
+        setMeds(
+          list.slice(0, 5).map((m: any) => ({
+            id: m.id,
+            name: m.name,
+            dosage: `${m.dosage || ''} ${m.unit || ''}`.trim(),
+            freq: m.frequency || 'As prescribed',
+          }))
+        );
+      })
+      .catch(() => setMeds([]));
+  }, []);
 
   return (
     <div className="p-6 rounded-3xl bg-white dark:bg-[#0f172a] border border-slate-200/80 dark:border-slate-800 shadow-xl space-y-4">
@@ -26,7 +40,7 @@ export const CurrentMedicinesSection: React.FC<CurrentMedicinesSectionProps> = (
               {t('profile.current_medicines', 'Current Medications')}
             </h3>
             <span className="text-[11px] text-slate-500 dark:text-slate-400">
-              3 {t('meds.active_prescriptions', 'Active Prescriptions')}
+              {meds.length} {t('meds.active_prescriptions', 'Active Prescriptions')}
             </span>
           </div>
         </div>
@@ -40,33 +54,39 @@ export const CurrentMedicinesSection: React.FC<CurrentMedicinesSectionProps> = (
         </button>
       </div>
 
-      <div className="space-y-2.5">
-        {meds.map((m) => (
-          <div
-            key={m.id}
-            onClick={() => onNavigate('medicines')}
-            className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200/60 dark:border-slate-800 hover:border-amber-500/30 flex items-center justify-between gap-3 transition-all cursor-pointer group"
-          >
-            <div className="flex items-center gap-3 min-w-0">
-              <div className="p-2 rounded-xl bg-amber-500/10 text-amber-500 border border-amber-500/20 shrink-0">
-                <Pill className="w-4 h-4" />
+      {meds.length === 0 ? (
+        <div className="p-5 text-center rounded-2xl bg-slate-50 dark:bg-slate-900/60 border border-dashed border-slate-300 dark:border-slate-800">
+          <p className="text-xs text-slate-500 dark:text-slate-400 font-semibold">No active medications recorded yet.</p>
+        </div>
+      ) : (
+        <div className="space-y-2.5">
+          {meds.map((m) => (
+            <div
+              key={m.id}
+              onClick={() => onNavigate('medicines')}
+              className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200/60 dark:border-slate-800 hover:border-amber-500/30 flex items-center justify-between gap-3 transition-all cursor-pointer group"
+            >
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="p-2 rounded-xl bg-amber-500/10 text-amber-500 border border-amber-500/20 shrink-0">
+                  <Pill className="w-4 h-4" />
+                </div>
+                <div className="min-w-0">
+                  <h4 className="text-xs font-bold text-slate-900 dark:text-white truncate group-hover:text-amber-500 transition-colors">
+                    {m.name}
+                  </h4>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                    {m.dosage} • <span className="font-semibold text-slate-700 dark:text-slate-300">{m.freq}</span>
+                  </p>
+                </div>
               </div>
-              <div className="min-w-0">
-                <h4 className="text-xs font-bold text-slate-900 dark:text-white truncate group-hover:text-amber-500 transition-colors">
-                  {m.name}
-                </h4>
-                <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                  {m.dosage} • <span className="font-semibold text-slate-700 dark:text-slate-300">{m.freq}</span>
-                </p>
-              </div>
-            </div>
 
-            <span className="text-[10px] font-bold text-amber-500 bg-amber-500/10 border border-amber-500/20 px-2.5 py-1 rounded-full shrink-0">
-              {t('status.active', 'Active Prescribed')}
-            </span>
-          </div>
-        ))}
-      </div>
+              <span className="text-[10px] font-bold text-amber-500 bg-amber-500/10 border border-amber-500/20 px-2.5 py-1 rounded-full shrink-0">
+                {t('status.active', 'Active Prescribed')}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 };

@@ -97,7 +97,7 @@ export const InsuranceProfileView: React.FC<InsuranceProfileViewProps> = ({ insu
           { id: 'current', label: 'Current Claim', icon: AlertTriangle, badge: record.currentClaim ? 1 : 0 },
           { id: 'policy', label: 'Policy Details', icon: ShieldCheck },
           { id: 'coverage', label: 'Coverage', icon: FileCheck },
-          { id: 'documents', label: 'Documents', icon: FileText, badge: record.currentClaim?.documents.filter(d => d.status === 'Missing').length || 0 },
+          { id: 'documents', label: 'Documents', icon: FileText, badge: [...(record.policyDocuments || []), ...(record.currentClaim?.documents || [])].filter(d => d.status !== 'Verified').length },
           { id: 'past', label: 'Past Claims', icon: History },
           { id: 'timeline', label: 'Timeline', icon: Clock },
         ].map(tab => (
@@ -494,7 +494,7 @@ const CurrentClaimTab = ({ record, updateCurrentClaimStatus }: { record: Insuran
 
 const PolicyTab = ({ record }: { record: InsurancePolicyRecord }) => {
   const { t } = useLanguage();
-  const percentUsed = Math.round((record.usedCoverage / record.coverageAmount) * 100);
+  const percentUsed = record.coverageAmount > 0 ? Math.min(100, Math.round((record.usedCoverage / record.coverageAmount) * 100)) : 0;
   
   return (
     <div className="bg-white dark:bg-slate-900 rounded-3xl p-6 sm:p-8 border border-slate-200 dark:border-slate-800 shadow-sm space-y-8">
@@ -527,9 +527,24 @@ const PolicyTab = ({ record }: { record: InsurancePolicyRecord }) => {
 
 const DocumentsTab = ({ record, updateDocumentStatus }: { record: InsurancePolicyRecord, updateDocumentStatus: any }) => {
   const { t } = useLanguage();
-  const docs = record.currentClaim?.documents || [];
+  const [verifyingId, setVerifyingId] = useState<string | null>(null);
+  const policyDocs = record.policyDocuments || [];
+  const claimDocs = record.currentClaim?.documents || [];
+  const docs = [...policyDocs, ...claimDocs.filter((cd) => !policyDocs.some((pd) => pd.id === cd.id))];
+
+  const handleVerify = async (docId: string, docName: string) => {
+    setVerifyingId(docId);
+    try {
+      await updateDocumentStatus(record.insuranceId, docId, 'Verified');
+      showGlobalToast(`Document "${docName}" verified & persisted to database.`, 'success', 'Document Verified');
+    } catch (err: any) {
+      showGlobalToast(err?.message || 'Failed to verify document status.', 'error', 'Verification Failed');
+    } finally {
+      setVerifyingId(null);
+    }
+  };
   
-  if (docs.length === 0) return <p className="p-6 text-slate-500 font-bold">No documents attached to current claim.</p>;
+  if (docs.length === 0) return <p className="p-6 text-slate-500 font-bold">No documents attached to this policy or claim yet.</p>;
 
   return (
     <div className="bg-white dark:bg-slate-900 rounded-3xl p-6 sm:p-8 border border-slate-200 dark:border-slate-800 shadow-sm">
@@ -553,12 +568,13 @@ const DocumentsTab = ({ record, updateDocumentStatus }: { record: InsurancePolic
               }`}>
                 {t(doc.status)}
               </span>
-              {doc.status === 'Missing' && (
+              {doc.status !== 'Verified' && (
                 <button 
-                  onClick={() => updateDocumentStatus(record.insuranceId, doc.id, 'Verified')}
-                  className="px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-600 font-black text-xs rounded-lg transition-colors cursor-pointer"
+                  disabled={verifyingId === doc.id}
+                  onClick={() => handleVerify(doc.id, doc.name)}
+                  className="px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-600 font-black text-xs rounded-lg transition-colors cursor-pointer disabled:opacity-50"
                 >
-                  {t('Mark Verified', 'Mark Verified')}
+                  {verifyingId === doc.id ? 'Verifying...' : t('Mark Verified', 'Mark Verified')}
                 </button>
               )}
             </div>

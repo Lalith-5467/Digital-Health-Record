@@ -84,7 +84,7 @@ export const ROLE_WIDGET_CATALOGS: Record<string, Array<{ key: string; label: st
   ],
   superAdmin: [
     { key: 'authorityNode', label: 'Directorate Governance Node', description: 'National healthcare gateway governance hub', colSpan: 'full', removable: false },
-    { key: 'adminManagement', label: 'Hospital Administrator Console', description: 'Branch administrators and administrative rights', colSpan: 'half', removable: true },
+    { key: 'adminManagement', label: 'Administrator Accounts Console', description: 'Branch administrators and administrative rights', colSpan: 'half', removable: true },
     { key: 'rolesPermissions', label: 'Global RBAC Permission Matrix', description: 'Cross-system role capability and access matrix', colSpan: 'half', removable: true },
     { key: 'securityAudit', label: 'Institutional Audit & Access Logs', description: 'HIPAA and ABDM immutable security log records', colSpan: 'half', removable: false },
     { key: 'videoControl', label: 'Public Media & Video Governance', description: 'Front-facing streaming media and broadcast control', colSpan: 'half', removable: true },

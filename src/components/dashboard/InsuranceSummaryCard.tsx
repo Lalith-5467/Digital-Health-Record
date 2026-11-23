@@ -1,7 +1,8 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { motion } from 'framer-motion';
 import { ShieldCheck, ArrowRight } from 'lucide-react';
 import { useLanguage } from '../../context/LanguageContext';
+import { dashboardApi } from '../../services/dhrApis';
 
 interface InsuranceSummaryCardProps {
   onNavigate: (id: string) => void;
@@ -9,6 +10,15 @@ interface InsuranceSummaryCardProps {
 
 export const InsuranceSummaryCard: React.FC<InsuranceSummaryCardProps> = ({ onNavigate }) => {
   const { t } = useLanguage();
+  const [policy, setPolicy] = useState<any>(null);
+
+  useEffect(() => {
+    dashboardApi
+      .getStats()
+      .then((res) => setPolicy(res?.data?.insuranceSummary || null))
+      .catch(() => setPolicy(null));
+  }, []);
+
   return (
     <motion.div
       whileHover={{ y: -4, scale: 1.01 }}
@@ -25,12 +35,14 @@ export const InsuranceSummaryCard: React.FC<InsuranceSummaryCardProps> = ({ onNa
             <h3 className="text-base font-extrabold text-slate-900 dark:text-white tracking-tight">
               {t('card.insurance_policy', 'Insurance Policy Summary')}
             </h3>
-            <span className="text-xs text-slate-600 dark:text-slate-300 font-mono">{t('insurance_card.plan_name', 'CarePlus Family Floater')}</span>
+            <span className="text-xs text-slate-600 dark:text-slate-300 font-mono">
+              {policy?.policyName || 'No Active Policy Linked'}
+            </span>
           </div>
         </div>
 
         <span className="px-3 py-1 text-[10px] font-black uppercase bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 rounded-full border border-emerald-500/30 font-mono">
-          ● {t('card.covered', 'Active Coverage')}
+          ● {policy?.policyStatus || 'Unlinked'}
         </span>
       </div>
 
@@ -38,12 +50,18 @@ export const InsuranceSummaryCard: React.FC<InsuranceSummaryCardProps> = ({ onNa
       <div className="grid grid-cols-2 gap-3 font-mono">
         <div className="p-3 bg-slate-50 dark:bg-slate-950/80 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-0.5">
           <span className="text-[10px] text-slate-600 dark:text-slate-300 uppercase font-sans font-bold block">{t('insurance_card.total_coverage', 'Total Coverage')}</span>
-          <strong className="text-lg font-black text-slate-900 dark:text-white font-sans">₹10,00,000</strong>
+          <strong className="text-lg font-black text-slate-900 dark:text-white font-sans">
+            {policy ? `₹${Number(policy.coverageAmount || 0).toLocaleString('en-IN')}` : '₹0'}
+          </strong>
         </div>
 
         <div className="p-3 bg-slate-50 dark:bg-slate-950/80 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-0.5">
           <span className="text-[10px] text-slate-600 dark:text-slate-300 uppercase font-sans font-bold block">{t('insurance_card.policy_expiry', 'Policy Expiry')}</span>
-          <strong className="text-sm font-extrabold text-amber-700 dark:text-amber-300">31 Dec 2026</strong>
+          <strong className="text-sm font-extrabold text-amber-700 dark:text-amber-300">
+            {policy?.policyEndDate
+              ? new Date(policy.policyEndDate).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
+              : '—'}
+          </strong>
         </div>
       </div>
 

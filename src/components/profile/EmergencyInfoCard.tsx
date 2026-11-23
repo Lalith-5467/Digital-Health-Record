@@ -1,8 +1,9 @@
-import React, { useState } from 'react';
-import { ShieldAlert, PhoneCall, Building2, User, Edit3, Users, Stethoscope, ShieldPlus, HeartHandshake, AlertCircle } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { ShieldAlert, Building2, User, Edit3, Users, Stethoscope, ShieldPlus, HeartHandshake, AlertCircle } from 'lucide-react';
 import type { EmergencyInfoData } from './AddEmergencyModal';
 import { AddEmergencyModal } from './AddEmergencyModal';
 import { useLanguage } from '../../context/LanguageContext';
+import { profileApi } from '../../services/dhrApis';
 
 interface EmergencyInfoCardProps {
   onToast: (msg: string) => void;
@@ -11,22 +12,57 @@ interface EmergencyInfoCardProps {
 export const EmergencyInfoCard: React.FC<EmergencyInfoCardProps> = ({ onToast }) => {
   const { t } = useLanguage();
   const [data, setData] = useState<EmergencyInfoData>({
-    contactName: 'Anita L.',
-    relationship: 'Mother',
-    phone: '+91 98765 12345',
-    preferredHospital: 'Apollo Hospital, Greams Road',
+    contactName: 'Not Set',
+    relationship: 'Family',
+    phone: 'Not Set',
+    preferredHospital: 'Not Set',
     secondaryContact: 'N/A',
-    familyDoctor: 'Dr. Ramesh (9876543210)',
-    healthInsurance: 'Star Health (Pol: 123456)',
-    organDonor: 'Yes',
-    criticalNotes: 'None'
+    familyDoctor: 'Not Set',
+    healthInsurance: 'Not Set',
+    organDonor: 'Not Specified',
+    criticalNotes: 'None',
   });
   const [modalOpen, setModalOpen] = useState(false);
 
-  const handleSave = (newData: EmergencyInfoData) => {
-    setData(newData);
-    localStorage.setItem('emergency_info_data', JSON.stringify(newData));
-    onToast('Emergency information updated successfully!');
+  useEffect(() => {
+    profileApi
+      .getPatientProfile()
+      .then((res) => {
+        const p = res?.data;
+        if (!p) return;
+        const primaryContact = Array.isArray(p.emergencyContacts) ? p.emergencyContacts[0] : null;
+        const secondaryContact = Array.isArray(p.emergencyContacts) ? p.emergencyContacts[1] : null;
+        setData({
+          contactName: p.emergencyContactName || primaryContact?.name || 'Not Set',
+          relationship: primaryContact?.relationship || 'Family',
+          phone: p.emergencyContactPhone || primaryContact?.phone || 'Not Set',
+          preferredHospital: p.preferredHospital || 'Not Set',
+          secondaryContact: p.familyPhone || secondaryContact?.phone || 'N/A',
+          familyDoctor: p.familyDoctor || 'Not Set',
+          healthInsurance: 'Active in Insurance Portal',
+          organDonor: p.organDonor ? 'Yes' : 'No',
+          criticalNotes: p.criticalMedicalNotes || 'None',
+        });
+      })
+      .catch(() => { });
+  }, []);
+
+  const handleSave = async (newData: EmergencyInfoData) => {
+    try {
+      await profileApi.updatePatientProfile({
+        emergencyContactName: newData.contactName,
+        emergencyContactPhone: newData.phone,
+        familyPhone: newData.secondaryContact && newData.secondaryContact !== 'N/A' ? newData.secondaryContact : undefined,
+        preferredHospital: newData.preferredHospital,
+        familyDoctor: newData.familyDoctor,
+        organDonor: String(newData.organDonor).toLowerCase() === 'yes',
+        criticalMedicalNotes: newData.criticalNotes,
+      });
+      setData(newData);
+      onToast('Emergency information saved to database!');
+    } catch (err: any) {
+      onToast(err?.message || 'Failed to save emergency information');
+    }
   };
 
   return (
@@ -57,11 +93,11 @@ export const EmergencyInfoCard: React.FC<EmergencyInfoCardProps> = ({ onToast })
         </div>
 
         <div className="flex flex-col lg:flex-row gap-4">
-          
+
           {/* CONTACTS COLUMN */}
           <div className="flex-1 p-5 rounded-2xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200/60 dark:border-slate-800/80 space-y-4">
             <h4 className="text-[10px] uppercase font-bold text-slate-500 dark:text-slate-400 tracking-wider mb-1">Contacts</h4>
-            
+
             <div className="flex items-start gap-3">
               <User className="w-4 h-4 text-rose-500 dark:text-rose-400 shrink-0 mt-0.5" />
               <div>
@@ -82,7 +118,7 @@ export const EmergencyInfoCard: React.FC<EmergencyInfoCardProps> = ({ onToast })
           {/* MEDICAL DETAILS COLUMN */}
           <div className="flex-1 p-5 rounded-2xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200/60 dark:border-slate-800/80 space-y-4">
             <h4 className="text-[10px] uppercase font-bold text-slate-500 dark:text-slate-400 tracking-wider mb-1">Medical Details</h4>
-            
+
             <div className="flex items-center gap-3">
               <Stethoscope className="w-4 h-4 text-rose-500 dark:text-rose-400 shrink-0" />
               <span className="text-xs font-bold text-slate-900 dark:text-white">{data.familyDoctor || 'N/A'}</span>

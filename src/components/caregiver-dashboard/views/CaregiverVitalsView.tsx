@@ -15,7 +15,7 @@ import {
 import { useCaregiverWorkflow } from '../../../utils/caregiverWorkflowStorage';
 import { useLanguage } from '../../../context/LanguageContext';
 import { getLocalizedName } from '../../../utils/caregiverDataTranslator';
-import { vitalApi, type VitalEntity } from '../../../services/dhrApis';
+import { vitalApi, caregiverApi, type VitalEntity } from '../../../services/dhrApis';
 
 /* Custom Responsive SVG Trend Chart Component */
 interface ChartSeries {
@@ -321,9 +321,10 @@ export const CaregiverVitalsView: React.FC = () => {
     const daysLimit = dateRange === '7d' ? 7 : 30;
     const cutoff = now - (daysLimit * 24 * 60 * 60 * 1000);
 
-    const filtered = currentVitals.filter(v => {
-      if (v.rawTimestamp) {
-        return v.rawTimestamp >= cutoff;
+    const filtered = currentVitals.filter((v) => {
+      const ts = v.rawTimestamp || (v.recordedAt ? new Date(v.recordedAt).getTime() : 0);
+      if (ts) {
+        return ts >= cutoff;
       }
       return true;
     });
@@ -331,36 +332,45 @@ export const CaregiverVitalsView: React.FC = () => {
     return [...filtered].reverse();
   }, [currentVitals, dateRange]);
 
-  const handleSave = (e: React.FormEvent) => {
+  const [isSaving, setIsSaving] = useState(false);
+
+  const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!activeWard?.id) {
+      showToast('Please select a dependent ward first.');
+      return;
+    }
 
-    const newReading: VitalEntity = {
-      id: `demo-vital-${Date.now()}`,
-      patientId: activeWard.id,
-      recordedAt: new Date().toISOString(),
-      date: 'Today',
-      time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      rawTimestamp: Date.now(),
-      systolicBp: systolicBp ? parseInt(systolicBp, 10) : undefined,
-      diastolicBp: diastolicBp ? parseInt(diastolicBp, 10) : undefined,
-      bloodSugar: bloodSugar ? parseInt(bloodSugar, 10) : undefined,
-      sugarType,
-      oxygenSaturation: oxygenSaturation ? parseInt(oxygenSaturation, 10) : undefined,
-      heartRate: heartRate ? parseInt(heartRate, 10) : undefined,
-      temperature: temperature ? parseFloat(temperature) : undefined,
-      weightKg: weight ? parseFloat(weight) : undefined,
-      notes: notes || 'Caregiver observation logged.',
-      status: 'normal'
-    };
+    setIsSaving(true);
+    try {
+      await caregiverApi.logVital({
+        patientId: activeWard.id,
+        systolicBp: systolicBp ? parseInt(systolicBp, 10) : undefined,
+        diastolicBp: diastolicBp ? parseInt(diastolicBp, 10) : undefined,
+        bloodSugar: bloodSugar ? parseInt(bloodSugar, 10) : undefined,
+        oxygenSaturation: oxygenSaturation ? parseFloat(oxygenSaturation) : undefined,
+        heartRate: heartRate ? parseInt(heartRate, 10) : undefined,
+        temperature: temperature ? parseFloat(temperature) : undefined,
+        weightKg: weight ? parseFloat(weight) : undefined,
+        notes: notes.trim() || `Caregiver observation logged (${sugarType}).`,
+      });
 
-    // Prepend new reading to currently selected dependent's mock array ONLY
-    setVitalsMap((prev) => ({
-      ...prev,
-      [activeWard.id]: [newReading, ...(prev[activeWard.id] || [])]
-    }));
+      const res = await vitalApi.getVitals(activeWard.id);
+      const data = res?.data ?? res ?? [];
+      setVitalsMap((prev) => ({
+        ...prev,
+        [activeWard.id]: Array.isArray(data) ? data : [],
+      }));
 
-    setIsLogOpen(false);
-    showToast(`New vital readings logged for ${activeWard.name}!`);
+      window.dispatchEvent(new Event('medicare_caregiver_sync'));
+      setNotes('');
+      setIsLogOpen(false);
+      showToast(`New vital readings saved to MySQL for ${activeWard.name}!`);
+    } catch (err: any) {
+      showToast(err?.message || 'Failed to save vital readings to database.');
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   return (
@@ -392,9 +402,8 @@ export const CaregiverVitalsView: React.FC = () => {
               <span>{t('caregiver.vitals.title', 'Biometrics & Vital Trends')}</span>
             </h1>
 
-            {/* DEMO DATA INDICATOR */}
-            <span className="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold uppercase bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20 tracking-wider shrink-0">
-              {t('caregiver.vitals.demo_data_badge', 'Demo Data')}
+            <span className="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold uppercase bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 tracking-wider shrink-0">
+              Live Telemetry
             </span>
           </div>
           <p className="text-xs text-slate-500 dark:text-slate-400 font-medium mt-1">
@@ -839,9 +848,10 @@ export const CaregiverVitalsView: React.FC = () => {
                   </button>
                   <button
                     type="submit"
-                    className="px-5 py-2 rounded-xl bg-teal-500 hover:bg-teal-400 text-slate-950 font-black shadow-lg shadow-teal-500/20"
+                    disabled={isSaving}
+                    className="px-5 py-2 rounded-xl bg-teal-500 hover:bg-teal-400 disabled:opacity-50 text-slate-950 font-black shadow-lg shadow-teal-500/20 cursor-pointer"
                   >
-                    {t('caregiver.vitals.save_reading', 'Save Reading')}
+                    {isSaving ? 'Saving...' : t('caregiver.vitals.save_reading', 'Save Reading')}
                   </button>
                 </div>
               </form>

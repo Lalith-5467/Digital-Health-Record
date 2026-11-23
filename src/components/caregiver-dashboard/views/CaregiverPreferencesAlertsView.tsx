@@ -1,8 +1,9 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { profileApi } from '../../../services/dhrApis';
 import { motion, AnimatePresence } from 'framer-motion';
-import { 
-  Bell, 
-  CheckCircle2, 
+import {
+  Bell,
+  CheckCircle2,
   Settings,
   MessageSquare,
   Activity,
@@ -74,10 +75,81 @@ export const CaregiverPreferencesAlertsView: React.FC = () => {
   const [privacyHideSensitive, setPrivacyHideSensitive] = useState(true);
   const [privacyRequireLock, setPrivacyRequireLock] = useState(false);
 
-  const handleSave = () => {
-    setHasChanges(false);
-    setToastMsg('Preferences saved successfully');
-    setTimeout(() => setToastMsg(null), 3000);
+  useEffect(() => {
+    profileApi
+      .getPreferences()
+      .then((res) => {
+        const extra = res?.data?.extraJson ? JSON.parse(res.data.extraJson) : null;
+        const p = extra?.caregiverPreferences;
+        if (!p) return;
+        if (p.notifTaskAssigned !== undefined) setNotifTaskAssigned(p.notifTaskAssigned);
+        if (p.notifTaskReminder !== undefined) setNotifTaskReminder(p.notifTaskReminder);
+        if (p.notifUpcomingAppt !== undefined) setNotifUpcomingAppt(p.notifUpcomingAppt);
+        if (p.notifTaskOverdue !== undefined) setNotifTaskOverdue(p.notifTaskOverdue);
+        if (p.notifCareNote !== undefined) setNotifCareNote(p.notifCareNote);
+        if (p.notifNewMessage !== undefined) setNotifNewMessage(p.notifNewMessage);
+        if (p.alertMedReminder !== undefined) setAlertMedReminder(p.alertMedReminder);
+        if (p.alertMissedMed !== undefined) setAlertMissedMed(p.alertMissedMed);
+        if (p.alertVital !== undefined) setAlertVital(p.alertVital);
+        if (p.alertHealthObs !== undefined) setAlertHealthObs(p.alertHealthObs);
+        if (p.alertLowStock !== undefined) setAlertLowStock(p.alertLowStock);
+        if (p.alertApptReminder !== undefined) setAlertApptReminder(p.alertApptReminder);
+        if (p.smsBroadcast !== undefined) setSmsBroadcast(p.smsBroadcast);
+        if (p.whatsappAlerts !== undefined) setWhatsappAlerts(p.whatsappAlerts);
+        if (p.voiceCall !== undefined) setVoiceCall(p.voiceCall);
+        if (p.quietHoursEnabled !== undefined) setQuietHoursEnabled(p.quietHoursEnabled);
+      })
+      .catch(() => { });
+  }, []);
+
+  const handleSave = async () => {
+    try {
+      await profileApi.updatePreferences({
+        emailNotifications: channelEmail,
+        smsNotifications: channelSms,
+        pushNotifications: channelPush,
+        extraJson: JSON.stringify({
+          caregiverPreferences: {
+            notifTaskAssigned,
+            notifTaskReminder,
+            notifUpcomingAppt,
+            notifTaskOverdue,
+            notifCareNote,
+            notifNewMessage,
+            alertMedReminder,
+            alertMissedMed,
+            alertVital,
+            alertHealthObs,
+            alertLowStock,
+            alertApptReminder,
+            smsBroadcast,
+            whatsappAlerts,
+            voiceCall,
+            channelInApp,
+            channelPush,
+            channelEmail,
+            channelSms,
+            channelWhatsapp,
+            defaultTaskView,
+            defaultTaskFilter,
+            taskReminder,
+            quietHoursEnabled,
+            language,
+            timeFormat,
+            dateFormat,
+            privacyPatientName,
+            privacyNotifPreview,
+            privacyHideSensitive,
+            privacyRequireLock,
+          },
+        }),
+      });
+      setHasChanges(false);
+      setToastMsg('Preferences saved to MySQL database');
+      setTimeout(() => setToastMsg(null), 3000);
+    } catch (err) {
+      console.error('Failed to save caregiver preferences:', err);
+    }
   };
 
   const Toggle = ({ checked, onChange, label, description }: any) => (
@@ -86,7 +158,7 @@ export const CaregiverPreferencesAlertsView: React.FC = () => {
         <h4 className="font-bold text-slate-900 dark:text-white">{label}</h4>
         {description && <p className="text-[11px] text-slate-500 mt-0.5 leading-tight pr-4">{description}</p>}
       </div>
-      <button 
+      <button
         onClick={() => { onChange(!checked); markChanged(); }}
         className={`p-1 rounded-full transition-colors flex items-center shrink-0 ${checked ? 'text-teal-500' : 'text-slate-300 dark:text-slate-600'}`}
       >
@@ -97,7 +169,7 @@ export const CaregiverPreferencesAlertsView: React.FC = () => {
 
   return (
     <div className="space-y-6 pb-24 relative select-none">
-      
+
       {/* TOAST */}
       <div className="fixed top-5 left-1/2 -translate-x-1/2 z-50 flex flex-col items-center pointer-events-none select-none max-w-md w-full px-4">
         <AnimatePresence>
@@ -129,11 +201,10 @@ export const CaregiverPreferencesAlertsView: React.FC = () => {
         <button
           onClick={handleSave}
           disabled={!hasChanges}
-          className={`px-4 py-2.5 rounded-xl font-black text-xs transition-all shadow-lg flex items-center gap-2 self-start md:self-auto ${
-            hasChanges 
-              ? 'bg-teal-500 hover:bg-teal-400 text-slate-950 shadow-teal-500/20' 
-              : 'bg-slate-200 text-slate-400 dark:bg-slate-800 dark:text-slate-600 shadow-none cursor-not-allowed'
-          }`}
+          className={`px-4 py-2.5 rounded-xl font-black text-xs transition-all shadow-lg flex items-center gap-2 self-start md:self-auto ${hasChanges
+            ? 'bg-teal-500 hover:bg-teal-400 text-slate-950 shadow-teal-500/20'
+            : 'bg-slate-200 text-slate-400 dark:bg-slate-800 dark:text-slate-600 shadow-none cursor-not-allowed'
+            }`}
         >
           <Save className="w-4 h-4" />
           <span>{t('caregiver.preferences.save_btn', 'Save Preferences')}</span>
@@ -141,10 +212,10 @@ export const CaregiverPreferencesAlertsView: React.FC = () => {
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-8">
-        
+
         {/* COLUMN 1 */}
         <div className="space-y-8">
-          
+
           {/* NOTIFICATION PREFERENCES */}
           <section className="space-y-4">
             <h3 className="text-xs font-black uppercase tracking-widest text-slate-500 dark:text-slate-400 flex items-center gap-2">
@@ -192,13 +263,13 @@ export const CaregiverPreferencesAlertsView: React.FC = () => {
 
         {/* COLUMN 2 */}
         <div className="space-y-8">
-          
+
           {/* EMERGENCY ALERT CHANNELS */}
           <section className="space-y-4">
             <h3 className="text-xs font-black uppercase tracking-widest text-slate-500 dark:text-slate-400 flex items-center gap-2">
               <AlertOctagon className="w-4 h-4" /> {t('caregiver.preferences.emergency_channels', 'Emergency Alert Dispatch Channels')}
             </h3>
-            
+
             <div className="p-5 rounded-2xl bg-rose-50 dark:bg-rose-900/10 border border-rose-200 dark:border-rose-900/30 flex items-center justify-between">
               <div>
                 <p className="font-black text-rose-700 dark:text-rose-400 flex items-center gap-2"><Smartphone className="w-4 h-4" /> {t('caregiver.preferences.sms_broadcast', 'Instant SMS Broadcast')}</p>
@@ -247,11 +318,10 @@ export const CaregiverPreferencesAlertsView: React.FC = () => {
                 { state: channelSms, set: setChannelSms, label: t('caregiver.preferences.sms', 'SMS') },
                 { state: channelWhatsapp, set: setChannelWhatsapp, label: t('caregiver.preferences.whatsapp', 'WhatsApp') }
               ].map((channel, i) => (
-                <label key={i} className={`flex items-center gap-2 px-4 py-2.5 rounded-xl border text-xs font-bold cursor-pointer transition-colors ${
-                  channel.state 
-                    ? 'bg-teal-50 border-teal-200 text-teal-800 dark:bg-teal-900/20 dark:border-teal-800 dark:text-teal-400' 
-                    : 'bg-white border-slate-200 text-slate-600 dark:bg-[#0b1120] dark:border-slate-800 dark:text-slate-400 hover:border-teal-300'
-                }`}>
+                <label key={i} className={`flex items-center gap-2 px-4 py-2.5 rounded-xl border text-xs font-bold cursor-pointer transition-colors ${channel.state
+                  ? 'bg-teal-50 border-teal-200 text-teal-800 dark:bg-teal-900/20 dark:border-teal-800 dark:text-teal-400'
+                  : 'bg-white border-slate-200 text-slate-600 dark:bg-[#0b1120] dark:border-slate-800 dark:text-slate-400 hover:border-teal-300'
+                  }`}>
                   <input type="checkbox" checked={channel.state} onChange={(e) => { channel.set(e.target.checked); markChanged(); }} className="hidden" />
                   <div className={`w-4 h-4 rounded flex items-center justify-center border ${channel.state ? 'bg-teal-500 border-teal-500 text-white' : 'border-slate-300 dark:border-slate-600'}`}>
                     {channel.state && <CheckCircle2 className="w-3 h-3" />}
@@ -298,7 +368,7 @@ export const CaregiverPreferencesAlertsView: React.FC = () => {
 
           {/* TASK & APP PREFERENCES */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            
+
             {/* TASK PREFERENCES */}
             <section className="space-y-4">
               <h3 className="text-xs font-black uppercase tracking-widest text-slate-500 dark:text-slate-400 flex items-center gap-2">
@@ -341,14 +411,14 @@ export const CaregiverPreferencesAlertsView: React.FC = () => {
               <div className="p-5 rounded-2xl bg-white dark:bg-[#0b1120] border border-slate-200 dark:border-slate-800 shadow-sm space-y-4 text-xs">
                 <div>
                   <label className="font-bold text-slate-700 dark:text-slate-300 block mb-1">{t('caregiver.preferences.lang_label', 'Language')}</label>
-                  <select 
-                    value={currentLang === 'ta' ? 'Tamil' : 'English'} 
-                    onChange={(e) => { 
-                      const val = e.target.value; 
-                      setLanguage(val); 
-                      setGlobalLanguage(val); 
-                      markChanged(); 
-                    }} 
+                  <select
+                    value={currentLang === 'ta' ? 'Tamil' : 'English'}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setLanguage(val);
+                      setGlobalLanguage(val);
+                      markChanged();
+                    }}
                     className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 font-bold text-slate-900 dark:text-white focus:outline-none"
                   >
                     <option value="English">English</option>
@@ -403,13 +473,13 @@ export const CaregiverPreferencesAlertsView: React.FC = () => {
               </div>
             </div>
             <div className="flex items-center gap-3 shrink-0">
-              <button 
+              <button
                 onClick={() => setHasChanges(false)}
                 className="px-4 py-2 text-xs font-bold text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 transition-colors"
               >
                 {t('caregiver.preferences.discard_changes', 'Discard Changes')}
               </button>
-              <button 
+              <button
                 onClick={handleSave}
                 className="px-5 py-2.5 rounded-xl bg-teal-500 hover:bg-teal-400 text-slate-950 font-black text-xs shadow-lg shadow-teal-500/20 transition-all flex items-center gap-2"
               >

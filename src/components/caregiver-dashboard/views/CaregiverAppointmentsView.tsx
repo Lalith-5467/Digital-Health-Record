@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
   Calendar, 
@@ -27,14 +27,47 @@ import {
 import { useCaregiverWorkflow } from '../../../utils/caregiverWorkflowStorage';
 import { useLanguage } from '../../../context/LanguageContext';
 import { getLocalizedName } from '../../../utils/caregiverDataTranslator';
-import { DEMO_APPOINTMENTS_BY_WARD, type DemoAppointment } from '../../../mocks/caregiverAppointmentsMock';
+import { type DemoAppointment } from '../../../mocks/caregiverAppointmentsMock';
+import { caregiverApi, appointmentApi } from '../../../services/dhrApis';
 
 export const CaregiverAppointmentsView: React.FC = () => {
   const { t } = useLanguage();
   const { wards, activeWard, setActiveWardId } = useCaregiverWorkflow();
 
-  // In-memory appointments dataset mapped by ward ID
-  const [appointmentsMap, setAppointmentsMap] = useState<Record<string, DemoAppointment[]>>(DEMO_APPOINTMENTS_BY_WARD);
+  const [appointmentsMap, setAppointmentsMap] = useState<Record<string, DemoAppointment[]>>({});
+
+  useEffect(() => {
+    if (!activeWard?.id) return;
+    caregiverApi
+      .getWardRecords(activeWard.id)
+      .then((res) => {
+        const raw = res?.data?.appointments || [];
+        const mapped: DemoAppointment[] = raw.map((a: any) => ({
+          id: a.id,
+          wardId: activeWard.id,
+          doctorName: a.doctor?.fullName || 'Attending Physician',
+          doctorSpecialization: a.doctor?.speciality || 'General Medicine',
+          hospitalName: a.doctor?.hospital || a.location || 'Registered Clinic',
+          appointmentDate: a.appointmentDate ? new Date(a.appointmentDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '—',
+          appointmentTime: a.slotTime || '10:00 AM',
+          appointmentType: a.type === 'VIDEO' ? 'Video Consultation' : 'In-Person',
+          status:
+            a.status === 'COMPLETED'
+              ? 'Completed'
+              : a.status === 'CANCELLED'
+              ? 'Cancelled'
+              : a.status === 'RESCHEDULED'
+              ? 'Rescheduled'
+              : 'Upcoming',
+          reason: a.reason || 'Clinical Consultation',
+          notes: a.notes || '',
+          phone: '—',
+          location: a.location || a.doctor?.hospital || 'Clinic',
+        }));
+        setAppointmentsMap((prev) => ({ ...prev, [activeWard.id]: mapped }));
+      })
+      .catch(() => {});
+  }, [activeWard?.id]);
 
   // Search and Filter states
   const [searchQuery, setSearchQuery] = useState('');
@@ -96,39 +129,57 @@ export const CaregiverAppointmentsView: React.FC = () => {
     });
   }, [currentDependentAppointments, statusFilter, typeFilter, searchQuery]);
 
-  // Cancel Action (In-memory frontend only)
-  const handleCancelAppointment = (aptId: string) => {
-    setAppointmentsMap(prev => {
-      const wardApts = prev[activeWard.id] || [];
-      const updated = wardApts.map(a => a.id === aptId ? { ...a, status: 'Cancelled' as const } : a);
-      return { ...prev, [activeWard.id]: updated };
-    });
-    showToast(t('caregiver.appointments.cancelled_toast', 'Appointment cancelled successfully. (Demo State Updated)'));
+  // Cancel Action (Persisted in MySQL)
+  const handleCancelAppointment = async (aptId: string) => {
+    try {
+      await appointmentApi.cancelAppointment(aptId);
+      setAppointmentsMap((prev) => {
+        const wardApts = prev[activeWard.id] || [];
+        const updated = wardApts.map((a) => (a.id === aptId ? { ...a, status: 'Cancelled' as const } : a));
+        return { ...prev, [activeWard.id]: updated };
+      });
+      showToast(t('caregiver.appointments.cancelled_toast', 'Appointment cancelled in database.'));
+    } catch {
+      showToast('Failed to cancel appointment.');
+    }
   };
 
-  // Reschedule Action Submit
-  const handleRescheduleSubmit = (e: React.FormEvent) => {
+  // Reschedule Action Submit (Persisted in MySQL)
+  const handleRescheduleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!reschedulingAppointment) return;
 
     const formattedDate = newDate || reschedulingAppointment.appointmentDate;
     const formattedTime = newTime || reschedulingAppointment.appointmentTime;
 
-    setAppointmentsMap(prev => {
-      const wardApts = prev[activeWard.id] || [];
-      const updated = wardApts.map(a => a.id === reschedulingAppointment.id ? { 
-        ...a, 
-        status: 'Rescheduled' as const,
-        appointmentDate: formattedDate,
-        appointmentTime: formattedTime
-      } : a);
-      return { ...prev, [activeWard.id]: updated };
-    });
+    try {
+      await appointmentApi.updateAppointment(reschedulingAppointment.id, {
+        status: 'RESCHEDULED',
+        ...(newDate ? { appointmentDate: newDate } : {}),
+        ...(newTime ? { slotTime: newTime } : {}),
+      });
+      setAppointmentsMap((prev) => {
+        const wardApts = prev[activeWard.id] || [];
+        const updated = wardApts.map((a) =>
+          a.id === reschedulingAppointment.id
+            ? {
+                ...a,
+                status: 'Rescheduled' as const,
+                appointmentDate: formattedDate,
+                appointmentTime: formattedTime,
+              }
+            : a
+        );
+        return { ...prev, [activeWard.id]: updated };
+      });
 
-    setReschedulingAppointment(null);
-    setNewDate('');
-    setNewTime('');
-    showToast(t('caregiver.appointments.rescheduled_toast', 'Appointment rescheduled successfully! (Demo State Updated)'));
+      setReschedulingAppointment(null);
+      setNewDate('');
+      setNewTime('');
+      showToast(t('caregiver.appointments.rescheduled_toast', 'Appointment rescheduled & saved to database!'));
+    } catch {
+      showToast('Failed to reschedule appointment.');
+    }
   };
 
   // Helper function for status pill styles
