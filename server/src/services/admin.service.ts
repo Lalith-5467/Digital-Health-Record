@@ -1341,7 +1341,7 @@ export class AdminService {
         if (h.departments) {
           try {
             depts = JSON.parse(h.departments);
-          } catch {}
+          } catch { }
         }
 
         // Map HospitalStatus to UI string
@@ -1443,7 +1443,7 @@ export class AdminService {
 
       let depts = ['General OPD', 'Emergency Care', 'In-Patient Ward'];
       if (dbHosp.departments) {
-        try { depts = JSON.parse(dbHosp.departments); } catch {}
+        try { depts = JSON.parse(dbHosp.departments); } catch { }
       }
 
       return {
@@ -1642,7 +1642,7 @@ export class AdminService {
           await prisma.user.update({
             where: { id: updated.adminUserId },
             data: { isActive: true, approvalStatus: 'APPROVED' as any },
-          }).catch(() => {});
+          }).catch(() => { });
         } else if (dbStatus === 'SUSPENDED' || dbStatus === 'REJECTED') {
           await prisma.$transaction([
             prisma.user.update({
@@ -1653,7 +1653,7 @@ export class AdminService {
               where: { userId: updated.adminUserId, isRevoked: false },
               data: { isRevoked: true },
             }),
-          ]).catch(() => {});
+          ]).catch(() => { });
         }
       }
 
@@ -1663,7 +1663,7 @@ export class AdminService {
 
       let depts = ['General OPD', 'Emergency Care', 'In-Patient Ward'];
       if (updated.departments) {
-        try { depts = JSON.parse(updated.departments); } catch {}
+        try { depts = JSON.parse(updated.departments); } catch { }
       }
 
       return {
