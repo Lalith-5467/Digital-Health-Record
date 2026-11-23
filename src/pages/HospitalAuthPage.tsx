@@ -86,7 +86,8 @@ export const HospitalAuthPage: React.FC<HospitalAuthPageProps> = ({
             setAuthToken(res.data.token);
             localStorage.setItem('token', res.data.token);
             localStorage.setItem('auth_token', res.data.token);
-            localStorage.setItem('admin_token', res.data.token);
+            localStorage.setItem('hospital_token', res.data.token);
+            localStorage.setItem('hospital_admin_token', res.data.token);
           }
           localStorage.setItem('app_is_logged_in', 'true');
           localStorage.setItem('app_user', JSON.stringify({

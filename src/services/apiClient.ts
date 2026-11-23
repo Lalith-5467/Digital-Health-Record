@@ -42,8 +42,9 @@ export const getAuthToken = (): string | null => {
   const isPharmaPortal = path.startsWith('/pharmacist');
   const isCaregiverPortal = path.startsWith('/caregiver');
   const isInsurancePortal = path.startsWith('/insurance');
-  const isAdminPortal = path.startsWith('/admin') || path.startsWith('/hospital');
-  const isUserPortal = path.startsWith('/user') || (!isDoctorPortal && !isNursePortal && !isPharmaPortal && !isCaregiverPortal && !isInsurancePortal && !isAdminPortal);
+  const isHospitalPortal = path.startsWith('/hospital');
+  const isAdminPortal = path.startsWith('/admin');
+  const isUserPortal = path.startsWith('/user') || (!isDoctorPortal && !isNursePortal && !isPharmaPortal && !isCaregiverPortal && !isInsurancePortal && !isAdminPortal && !isHospitalPortal);
 
   // Check role-specific token first
   if (isUserPortal) {
@@ -64,6 +65,9 @@ export const getAuthToken = (): string | null => {
   } else if (isInsurancePortal) {
     const it = localStorage.getItem('insurance_token');
     if (it) return it;
+  } else if (isHospitalPortal) {
+    const ht = localStorage.getItem('hospital_token') || localStorage.getItem('hospital_admin_token');
+    if (ht) return ht;
   } else if (isAdminPortal) {
     const at = localStorage.getItem('super_admin_token') || localStorage.getItem('admin_token');
     if (at) return at;
@@ -136,6 +140,8 @@ export const clearAuthToken = (): void => {
     safeLocalStorageRemove('nurse_token');
     safeLocalStorageRemove('caregiver_token');
     safeLocalStorageRemove('insurance_token');
+    safeLocalStorageRemove('hospital_token');
+    safeLocalStorageRemove('hospital_admin_token');
     safeLocalStorageRemove('admin_token');
     safeLocalStorageRemove('super_admin_token');
   }

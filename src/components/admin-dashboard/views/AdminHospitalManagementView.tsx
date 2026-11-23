@@ -72,10 +72,17 @@ export const AdminHospitalManagementView: React.FC<AdminHospitalManagementViewPr
   const fetchRegisteredUsers = async () => {
     try {
       const res = await adminApi.getUsers({ limit: 100 });
-      if (res && res.data) {
-        const list = Array.isArray(res.data) ? res.data : (res.data as any).users || [];
-        setAllRegisteredUsers(list);
+      let list: any[] = [];
+      if (Array.isArray(res)) {
+        list = res;
+      } else if (res && Array.isArray(res.data)) {
+        list = res.data;
+      } else if (res && res.data && Array.isArray((res.data as any).users)) {
+        list = (res.data as any).users;
+      } else if (res && Array.isArray((res as any).users)) {
+        list = (res as any).users;
       }
+      setAllRegisteredUsers(list);
     } catch {}
   };
 
@@ -85,11 +92,17 @@ export const AdminHospitalManagementView: React.FC<AdminHospitalManagementViewPr
 
     try {
       const res = await adminApi.getHospitals();
-      if (res && res.data && Array.isArray(res.data)) {
-        setHospitals(res.data);
-      } else {
-        setHospitals([]);
+      let list: any[] = [];
+      if (Array.isArray(res)) {
+        list = res;
+      } else if (res && Array.isArray(res.data)) {
+        list = res.data;
+      } else if (res && res.data && Array.isArray((res.data as any).hospitals)) {
+        list = (res.data as any).hospitals;
+      } else if (res && Array.isArray((res as any).hospitals)) {
+        list = (res as any).hospitals;
       }
+      setHospitals(list);
       if (isManual) showToast('Hospital directory synchronized from database', 'info');
     } catch (err: any) {
       setHospitals([]);
