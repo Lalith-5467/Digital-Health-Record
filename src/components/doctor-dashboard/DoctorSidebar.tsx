@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   Home, 
   Scan, 
@@ -10,19 +10,62 @@ import {
   Settings,
   ShieldCheck,
   Video,
-  MapPin
+  MapPin,
+  Building2
 } from 'lucide-react';
 import { useLanguage } from '../../context/LanguageContext';
+
+export interface DoctorProfileData {
+  id?: string;
+  fullName?: string;
+  speciality?: string;
+  department?: string;
+  licenseNumber?: string;
+  hospital?: string;
+  experienceYears?: number;
+}
 
 interface DoctorSidebarProps {
   activeNav: string;
   onNavigate: (navId: string) => void;
-  user?: { name: string; email: string };
+  user?: { name: string; email: string; hospital?: string };
+  doctorProfile?: DoctorProfileData | null;
 }
 
-export const DoctorSidebar: React.FC<DoctorSidebarProps> = ({ activeNav, onNavigate, user }) => {
+export const DoctorSidebar: React.FC<DoctorSidebarProps> = ({ activeNav, onNavigate, user, doctorProfile }) => {
   const { t } = useLanguage();
-  const doctorName = user?.name ? (user.name.startsWith('Dr') ? user.name : `Dr. ${user.name}`) : 'Dr. Rajesh Varma, MD';
+  const [profile, setProfile] = useState<DoctorProfileData | null>(doctorProfile || null);
+
+  useEffect(() => {
+    if (doctorProfile) {
+      setProfile(doctorProfile);
+    }
+  }, [doctorProfile]);
+
+  useEffect(() => {
+    const loadProfile = async () => {
+      try {
+        const { profileApi } = await import('../../services/dhrApis');
+        const res = await profileApi.getDoctorProfile();
+        if (res?.data) {
+          setProfile(res.data);
+        }
+      } catch (err) {
+        console.warn('Failed to load doctor profile in sidebar:', err);
+      }
+    };
+    if (!doctorProfile) {
+      loadProfile();
+    }
+    window.addEventListener('doctor_profile_updated', loadProfile);
+    return () => window.removeEventListener('doctor_profile_updated', loadProfile);
+  }, [doctorProfile]);
+
+  const rawDoctorName = profile?.fullName || user?.name || 'Rajesh Varma';
+  const doctorName = rawDoctorName.startsWith('Dr') ? rawDoctorName : `Dr. ${rawDoctorName}`;
+  const regNumber = profile?.licenseNumber || 'MCI-84920';
+  const hospitalName = profile?.hospital || (user as any)?.hospital || 'Reach Multispeciality';
+  const departmentOrSpeciality = profile?.department || profile?.speciality ? `${profile.department || profile.speciality} OPD` : 'Clinical OPD';
 
   const NAV_ITEMS = [
     { id: 'dashboard', label: t('doctor.sidebar.command_center', 'Command Center'), icon: Home },
@@ -54,7 +97,7 @@ export const DoctorSidebar: React.FC<DoctorSidebarProps> = ({ activeNav, onNavig
               {t('doctor.sidebar.on_duty', 'ON DUTY · CLINIC')}
             </span>
             <span className="text-[10px] font-mono font-bold text-slate-400 dark:text-slate-500 whitespace-nowrap shrink-0">
-              MCI-84920
+              {regNumber}
             </span>
           </div>
           <div>
@@ -62,8 +105,10 @@ export const DoctorSidebar: React.FC<DoctorSidebarProps> = ({ activeNav, onNavig
               {doctorName}
             </p>
             <p className="text-[11px] text-slate-500 dark:text-slate-400 font-medium truncate mt-0.5 flex items-center gap-1">
-              <MapPin className="w-3 h-3 text-slate-400 shrink-0" />
-              <span className="truncate">Apollo Central · OPD Suite 402</span>
+              <Building2 className="w-3 h-3 text-teal-600 dark:text-teal-400 shrink-0" />
+              <span className="truncate" title={`${hospitalName} · ${departmentOrSpeciality}`}>
+                {hospitalName} · {departmentOrSpeciality}
+              </span>
             </p>
           </div>
         </div>

@@ -22,7 +22,15 @@ export const getRtcConfiguration = async (): Promise<RTCConfiguration> => {
         : null;
 
     if (token) {
-      const response = await fetch('http://localhost:5000/api/video-consultations/ice-servers', {
+      const apiBase =
+        (import.meta as any).env?.VITE_API_URL ||
+        (typeof window !== 'undefined' && window.location.origin
+          ? window.location.port === '3000' || window.location.port === '5173'
+            ? 'http://localhost:5000/api'
+            : `${window.location.origin}/api`
+          : 'http://localhost:5000/api');
+
+      const response = await fetch(`${apiBase}/video-consultations/ice-servers`, {
         headers: {
           Authorization: `Bearer ${token}`,
         },

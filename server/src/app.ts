@@ -8,12 +8,16 @@ import { authenticateUpload } from './middleware/auth.middleware';
 
 const app: Application = express();
 
-// Middleware: CORS (Support ports 3000, 5173, and configured clientUrl)
+// Middleware: CORS (Support ports 3000, 5173, production domain, and configured clientUrl)
 const allowedOrigins = [
   'http://localhost:3000',
+  'http://localhost:3001',
   'http://localhost:5173',
   'http://127.0.0.1:3000',
+  'http://127.0.0.1:3001',
   'http://127.0.0.1:5173',
+  'https://digitalhealth.mccmrfip.in',
+  'http://digitalhealth.mccmrfip.in',
   config.clientUrl,
 ].filter(Boolean);
 
@@ -24,7 +28,8 @@ app.use(
         !origin ||
         allowedOrigins.includes(origin) ||
         origin.startsWith('http://localhost:') ||
-        origin.startsWith('http://127.0.0.1:')
+        origin.startsWith('http://127.0.0.1:') ||
+        origin.includes('mccmrfip.in')
       ) {
         callback(null, true);
       } else {

@@ -1,4 +1,4 @@
-import { Prisma, Role } from '@prisma/client';
+import { Prisma, Role, ApprovalStatus } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 import { prisma } from '../config/prisma';
 import { AppError } from '../middleware/errorHandler';
@@ -102,10 +102,19 @@ export class AdminService {
           isViewOnly: true,
           createdAt: true,
           updatedAt: true,
-          patient: true,
+          patient: {
+            include: {
+              hospitalRef: true,
+            },
+          },
           doctor: true,
           nurse: true,
-          pharmacist: true,
+          pharmacist: {
+            include: {
+              hospitalRef: true,
+              pharmacy: true,
+            },
+          },
           caregiver: true,
           insuranceProvider: true,
           managedHospitals: true,
@@ -130,9 +139,28 @@ export class AdminService {
       const hosp = managedHosp ||
         (u.doctor as any)?.hospital ||
         (u.nurse as any)?.hospital ||
-        (u.pharmacist as any)?.hospital ||
+        (u.pharmacist as any)?.hospitalRef?.name ||
+        (u.pharmacist as any)?.pharmacyName ||
+        (u.pharmacist as any)?.pharmacy?.name ||
         (u.patient as any)?.preferredHospital ||
+        (u.patient as any)?.hospitalRef?.name ||
         (u.department && !u.department.toLowerCase().includes('directorate') && u.department !== 'System Administration' ? u.department : null);
+
+      const enhancedPatient = u.patient
+        ? {
+            ...u.patient,
+            hospital: hosp || (u.patient as any)?.hospitalRef?.name || (u.patient as any)?.preferredHospital || null,
+            preferredHospital: (u.patient as any)?.preferredHospital || hosp || (u.patient as any)?.hospitalRef?.name || null,
+          }
+        : null;
+
+      const enhancedPharmacist = u.pharmacist
+        ? {
+            ...u.pharmacist,
+            hospital: hosp || (u.pharmacist as any)?.hospitalRef?.name || (u.pharmacist as any)?.pharmacyName || null,
+            hospitalName: hosp || (u.pharmacist as any)?.hospitalRef?.name || (u.pharmacist as any)?.pharmacyName || null,
+          }
+        : null;
 
       return {
         id: u.id,
@@ -154,10 +182,10 @@ export class AdminService {
         createdAt: u.createdAt,
         updatedAt: u.updatedAt,
         profile,
-        patient: u.patient,
+        patient: enhancedPatient,
         doctor: u.doctor,
         nurse: u.nurse,
-        pharmacist: u.pharmacist,
+        pharmacist: enhancedPharmacist,
         caregiver: u.caregiver,
         insuranceProvider: u.insuranceProvider,
       };
@@ -686,6 +714,23 @@ export class AdminService {
 
       switch (role) {
         case Role.PATIENT: {
+          const effectiveHospitalName = (actorIsHospitalAdmin && actorHospitalName) ? actorHospitalName : (hospital?.trim() || null);
+          let targetHospitalId = (actorIsHospitalAdmin && actorHospitalId) ? actorHospitalId : undefined;
+          if (!targetHospitalId && effectiveHospitalName) {
+            const matchedHosp = await tx.hospital.findFirst({
+              where: {
+                OR: [
+                  { name: effectiveHospitalName },
+                  { code: effectiveHospitalName },
+                  { id: effectiveHospitalName },
+                ],
+              },
+            });
+            if (matchedHosp) {
+              targetHospitalId = matchedHosp.id;
+            }
+          }
+
           const patient = await tx.patient.create({
             data: {
               userId: user.id,
@@ -698,7 +743,8 @@ export class AdminService {
               emergencyContactPhone: emergencyContactPhone?.trim() || null,
               familyPhone: familyPhone?.trim() || null,
               heightCm: heightCm ? parseFloat(String(heightCm)) : null,
-              hospitalId: (actorIsHospitalAdmin && actorHospitalId) ? actorHospitalId : undefined,
+              hospitalId: targetHospitalId || undefined,
+              preferredHospital: effectiveHospitalName || undefined,
             },
           });
 
@@ -758,12 +804,57 @@ export class AdminService {
         }
         case Role.PHARMACIST: {
           const effectivePharmacy = (actorIsHospitalAdmin && actorHospitalName) ? actorHospitalName : (pharmacyName?.trim() || hospital?.trim() || null);
+          let targetHospId: string | undefined = actorHospitalId;
+          if (!targetHospId && effectivePharmacy) {
+            const h = await tx.hospital.findFirst({
+              where: {
+                OR: [
+                  { name: effectivePharmacy },
+                  { code: effectivePharmacy },
+                  { id: effectivePharmacy },
+                ]
+              }
+            });
+            if (h) targetHospId = h.id;
+          }
+
+          let pharmacyRef = null;
+          if (effectivePharmacy) {
+            pharmacyRef = await tx.pharmacy.findFirst({
+              where: {
+                OR: [
+                  { name: effectivePharmacy },
+                  { name: `${effectivePharmacy} Pharmacy` },
+                  { name: { contains: effectivePharmacy } },
+                ]
+              }
+            });
+            if (!pharmacyRef) {
+              const codeClean = (effectivePharmacy.replace(/[^a-zA-Z0-9]/g, '').slice(0, 4).toUpperCase()) || 'PHRM';
+              pharmacyRef = await tx.pharmacy.create({
+                data: {
+                  pharmacyId: `PHARM-${codeClean}-${Date.now().toString().slice(-4)}`,
+                  name: effectivePharmacy.toLowerCase().includes('pharmacy') ? effectivePharmacy : `${effectivePharmacy} Pharmacy`,
+                  licenseNumber: trimmedLicense || `DL-${codeClean}-${Date.now().toString().slice(-5)}`,
+                  address: 'Hospital Pharmacy Desk',
+                  isVerified: true,
+                  isActive: true,
+                  tieUpStatus: 'ACTIVE',
+                }
+              });
+            }
+          }
+
           await tx.pharmacist.create({
             data: {
               userId: user.id,
               fullName: name,
-              pharmacyName: effectivePharmacy,
+              hospitalId: targetHospId || null,
+              pharmacyId: pharmacyRef?.id || null,
+              pharmacyName: pharmacyRef?.name || effectivePharmacy,
               licenseNumber: trimmedLicense,
+              pciRegistrationNo: trimmedLicense,
+              approvalStatus: ApprovalStatus.APPROVED,
             },
           });
           break;
@@ -958,6 +1049,21 @@ export class AdminService {
       await prisma.user.update({ where: { id }, data: { fullName: trimmedName } });
     }
     if (user.patient) {
+      let targetHospId: string | undefined = undefined;
+      const targetHospName = data.hospital?.trim();
+      if (targetHospName) {
+        const matchedHosp = await prisma.hospital.findFirst({
+          where: {
+            OR: [
+              { name: targetHospName },
+              { code: targetHospName },
+              { id: targetHospName },
+            ],
+          },
+        });
+        if (matchedHosp) targetHospId = matchedHosp.id;
+      }
+
       await prisma.patient.update({
         where: { id: user.patient.id },
         data: {
@@ -966,6 +1072,8 @@ export class AdminService {
           ...(data.bloodGroup !== undefined ? { bloodGroup: data.bloodGroup || null } : {}),
           ...(data.address !== undefined ? { address: data.address || null } : {}),
           ...(data.dateOfBirth ? { dateOfBirth: new Date(data.dateOfBirth) } : {}),
+          ...(targetHospName !== undefined ? { preferredHospital: targetHospName || null } : {}),
+          ...(targetHospId !== undefined ? { hospitalId: targetHospId } : {}),
         },
       });
     } else if (user.doctor) {
@@ -990,12 +1098,41 @@ export class AdminService {
         },
       });
     } else if (user.pharmacist) {
+      let targetHospId: string | undefined = undefined;
+      let targetPharmacyId: string | undefined = undefined;
+      const targetHospName = (data.hospital || data.pharmacyName)?.trim();
+      if (targetHospName) {
+        const matchedHosp = await prisma.hospital.findFirst({
+          where: {
+            OR: [
+              { name: targetHospName },
+              { code: targetHospName },
+              { id: targetHospName },
+            ],
+          },
+        });
+        if (matchedHosp) targetHospId = matchedHosp.id;
+
+        const matchedPharm = await prisma.pharmacy.findFirst({
+          where: {
+            OR: [
+              { name: targetHospName },
+              { name: `${targetHospName} Pharmacy` },
+              { name: { contains: targetHospName } },
+            ],
+          },
+        });
+        if (matchedPharm) targetPharmacyId = matchedPharm.id;
+      }
+
       await prisma.pharmacist.update({
         where: { id: user.pharmacist.id },
         data: {
           ...(trimmedName ? { fullName: trimmedName } : {}),
-          ...(data.pharmacyName !== undefined ? { pharmacyName: data.pharmacyName || null } : {}),
-          ...(data.licenseNumber !== undefined ? { licenseNumber: data.licenseNumber || null } : {}),
+          ...(data.pharmacyName !== undefined ? { pharmacyName: data.pharmacyName || null } : (data.hospital ? { pharmacyName: data.hospital } : {})),
+          ...(data.licenseNumber !== undefined ? { licenseNumber: data.licenseNumber || null, pciRegistrationNo: data.licenseNumber || null } : {}),
+          ...(targetHospId !== undefined ? { hospitalId: targetHospId } : {}),
+          ...(targetPharmacyId !== undefined ? { pharmacyId: targetPharmacyId } : {}),
         },
       });
     } else if (user.caregiver && trimmedName) {

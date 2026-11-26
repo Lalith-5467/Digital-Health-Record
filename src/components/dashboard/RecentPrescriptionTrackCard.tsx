@@ -127,7 +127,7 @@ export const RecentPrescriptionTrackCard: React.FC<RecentPrescriptionTrackCardPr
     <motion.div
       whileHover={{ y: -2 }}
       transition={{ duration: 0.2 }}
-      className="p-6 rounded-3xl bg-gradient-to-br from-white to-teal-50/40 dark:from-slate-900 dark:to-slate-900/90 border border-teal-500/30 dark:border-teal-500/20 shadow-xl space-y-4 font-sans relative overflow-hidden"
+      className="p-4 sm:p-6 rounded-2xl sm:rounded-3xl bg-gradient-to-br from-white to-teal-50/40 dark:from-slate-900 dark:to-slate-900/90 border border-teal-500/30 dark:border-teal-500/20 shadow-xl space-y-4 font-sans relative overflow-hidden"
     >
       {/* BACKGROUND ACCENT GLOW */}
       <div className="absolute -top-12 -right-12 w-32 h-32 bg-teal-500/10 rounded-full blur-2xl pointer-events-none" />

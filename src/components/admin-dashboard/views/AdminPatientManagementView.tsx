@@ -4,7 +4,7 @@ import {
   UserCheck, Search, Filter, Stethoscope, FileText, Activity, 
   ChevronRight, Eye, ShieldAlert, HeartPulse, UserX, Loader2,
   Edit2, Trash2, Plus, RefreshCw, CheckCircle2, AlertCircle, X,
-  Phone, Mail, MapPin, Shield, Check
+  Phone, Mail, MapPin, Shield, Check, Building2
 } from 'lucide-react';
 import { adminApi } from '../../../services/dhrApis';
 import type { HospitalAdminRecord } from '../../../utils/adminMockStorage';
@@ -22,6 +22,7 @@ export interface PatientRecord {
   phone: string;
   bloodGroup: string;
   hospital?: string;
+  hospitalId?: string;
   status: 'Active' | 'Disabled';
   createdAt?: string;
   abhaId: string;
@@ -79,6 +80,7 @@ export const AdminPatientManagementView: React.FC<AdminPatientManagementViewProp
   const [editBloodGroup, setEditBloodGroup] = useState('Unspecified');
   const [editAbhaId, setEditAbhaId] = useState('');
   const [editAddress, setEditAddress] = useState('');
+  const [editHospital, setEditHospital] = useState('');
   const [editStatus, setEditStatus] = useState<'Active' | 'Disabled'>('Active');
 
   // Add form state
@@ -119,16 +121,27 @@ export const AdminPatientManagementView: React.FC<AdminPatientManagementViewProp
           const isPatientActive = u.isActive === true || u.status === 'ACTIVE' || u.status === 'Active';
           const baseStatus: 'Active' | 'Disabled' = isPatientActive ? 'Active' : 'Disabled';
 
+          // Resolve hospital accurately from user, profile, hospitalRef, or hospitalId
+          let resolvedHospital = u.hospital || prof.preferredHospital || prof.hospital || prof.hospitalRef?.name || '';
+          if (!resolvedHospital && prof.hospitalId && availableHospitals.length > 0) {
+            const matchH = availableHospitals.find(h => h.id === prof.hospitalId);
+            if (matchH) resolvedHospital = matchH.name;
+          }
+          if (!resolvedHospital && defaultHospital && prof.hospitalId) {
+            resolvedHospital = defaultHospital;
+          }
+
           return {
             id: u.id,
             patientId: u.id.slice(-6).toUpperCase(),
-            name: prof.fullName || u.email?.split('@')[0] || 'Patient',
+            name: prof.fullName || u.fullName || u.email?.split('@')[0] || 'Patient',
             email: u.email || '',
             age: prof.dateOfBirth ? Math.max(1, new Date().getFullYear() - new Date(prof.dateOfBirth).getFullYear()) : null,
             gender: prof.gender || 'Unspecified',
             phone: u.phoneNumber || prof.emergencyContactPhone || 'Not registered',
             bloodGroup: prof.bloodGroup || 'Unspecified',
-            hospital: prof.preferredHospital || prof.hospital || '',
+            hospital: resolvedHospital,
+            hospitalId: prof.hospitalId || undefined,
             status: baseStatus,
             createdAt: u.createdAt,
             abhaId: u.abhaId || prof.abhaId || 'Not linked',
@@ -169,6 +182,7 @@ export const AdminPatientManagementView: React.FC<AdminPatientManagementViewProp
     setEditBloodGroup(p.bloodGroup);
     setEditAbhaId(p.abhaId === 'Not linked' ? '' : p.abhaId);
     setEditAddress(p.address === 'Not provided' ? '' : p.address);
+    setEditHospital(p.hospital || defaultHospital || '');
     setEditStatus(p.status);
     setIsEditModalOpen(true);
     setSelectedPatient(null);
@@ -192,6 +206,7 @@ export const AdminPatientManagementView: React.FC<AdminPatientManagementViewProp
         gender: editGender === 'Unspecified' ? '' : editGender,
         bloodGroup: editBloodGroup === 'Unspecified' ? '' : editBloodGroup,
         address: editAddress.trim(),
+        hospital: editHospital.trim() || undefined,
         status: editStatus === 'Active',
       });
       showToast(`Patient record for "${editName}" updated in MySQL.`, 'success');
@@ -251,6 +266,7 @@ export const AdminPatientManagementView: React.FC<AdminPatientManagementViewProp
 
     setIsSubmitting(true);
     try {
+      const assignedHospital = defaultHospital || (hospitalFilter !== 'All' ? hospitalFilter : undefined);
       await adminApi.createUser({
         fullName: addName.trim(),
         email: addEmail.trim().toLowerCase(),
@@ -261,9 +277,11 @@ export const AdminPatientManagementView: React.FC<AdminPatientManagementViewProp
         bloodGroup: addBloodGroup,
         abhaId: addAbhaId.trim() || undefined,
         address: addAddress.trim() || undefined,
+        hospital: assignedHospital,
+        preferredHospital: assignedHospital,
       });
 
-      showToast(`New patient "${addName}" registered successfully.`, 'success');
+      showToast(`New patient "${addName}" registered successfully${assignedHospital ? ` under ${assignedHospital}` : ''}.`, 'success');
       setIsAddModalOpen(false);
       setAddName('');
       setAddEmail('');
@@ -279,15 +297,21 @@ export const AdminPatientManagementView: React.FC<AdminPatientManagementViewProp
     }
   };
 
-  const isHospitalMatch = (itemHosp?: string, filterHosp?: string) => {
+  const isHospitalMatch = (itemHosp?: string, filterHosp?: string, itemHospId?: string) => {
     if (!filterHosp || filterHosp === 'All') return true;
+    const b = filterHosp.toLowerCase().trim();
+    if (itemHospId && availableHospitals.length > 0) {
+      const matchObj = availableHospitals.find(h => h.name.toLowerCase().trim() === b || h.id === itemHospId);
+      if (matchObj && (matchObj.id === itemHospId || matchObj.name.toLowerCase().trim() === b)) {
+        return true;
+      }
+    }
     if (!itemHosp) return false;
     const a = itemHosp.toLowerCase().trim();
-    const b = filterHosp.toLowerCase().trim();
     return a === b || (b.length > 5 && a.startsWith(b)) || (a.length > 5 && b.startsWith(a));
   };
 
-  const hospitalPatients = patients.filter(p => isHospitalMatch(p.hospital, hospitalFilter));
+  const hospitalPatients = patients.filter(p => isHospitalMatch(p.hospital, hospitalFilter, p.hospitalId));
 
   const filtered = patients.filter(p => {
     const matchesSearch = 
@@ -300,7 +324,7 @@ export const AdminPatientManagementView: React.FC<AdminPatientManagementViewProp
     const matchesStatus = 
       statusFilter === 'All' ? true : p.status === statusFilter;
 
-    const matchesHospital = isHospitalMatch(p.hospital, hospitalFilter);
+    const matchesHospital = isHospitalMatch(p.hospital, hospitalFilter, p.hospitalId);
 
     return matchesSearch && matchesStatus && matchesHospital;
   });
@@ -330,7 +354,7 @@ export const AdminPatientManagementView: React.FC<AdminPatientManagementViewProp
           <span className="px-4 py-2.5 rounded-xl bg-black/20 text-white text-xs font-mono font-bold border border-white/20 backdrop-blur-md shadow-xs">
             {filtered.length !== hospitalPatients.length
               ? `${filtered.length} of ${hospitalPatients.length} Patients`
-              : `${hospitalPatients.length} Registered Patients`}
+              : `${hospitalPatients.length} Registered Patients${defaultHospital ? ` in ${defaultHospital}` : ''}`}
           </span>
           <button
             onClick={() => fetchPatients(true)}
@@ -367,18 +391,34 @@ export const AdminPatientManagementView: React.FC<AdminPatientManagementViewProp
         <div className="flex items-center gap-3 w-full md:w-auto overflow-x-auto pb-1 md:pb-0">
           {/* Hospital Scope Filter */}
           <div className="flex items-center gap-1.5 shrink-0">
-            <Stethoscope className="w-4 h-4 text-teal-600 dark:text-teal-400" />
+            <Building2 className="w-4 h-4 text-teal-600 dark:text-teal-400" />
             <select
               value={hospitalFilter}
               onChange={(e) => setHospitalFilter(e.target.value)}
               className="px-3 py-1.5 rounded-xl text-xs font-bold bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-200 focus:outline-hidden focus:border-[#00a896] cursor-pointer"
             >
-              <option value="All">All Hospitals ({availableHospitals.length})</option>
-              {availableHospitals.map((hosp) => (
-                <option key={hosp.id} value={hosp.name}>
-                  {hosp.name}
-                </option>
-              ))}
+              {defaultHospital ? (
+                <>
+                  <option value={defaultHospital}>{defaultHospital} (Current Facility)</option>
+                  <option value="All">All Network Hospitals ({availableHospitals.length || 1})</option>
+                  {availableHospitals
+                    .filter((h) => h.name.toLowerCase().trim() !== defaultHospital.toLowerCase().trim())
+                    .map((hosp) => (
+                      <option key={hosp.id} value={hosp.name}>
+                        {hosp.name}
+                      </option>
+                    ))}
+                </>
+              ) : (
+                <>
+                  <option value="All">All Hospitals ({availableHospitals.length})</option>
+                  {availableHospitals.map((hosp) => (
+                    <option key={hosp.id} value={hosp.name}>
+                      {hosp.name}
+                    </option>
+                  ))}
+                </>
+              )}
             </select>
           </div>
 
@@ -449,16 +489,28 @@ export const AdminPatientManagementView: React.FC<AdminPatientManagementViewProp
                           <p className="text-xs text-slate-500 dark:text-slate-400 font-mono mt-0.5 truncate" title={`ID: ${p.patientId} • ${p.phone}`}>
                             ID: {p.patientId} • {p.phone}
                           </p>
-                          <div className="mt-1">
+                          <div className="mt-1 flex items-center gap-1.5 flex-wrap">
+                            {p.hospital ? (
+                              <span 
+                                className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-teal-50 text-teal-700 dark:bg-teal-950/40 dark:text-teal-300 border border-teal-200 dark:border-teal-800/50"
+                                title={`Affiliated Hospital: ${p.hospital}`}
+                              >
+                                <Building2 className="w-2.5 h-2.5 text-teal-600 dark:text-teal-400 shrink-0" />
+                                <span className="truncate max-w-[130px]">{p.hospital}</span>
+                              </span>
+                            ) : (
+                              <span className="text-[10px] text-slate-400 font-medium">General OPD</span>
+                            )}
+
                             {p.abhaId && p.abhaId !== 'Not linked' && p.abhaId !== 'Unlinked' ? (
                               <span 
-                                className="inline-block px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-blue-50 text-blue-700 dark:bg-blue-950/40 dark:text-cyan-300 border border-blue-200 dark:border-blue-800/50 truncate max-w-[170px]"
+                                className="inline-block px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-blue-50 text-blue-700 dark:bg-blue-950/40 dark:text-cyan-300 border border-blue-200 dark:border-blue-800/50 truncate max-w-[140px]"
                                 title={`ABHA ID: ${p.abhaId}`}
                               >
                                 ABHA: {p.abhaId}
                               </span>
                             ) : (
-                              <span className="text-[11px] text-slate-400 font-medium">ABHA: Unlinked</span>
+                              <span className="text-[10px] text-slate-400 font-medium">ABHA: Unlinked</span>
                             )}
                           </div>
                         </div>
@@ -689,6 +741,24 @@ export const AdminPatientManagementView: React.FC<AdminPatientManagementViewProp
                 />
               </div>
 
+              <div>
+                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
+                  Affiliated Hospital Facility
+                </label>
+                <select
+                  value={editHospital}
+                  onChange={(e) => setEditHospital(e.target.value)}
+                  className="w-full h-10 px-3 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-sm font-semibold text-slate-900 dark:text-white focus:outline-none focus:border-[#00a896]"
+                >
+                  <option value="">General OPD (No Specific Facility)</option>
+                  {availableHospitals.map((hosp) => (
+                    <option key={hosp.id} value={hosp.name}>
+                      {hosp.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
               <div className="pt-3 border-t border-slate-100 dark:border-slate-800 flex items-center justify-end gap-3">
                 <button
                   type="button"
@@ -740,6 +810,15 @@ export const AdminPatientManagementView: React.FC<AdminPatientManagementViewProp
             </div>
 
             <form onSubmit={handleAddPatient} className="space-y-4">
+              {defaultHospital && (
+                <div className="p-3 rounded-xl bg-teal-50 dark:bg-teal-950/40 border border-teal-200 dark:border-teal-800 flex items-center gap-2.5">
+                  <Building2 className="w-4 h-4 text-teal-600 dark:text-teal-400 shrink-0" />
+                  <div className="min-w-0 flex-1 text-xs">
+                    <span className="text-[10px] uppercase font-bold text-teal-700 dark:text-teal-300 block">Enrolling Under Facility</span>
+                    <span className="font-bold text-teal-900 dark:text-teal-100">{defaultHospital}</span>
+                  </div>
+                </div>
+              )}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
@@ -920,6 +999,13 @@ export const AdminPatientManagementView: React.FC<AdminPatientManagementViewProp
                 <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800">
                   <span className="text-slate-400 block text-[10px] uppercase font-bold">Blood Group</span>
                   <strong className="text-slate-900 dark:text-white font-mono">{selectedPatient.bloodGroup}</strong>
+                </div>
+                <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800 col-span-2 flex items-center gap-2">
+                  <Building2 className="w-4 h-4 text-teal-600 dark:text-teal-400 shrink-0" />
+                  <div>
+                    <span className="text-slate-400 block text-[10px] uppercase font-bold">Affiliated Hospital Facility</span>
+                    <strong className="text-slate-900 dark:text-white">{selectedPatient.hospital || 'General OPD / Unassigned'}</strong>
+                  </div>
                 </div>
               </div>
 

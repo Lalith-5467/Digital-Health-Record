@@ -213,9 +213,9 @@ export const DashboardHeader: React.FC<DashboardHeaderProps> = ({
       </div>
 
       {/* RIGHT SEARCH, THEME TOGGLE, NOTIFICATIONS & PROFILE */}
-      <div className="flex items-center gap-2.5 sm:gap-3 self-end xl:self-auto w-full xl:w-auto relative shrink-0 flex-wrap sm:flex-nowrap">
+      <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5 sm:gap-3 w-full xl:w-auto relative shrink-0">
         {/* SEARCH BAR */}
-        <div className="relative flex-1 sm:w-56 lg:w-64 xl:w-72 max-w-xs sm:max-w-none">
+        <div className="relative w-full sm:w-56 lg:w-64 xl:w-72">
           <Search className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-[#00a896] dark:text-cyan-400 pointer-events-none" />
           <input
             type="text"
@@ -226,91 +226,94 @@ export const DashboardHeader: React.FC<DashboardHeaderProps> = ({
           />
         </div>
 
-        {/* LANGUAGE TOGGLE */}
-        <div className="flex p-1 rounded-2xl bg-slate-100 dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 shadow-inner shrink-0">
-          <button
-            type="button"
-            onClick={() => setLanguage('en')}
-            className={`px-2.5 py-1 rounded-xl text-[10px] font-black transition-all cursor-pointer ${language === 'en' ? 'bg-white dark:bg-slate-800 text-[#00a896] dark:text-cyan-400 shadow-sm ring-1 ring-black/5 dark:ring-white/10' : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}`}
-          >
-            EN
-          </button>
-          <button
-            type="button"
-            onClick={() => setLanguage('ta')}
-            className={`px-2.5 py-1 rounded-xl text-[10px] font-black transition-all cursor-pointer ${language === 'ta' ? 'bg-white dark:bg-slate-800 text-[#00a896] dark:text-cyan-400 shadow-sm ring-1 ring-black/5 dark:ring-white/10' : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}`}
-          >
-            தமிழ்
-          </button>
-        </div>
+        {/* ACTIONS ROW */}
+        <div className="flex items-center justify-between sm:justify-start gap-2 shrink-0">
+          {/* LANGUAGE TOGGLE */}
+          <div className="flex p-1 rounded-2xl bg-slate-100 dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 shadow-inner shrink-0">
+            <button
+              type="button"
+              onClick={() => setLanguage('en')}
+              className={`px-2.5 py-1 rounded-xl text-[10px] font-black transition-all cursor-pointer ${language === 'en' ? 'bg-white dark:bg-slate-800 text-[#00a896] dark:text-cyan-400 shadow-sm ring-1 ring-black/5 dark:ring-white/10' : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}`}
+            >
+              EN
+            </button>
+            <button
+              type="button"
+              onClick={() => setLanguage('ta')}
+              className={`px-2.5 py-1 rounded-xl text-[10px] font-black transition-all cursor-pointer ${language === 'ta' ? 'bg-white dark:bg-slate-800 text-[#00a896] dark:text-cyan-400 shadow-sm ring-1 ring-black/5 dark:ring-white/10' : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}`}
+            >
+              தமிழ்
+            </button>
+          </div>
 
-        {/* DARK / LIGHT MODE THEME TOGGLE BUTTON */}
-        <div className="flex items-center shrink-0">
-          <ThemeToggle />
-        </div>
+          {/* DARK / LIGHT MODE THEME TOGGLE BUTTON */}
+          <div className="flex items-center shrink-0">
+            <ThemeToggle />
+          </div>
 
-        {/* NOTIFICATION BUTTON & POPOVER */}
-        <div className="relative shrink-0 flex items-center">
+          {/* NOTIFICATION BUTTON & POPOVER */}
+          <div className="relative shrink-0 flex items-center">
+            <motion.button
+              type="button"
+              whileHover={{ scale: 1.05 }}
+              whileTap={{ scale: 0.95 }}
+              onClick={handleTogglePopover}
+              className="relative p-2 rounded-2xl bg-slate-100 dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 text-slate-700 dark:text-slate-200 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-slate-800/90 transition-all shadow-md cursor-pointer flex items-center justify-center"
+              title={t('header.notifications', 'Notifications')}
+            >
+              <Bell className="w-4 h-4 text-[#00a896] dark:text-cyan-300" />
+              {unreadCount > 0 && (
+                <span className="absolute -top-1 -right-1 flex h-4 min-w-[16px] px-1 items-center justify-center rounded-full bg-rose-500 text-[9px] font-black text-white ring-2 ring-white dark:ring-slate-950 animate-pulse">
+                  {unreadCount > 9 ? '9+' : unreadCount}
+                </span>
+              )}
+            </motion.button>
+
+            <NotificationPopover
+              isOpen={popoverOpen}
+              onClose={() => {
+                setPopoverOpen(false);
+                checkUnreadCount();
+              }}
+              onNavigateToNotifications={handleNavigateToNotifications}
+              onNavigateTab={onNavigate}
+            />
+          </div>
+
+          {/* PROFILE AVATAR */}
+          <motion.button
+            type="button"
+            whileHover={{ scale: 1.03 }}
+            whileTap={{ scale: 0.97 }}
+            onClick={onOpenProfile}
+            className="flex items-center gap-2 py-1 px-2.5 rounded-2xl bg-slate-100 dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 hover:bg-slate-200 dark:hover:bg-slate-800/90 transition-all shadow-md cursor-pointer shrink-0"
+          >
+            <img
+              src="https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=100&q=80"
+              alt={effectiveDisplayName}
+              className="w-7 h-7 rounded-xl object-cover ring-2 ring-teal-500/40"
+            />
+            <div className="hidden sm:flex flex-col text-left min-w-0">
+              <span className="text-xs font-black text-slate-900 dark:text-white leading-tight truncate">{effectiveDisplayName}</span>
+              <span className="text-[10px] font-extrabold text-[#00a896] dark:text-cyan-300 leading-tight font-mono truncate">{t('header.patient_profile', 'Patient Profile')}</span>
+            </div>
+          </motion.button>
+
+          {/* LOGOUT BUTTON */}
           <motion.button
             type="button"
             whileHover={{ scale: 1.05 }}
             whileTap={{ scale: 0.95 }}
-            onClick={handleTogglePopover}
-            className="relative p-2 rounded-2xl bg-slate-100 dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 text-slate-700 dark:text-slate-200 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-slate-800/90 transition-all shadow-md cursor-pointer flex items-center justify-center"
-            title={t('header.notifications', 'Notifications')}
-          >
-            <Bell className="w-4 h-4 text-[#00a896] dark:text-cyan-300" />
-            {unreadCount > 0 && (
-              <span className="absolute -top-1 -right-1 flex h-4 min-w-[16px] px-1 items-center justify-center rounded-full bg-rose-500 text-[9px] font-black text-white ring-2 ring-white dark:ring-slate-950 animate-pulse">
-                {unreadCount > 9 ? '9+' : unreadCount}
-              </span>
-            )}
-          </motion.button>
-
-          <NotificationPopover
-            isOpen={popoverOpen}
-            onClose={() => {
-              setPopoverOpen(false);
-              checkUnreadCount();
+            onClick={() => {
+              setUnreadCount(0);
+              if (onLogout) onLogout();
             }}
-            onNavigateToNotifications={handleNavigateToNotifications}
-            onNavigateTab={onNavigate}
-          />
+            className="relative p-2 rounded-2xl bg-slate-100 dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 text-rose-500 dark:text-rose-400 hover:text-white hover:bg-rose-500 dark:hover:bg-rose-600 transition-all shadow-md cursor-pointer flex items-center justify-center shrink-0"
+            title={t('header.logout', 'Logout')}
+          >
+            <LogOut className="w-4 h-4" />
+          </motion.button>
         </div>
-
-        {/* PROFILE AVATAR */}
-        <motion.button
-          type="button"
-          whileHover={{ scale: 1.03 }}
-          whileTap={{ scale: 0.97 }}
-          onClick={onOpenProfile}
-          className="flex items-center gap-2 py-1 px-2.5 rounded-2xl bg-slate-100 dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 hover:bg-slate-200 dark:hover:bg-slate-800/90 transition-all shadow-md cursor-pointer shrink-0"
-        >
-          <img
-            src="https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=100&q=80"
-            alt={effectiveDisplayName}
-            className="w-7 h-7 rounded-xl object-cover ring-2 ring-teal-500/40"
-          />
-          <div className="hidden sm:flex flex-col text-left min-w-0">
-            <span className="text-xs font-black text-slate-900 dark:text-white leading-tight truncate">{effectiveDisplayName}</span>
-            <span className="text-[10px] font-extrabold text-[#00a896] dark:text-cyan-300 leading-tight font-mono truncate">{t('header.patient_profile', 'Patient Profile')}</span>
-          </div>
-        </motion.button>
-
-        {/* LOGOUT BUTTON */}
-        <motion.button
-          type="button"
-          whileHover={{ scale: 1.05 }}
-          whileTap={{ scale: 0.95 }}
-          onClick={() => {
-            setUnreadCount(0);
-            if (onLogout) onLogout();
-          }}
-          className="relative p-2 rounded-2xl bg-slate-100 dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 text-rose-500 dark:text-rose-400 hover:text-white hover:bg-rose-500 dark:hover:bg-rose-600 transition-all shadow-md cursor-pointer flex items-center justify-center shrink-0"
-          title={t('header.logout', 'Logout')}
-        >
-          <LogOut className="w-4 h-4" />
-        </motion.button>
       </div>
     </motion.header>
   );

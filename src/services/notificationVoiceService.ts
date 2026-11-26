@@ -321,9 +321,14 @@ class NotificationVoiceService {
       console.warn('[VoiceService] Direct audio playback note:', audioErr?.message || audioErr);
     }
 
-    // Strategy 4: Fallback failed - DO NOT speak Tamil text using an English voice!
-    console.warn('[VoiceService] Tamil voice is unavailable: No native Tamil voice installed on OS and audio stream failed.');
+    // Strategy 4: Fallback to available speech engine if Tamil voice pack is not yet installed on OS
+    console.warn('[VoiceService] Tamil voice is unavailable: No native Tamil voice installed on OS and audio stream failed. Using available speech engine fallback.');
     this.notifyTamilVoiceMissing();
+    const fallbackVoice = this.getEnglishVoice();
+    if (fallbackVoice) {
+      this.playSpeechSynthesis(text, fallbackVoice, 'en-IN');
+      return;
+    }
     this.isSpeaking = false;
     setTimeout(() => this.processQueue(), 250);
   }
@@ -354,6 +359,9 @@ class NotificationVoiceService {
   private playSpeechSynthesis(text: string, voice: SpeechSynthesisVoice | null, targetLangCode: string) {
     try {
       window.speechSynthesis.cancel();
+      if (window.speechSynthesis.paused) {
+        window.speechSynthesis.resume();
+      }
 
       const utterance = new SpeechSynthesisUtterance(text);
       utterance.volume = Math.max(0, Math.min(1, this.settings.volume));
@@ -469,6 +477,9 @@ class NotificationVoiceService {
     if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
       try {
         window.speechSynthesis.cancel();
+      if (window.speechSynthesis.paused) {
+        window.speechSynthesis.resume();
+      }
       } catch (e) {
         console.warn('[VoiceService] Error cancelling speech synthesis:', e);
       }

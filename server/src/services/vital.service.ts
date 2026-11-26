@@ -79,7 +79,7 @@ export class VitalService {
       });
       return !!activeSession;
     }
-    
+
     return false;
   }
 
@@ -110,7 +110,7 @@ export class VitalService {
     sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
 
     return prisma.vital.findMany({
-      where: { 
+      where: {
         patientId,
         recordedAt: {
           gte: sixMonthsAgo

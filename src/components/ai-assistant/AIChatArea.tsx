@@ -9,6 +9,7 @@ import {
   Bookmark,
   AlertTriangle,
   Mic,
+  MicOff,
   Paperclip,
   Settings,
   History,
@@ -50,9 +51,87 @@ export const AIChatArea: React.FC<AIChatAreaProps> = ({
   onNavigateSOS,
   onNavigateHospitals,
 }) => {
-  const { t } = useLanguage();
+  const { t, language } = useLanguage();
   const [inputText, setInputText] = useState('');
+  const [isListening, setIsListening] = useState(false);
+  const [speechSupported, setSpeechSupported] = useState(true);
+  const recognitionRef = useRef<any>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const SpeechRec = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRec) {
+      setSpeechSupported(false);
+      return;
+    }
+
+    try {
+      const rec = new SpeechRec();
+      rec.continuous = false;
+      rec.interimResults = true;
+      rec.lang = language === 'ta' ? 'ta-IN' : 'en-US';
+
+      rec.onstart = () => {
+        setIsListening(true);
+      };
+
+      rec.onresult = (event: any) => {
+        let transcript = '';
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          transcript += event.results[i][0].transcript;
+        }
+        if (transcript) {
+          setInputText(prev => {
+            const base = prev.trim();
+            return base ? `${base} ${transcript}` : transcript;
+          });
+        }
+      };
+
+      rec.onerror = (event: any) => {
+        console.warn('[SpeechRecognition] error:', event.error);
+        setIsListening(false);
+      };
+
+      rec.onend = () => {
+        setIsListening(false);
+      };
+
+      recognitionRef.current = rec;
+      setSpeechSupported(true);
+    } catch (e) {
+      console.warn('Speech recognition setup error:', e);
+      setSpeechSupported(false);
+    }
+
+    return () => {
+      if (recognitionRef.current) {
+        try { recognitionRef.current.abort(); } catch {}
+      }
+    };
+  }, [language]);
+
+  const toggleListening = () => {
+    if (!speechSupported || !recognitionRef.current) {
+      alert('Speech-to-text is not supported by your browser. Please use Google Chrome or Microsoft Edge.');
+      return;
+    }
+
+    if (isListening) {
+      try {
+        recognitionRef.current.stop();
+      } catch {}
+      setIsListening(false);
+    } else {
+      try {
+        recognitionRef.current.lang = language === 'ta' ? 'ta-IN' : 'en-US';
+        recognitionRef.current.start();
+      } catch (err: any) {
+        console.warn('Failed to start speech recognition:', err);
+        setIsListening(false);
+      }
+    }
+  };
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -286,11 +365,15 @@ export const AIChatArea: React.FC<AIChatAreaProps> = ({
 
           <button
             type="button"
-            onClick={() => alert('Voice input feature enabled in browser mic mode')}
-            className="p-3 rounded-2xl bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-800 text-slate-600 dark:text-slate-400 hover:text-[#00a896] dark:hover:text-white cursor-pointer transition-colors shadow-xs"
-            title="Voice Input"
+            onClick={toggleListening}
+            className={`p-3 rounded-2xl border transition-all cursor-pointer shadow-xs ${
+              isListening
+                ? 'bg-rose-500 text-white border-rose-600 animate-pulse ring-2 ring-rose-400'
+                : 'bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-800 text-slate-600 dark:text-slate-400 hover:text-[#00a896] dark:hover:text-white'
+            }`}
+            title={isListening ? 'Listening... Click to stop' : 'Voice Input (Speech-to-Text)'}
           >
-            <Mic className="w-4 h-4" />
+            {isListening ? <MicOff className="w-4 h-4 animate-bounce" /> : <Mic className="w-4 h-4" />}
           </button>
 
           <button

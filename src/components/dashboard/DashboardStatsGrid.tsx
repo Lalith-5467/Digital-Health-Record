@@ -343,7 +343,10 @@ export const DashboardStatsGrid: React.FC<DashboardStatsGridProps> = ({
 
   const getGridColsClass = () => {
     if (!isShortsOpen) {
-      return 'grid-cols-2 sm:grid-cols-3 xl:grid-cols-6';
+      if (containerWidth > 0 && containerWidth < 420) {
+        return 'grid-cols-1';
+      }
+      return 'grid-cols-1 min-[420px]:grid-cols-2 sm:grid-cols-3 xl:grid-cols-6';
     }
     if (containerWidth >= 720) {
       return 'grid-cols-3';

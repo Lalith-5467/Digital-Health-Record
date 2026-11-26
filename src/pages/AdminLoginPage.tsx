@@ -23,6 +23,7 @@ import { safeLocalStorageSet } from '../utils/safeStorage';
 interface AdminLoginPageProps {
   onNavigateHome: () => void;
   onNavigate: (page: string) => void;
+  initialRole?: 'Admin' | 'Super Admin';
   onSuccessLogin?: (userData: {
     name: string;
     email: string;
@@ -34,9 +35,10 @@ interface AdminLoginPageProps {
 export const AdminLoginPage: React.FC<AdminLoginPageProps> = ({
   onNavigateHome,
   onNavigate: _onNavigate,
+  initialRole,
   onSuccessLogin
 }) => {
-  const [selectedRole, setSelectedRole] = useState<'Admin' | 'Super Admin'>('Super Admin');
+  const [selectedRole, setSelectedRole] = useState<'Admin' | 'Super Admin'>(initialRole || 'Super Admin');
   const [isRoleDropdownOpen, setIsRoleDropdownOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const [email, setEmail] = useState('');

@@ -222,11 +222,12 @@ export const AdminStaffManagementView: React.FC<AdminStaffManagementViewProps> =
             };
           } else if (type === 'pharmacist') {
             const p = u.pharmacist || u.profile || {};
+            const hospName = u.hospital || p.hospitalRef?.name || p.hospital || p.pharmacyName || '';
             return {
               id: u.id,
               name: p.fullName || u.email.split('@')[0],
               specialization: p.pharmacyName || p.dispensary || 'Dispensary',
-              hospital: p.pharmacyName || p.hospital || '',
+              hospital: hospName,
               licenseNumber: p.licenseNumber || p.pciRegistrationNo || 'Not Recorded',
               email: u.email,
               phone: u.phoneNumber || 'Not registered',
@@ -505,12 +506,28 @@ export const AdminStaffManagementView: React.FC<AdminStaffManagementViewProps> =
               onChange={(e) => setHospitalFilter(e.target.value)}
               className="px-3 py-1.5 rounded-xl text-xs font-bold bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-200 focus:outline-hidden focus:border-[#00a896] cursor-pointer"
             >
-              <option value="All">All Hospitals ({availableHospitals.length})</option>
-              {availableHospitals.map((hosp) => (
-                <option key={hosp.id} value={hosp.name}>
-                  {hosp.name}
-                </option>
-              ))}
+              {defaultHospital ? (
+                <>
+                  <option value={defaultHospital}>{defaultHospital} (Current Facility)</option>
+                  <option value="All">All Network Hospitals ({availableHospitals.length || 1})</option>
+                  {availableHospitals
+                    .filter((h) => h.name.toLowerCase().trim() !== defaultHospital.toLowerCase().trim())
+                    .map((hosp) => (
+                      <option key={hosp.id} value={hosp.name}>
+                        {hosp.name}
+                      </option>
+                    ))}
+                </>
+              ) : (
+                <>
+                  <option value="All">All Hospitals ({availableHospitals.length})</option>
+                  {availableHospitals.map((hosp) => (
+                    <option key={hosp.id} value={hosp.name}>
+                      {hosp.name}
+                    </option>
+                  ))}
+                </>
+              )}
             </select>
           </div>
 
