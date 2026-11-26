@@ -209,38 +209,21 @@ export const Hero: React.FC<HeroProps> = ({ onStartJourney, onSeeHowItWorks }) =
         <div className="absolute bottom-10 left-1/3 w-[500px] h-[500px] bg-cyan-500/10 dark:bg-cyan-600/15 rounded-full blur-3xl pointer-events-none" />
       </div>
 
-      {/* RESPONSIVE VIDEO FLOATING CONTROLS (WATCH VIDEO & SOUND) */}
-      {!isImage && (
-        <div className="absolute bottom-4 sm:bottom-6 right-4 sm:right-6 z-20 flex items-center gap-2">
-          {/* WATCH VIDEO PILL BUTTON */}
-          <button
-            type="button"
-            onClick={() => setIsVideoModalOpen(true)}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-full bg-slate-900/85 hover:bg-slate-900 backdrop-blur-md border border-slate-700 text-white text-xs font-bold shadow-xl hover:border-teal-500/60 hover:scale-105 active:scale-95 transition-all cursor-pointer"
-            title="Watch Full HD Video"
-            aria-label="Watch Full Video"
-          >
-            <Play className="w-3.5 h-3.5 fill-teal-400 text-teal-400 ml-0.5" />
-            <span className="text-[11px] font-bold">Watch Video</span>
-          </button>
-
-          {/* SOUND TOGGLE BUTTON */}
-          {showSoundControl && (
-            <button
-              type="button"
-              onClick={toggleSound}
-              className="flex items-center justify-center p-2.5 rounded-full bg-slate-900/85 backdrop-blur-md border border-slate-700 text-white shadow-xl hover:bg-slate-900 hover:scale-105 active:scale-95 transition-all cursor-pointer"
-              title={isMuted ? "Unmute Video Audio" : "Mute Video Audio"}
-              aria-label={isMuted ? "Unmute Audio" : "Mute Audio"}
-            >
-              {isMuted ? (
-                <VolumeX className="w-4 h-4 text-rose-400" />
-              ) : (
-                <Volume2 className="w-4 h-4 text-cyan-400 animate-pulse" />
-              )}
-            </button>
+      {/* SOUND TOGGLE BUTTON */}
+      {!isImage && showSoundControl && (
+        <button
+          type="button"
+          onClick={toggleSound}
+          className="absolute bottom-4 sm:bottom-6 right-4 sm:right-6 z-20 flex items-center justify-center p-2.5 sm:p-3 rounded-full bg-slate-900/85 backdrop-blur-md border border-slate-700 text-white shadow-xl hover:bg-slate-900 hover:scale-105 active:scale-95 transition-all cursor-pointer"
+          title={isMuted ? "Unmute Video Audio" : "Mute Video Audio"}
+          aria-label={isMuted ? "Unmute Audio" : "Mute Audio"}
+        >
+          {isMuted ? (
+            <VolumeX className="w-4 h-4 text-rose-400" />
+          ) : (
+            <Volume2 className="w-4 h-4 text-cyan-400 animate-pulse" />
           )}
-        </div>
+        </button>
       )}
 
       {/* 3. HERO CONTENT & DOWNWARD-POSITIONED RIGHT CARDS */}
