@@ -34,7 +34,13 @@ export const Logo: React.FC<LogoProps> = ({ className = '', showBadge = false, v
     : 'text-slate-500 dark:text-slate-400';
 
   const fullLogoSrc = logo && !imageError
-    ? (logo.startsWith('http') ? logo : `http://localhost:5000${logo}`) 
+    ? (logo.startsWith('http')
+        ? logo
+        : `${typeof window !== 'undefined' && window.location.origin
+            ? window.location.port === '3000' || window.location.port === '5173'
+              ? 'http://localhost:5000'
+              : window.location.origin
+            : 'http://localhost:5000'}${logo.startsWith('/') ? '' : '/'}${logo}`) 
     : null;
 
   return (

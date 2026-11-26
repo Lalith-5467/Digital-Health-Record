@@ -42,7 +42,14 @@ export interface VideoConsultationCallPayload {
   timestamp: string;
 }
 
-const SOCKET_SERVER_URL = 'http://localhost:5000';
+const SOCKET_SERVER_URL =
+  (import.meta as any).env?.VITE_SOCKET_URL ||
+  (import.meta as any).env?.VITE_API_URL?.replace(/\/api\/?$/, '') ||
+  (typeof window !== 'undefined' && window.location.origin
+    ? window.location.port === '3000' || window.location.port === '5173'
+      ? 'http://localhost:5000'
+      : window.location.origin
+    : 'http://localhost:5000');
 
 class SocketService {
   private socket: Socket | null = null;
@@ -76,10 +83,11 @@ class SocketService {
     this.currentToken = authToken;
     this.socket = io(SOCKET_SERVER_URL, {
       auth: { token: authToken },
-      transports: ['websocket', 'polling'],
+      transports: ['polling', 'websocket'],
       reconnection: true,
-      reconnectionAttempts: 10,
-      reconnectionDelay: 2000,
+      reconnectionAttempts: 5,
+      reconnectionDelay: 3000,
+      timeout: 8000,
     });
 
     this.socket.on('connect', () => {

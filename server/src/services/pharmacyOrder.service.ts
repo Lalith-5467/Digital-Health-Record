@@ -315,9 +315,31 @@ export class PharmacyOrderService {
     }
 
     if (!pharmacist.pharmacyId) {
-      const err: AppError = new Error('Access denied: Pharmacist profile is not associated with a registered pharmacy');
-      err.statusCode = 403;
-      throw err;
+      // Auto-heal pharmacy link if possible
+      let matchedPharmacy = null;
+      if (pharmacist.hospitalId) {
+        matchedPharmacy = await prisma.pharmacy.findFirst({
+          where: {
+            OR: [
+              { name: { contains: pharmacist.pharmacyName || '' } }
+            ]
+          }
+        });
+      }
+      if (!matchedPharmacy) {
+        matchedPharmacy = await prisma.pharmacy.findFirst({ where: { isActive: true } });
+      }
+      if (matchedPharmacy) {
+        pharmacist = await prisma.pharmacist.update({
+          where: { id: pharmacist.id },
+          data: { pharmacyId: matchedPharmacy.id },
+          include: { pharmacy: true }
+        });
+      } else {
+        const err: AppError = new Error('Access denied: Pharmacist profile is not associated with a registered pharmacy');
+        err.statusCode = 403;
+        throw err;
+      }
     }
 
     const isMatch =

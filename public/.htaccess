@@ -1,0 +1,24 @@
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  RewriteBase /
+
+  # Handle Authorization Header
+  RewriteCond %{HTTP:Authorization} .
+  RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+
+  # Allow backend API calls (/api/*) to pass through to backend service
+  RewriteRule ^api(/.*)?$ - [L]
+
+  # If the requested file or directory exists physically, serve it directly
+  RewriteCond %{REQUEST_FILENAME} -f [OR]
+  RewriteCond %{REQUEST_FILENAME} -d
+  RewriteRule ^ - [L]
+
+  # Otherwise, route all requests to index.html for React Single Page Application (SPA) routing
+  RewriteRule ^ index.html [L]
+</IfModule>
+
+# Prevent MIME type sniffing
+<IfModule mod_headers.c>
+  Header set X-Content-Type-Options "nosniff"
+</IfModule>

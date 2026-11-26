@@ -236,24 +236,27 @@ export const ActiveConsultationRoom: React.FC<ActiveConsultationRoomProps> = ({
 
         // 5. Publish Local Camera and Microphone Tracks
         try {
-          await room.localParticipant.enableCameraAndMicrophone();
-
-          // Attach local camera stream to preview element
-          const videoTrack = room.localParticipant.getTrackPublication(Track.Source.Camera)?.videoTrack;
-          if (videoTrack && selfVideoRef.current) {
-            videoTrack.attach(selfVideoRef.current);
+          if (micEnabled) {
+            try {
+              await room.localParticipant.setMicrophoneEnabled(true);
+            } catch (micErr: any) {
+              console.warn('[LiveKit] Microphone enable error:', micErr);
+            }
           }
-
-          // Apply initial toggle states
-          if (!cameraEnabled) {
-            await room.localParticipant.setCameraEnabled(false);
-          }
-          if (!micEnabled) {
-            await room.localParticipant.setMicrophoneEnabled(false);
+          if (cameraEnabled) {
+            try {
+              await room.localParticipant.setCameraEnabled(true);
+              const videoTrack = room.localParticipant.getTrackPublication(Track.Source.Camera)?.videoTrack;
+              if (videoTrack && selfVideoRef.current) {
+                videoTrack.attach(selfVideoRef.current);
+              }
+            } catch (camErr: any) {
+              console.warn('[LiveKit] Camera enable error:', camErr);
+              setMediaPermissionError('Camera hardware is unresponsive or locked in Windows (shutter closed, device locked, or FrameServer stuck). Audio consultation remains active without interruption.');
+            }
           }
         } catch (mediaErr: any) {
           console.warn('[LiveKit] Local media permission error:', mediaErr);
-          setMediaPermissionError(mediaErr.message || 'Camera or microphone access denied');
         }
       } catch (err: any) {
         if (!isMounted) return;

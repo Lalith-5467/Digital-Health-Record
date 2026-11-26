@@ -172,16 +172,29 @@ export const HospitalDashboardPage: React.FC<HospitalDashboardPageProps> = ({
   const matchesSelectedHospital = (userItem: any, hosp: HospitalAdminRecord) => {
     if (!hosp || !userItem) return false;
     const targetHospName = hosp.name.toLowerCase().trim();
+    const targetHospId = (hosp.id || hosp.hospitalId || '').toLowerCase().trim();
+    const targetHospCode = (hosp.code || '').toLowerCase().trim();
     
     // Check all possible hospital fields on the user / profile objects
     const affiliations: string[] = [
       userItem.hospital,
       userItem.doctor?.hospital,
       userItem.nurse?.hospital,
-      userItem.pharmacist?.hospital || userItem.pharmacist?.pharmacyName,
+      userItem.pharmacist?.hospital,
+      userItem.pharmacist?.pharmacyName,
+      userItem.pharmacist?.hospitalId,
+      userItem.pharmacist?.hospitalRef?.name,
+      userItem.pharmacist?.hospitalRef?.id,
+      userItem.pharmacist?.pharmacy?.name,
       userItem.caregiver?.hospital,
       userItem.patient?.hospital,
+      userItem.patient?.preferredHospital,
+      userItem.patient?.hospitalId,
+      userItem.patient?.hospitalRef?.name,
+      userItem.patient?.hospitalRef?.id,
       userItem.profile?.hospital,
+      userItem.profile?.preferredHospital,
+      userItem.profile?.hospitalId,
     ].filter(Boolean).map(h => String(h).toLowerCase().trim());
 
     if (affiliations.length === 0) {
@@ -189,9 +202,11 @@ export const HospitalDashboardPage: React.FC<HospitalDashboardPageProps> = ({
       return targetHospName === 'medicare central hospital';
     }
 
-    // Must strictly match the hospital name
+    // Must match the hospital name, code, or ID
     return affiliations.some(aff => 
       aff === targetHospName ||
+      (targetHospId && aff === targetHospId) ||
+      (targetHospCode && aff === targetHospCode) ||
       (targetHospName.length > 5 && aff.startsWith(targetHospName)) ||
       (aff.length > 5 && targetHospName.startsWith(aff))
     );

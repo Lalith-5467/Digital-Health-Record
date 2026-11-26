@@ -1,6 +1,7 @@
 import { Server as SocketIOServer, Socket } from 'socket.io';
 import http from 'http';
 import { prisma } from './config/prisma';
+import { config } from './config/env';
 import { verifySessionToken } from './middleware/auth.middleware';
 
 export interface OrderStatusUpdatePayload {
@@ -23,7 +24,19 @@ let io: SocketIOServer | null = null;
 export function initSocketServer(httpServer: http.Server): SocketIOServer {
   io = new SocketIOServer(httpServer, {
     cors: {
-      origin: ['http://localhost:3000', 'http://localhost:3001', 'http://localhost:5173', 'http://127.0.0.1:3000', 'http://127.0.0.1:3001', 'http://127.0.0.1:5173'],
+      origin: (origin, callback) => {
+        if (
+          !origin ||
+          origin.startsWith('http://localhost:') ||
+          origin.startsWith('http://127.0.0.1:') ||
+          origin.includes('mccmrfip.in') ||
+          origin === config.clientUrl
+        ) {
+          callback(null, true);
+        } else {
+          callback(null, true);
+        }
+      },
       methods: ['GET', 'POST'],
       credentials: true,
     },

@@ -1631,8 +1631,15 @@ export const AdminSystemSettingsView: React.FC<AdminSystemSettingsViewProps> = (
     });
   };
 
+  const assetHost =
+    typeof window !== 'undefined' && window.location.origin
+      ? window.location.port === '3000' || window.location.port === '5173'
+        ? 'http://localhost:5000'
+        : window.location.origin
+      : 'http://localhost:5000';
+
   const fullLogoSrc = logoUrl 
-    ? (logoUrl.startsWith('http') ? logoUrl : `http://localhost:5000${logoUrl}`) 
+    ? (logoUrl.startsWith('http') ? logoUrl : `${assetHost}${logoUrl.startsWith('/') ? '' : '/'}${logoUrl}`) 
     : '';
 
   const ROLE_NAMES = [
@@ -2139,7 +2146,7 @@ export const AdminSystemSettingsView: React.FC<AdminSystemSettingsViewProps> = (
                     <div className="w-16 h-16 rounded-xl bg-slate-900 flex items-center justify-center overflow-hidden shrink-0 border border-slate-700 shadow-sm">
                       {alternateLogoUrl ? (
                         <img 
-                          src={alternateLogoUrl.startsWith('http') ? alternateLogoUrl : `http://localhost:5000${alternateLogoUrl}`} 
+                          src={alternateLogoUrl.startsWith('http') ? alternateLogoUrl : `${assetHost}${alternateLogoUrl.startsWith('/') ? '' : '/'}${alternateLogoUrl}`} 
                           alt="Alternate Logo" 
                           className="w-full h-full object-cover" 
                         />

@@ -1704,8 +1704,14 @@ export const PrescriptionScannerTab: React.FC<PrescriptionScannerTabProps> = ({
                                 <option value="Once daily">Once daily</option>
                                 <option value="Twice daily">Twice daily</option>
                                 <option value="Three times daily">Three times daily</option>
+                                <option value="Four times daily">Four times daily</option>
                                 <option value="Every 4 hours">Every 4 hours</option>
+                                <option value="Every 6 to 8 hours">Every 6 to 8 hours</option>
                                 <option value="As needed">As needed</option>
+                                <option value="After every loose motion">After every loose motion</option>
+                                {!['Once daily', 'Twice daily', 'Three times daily', 'Four times daily', 'Every 4 hours', 'Every 6 to 8 hours', 'As needed', 'After every loose motion'].includes(med.frequency) && (
+                                  <option value={med.frequency}>{med.frequency}</option>
+                                )}
                               </select>
                             </div>
 
@@ -1833,6 +1839,21 @@ export const PrescriptionScannerTab: React.FC<PrescriptionScannerTabProps> = ({
                       <p className="text-xs text-slate-500 italic">
                         No physician follow-up directive detected. Enable checkbox above to schedule one manually.
                       </p>
+                    )}
+
+                    {/* ATTENDING DOCTOR'S ADVICE */}
+                    {prescriptionData.doctorAdvice && prescriptionData.doctorAdvice.length > 0 && (
+                      <div className="pt-3 border-t border-slate-200/80 dark:border-slate-800/80 space-y-2">
+                        <div className="flex items-center gap-1.5 text-xs font-bold text-teal-800 dark:text-cyan-300">
+                          <CheckCircle2 className="w-3.5 h-3.5 text-[#00a896]" />
+                          <span>Attending Doctor's Advice</span>
+                        </div>
+                        <ul className="space-y-1 text-xs text-slate-700 dark:text-slate-300 list-disc list-inside bg-teal-50/50 dark:bg-teal-950/20 p-3 rounded-xl border border-teal-200/60 dark:border-teal-800/40">
+                          {prescriptionData.doctorAdvice.map((advice, aIdx) => (
+                            <li key={aIdx} className="leading-relaxed">{advice}</li>
+                          ))}
+                        </ul>
+                      </div>
                     )}
                   </div>
 

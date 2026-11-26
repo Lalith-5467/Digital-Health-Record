@@ -76,9 +76,10 @@ export const PharmacistDashboardPage: React.FC<PharmacistDashboardPageProps> = (
 
   // Resolve logged-in username & pharmacy dynamically from user prop or localStorage
   const effectiveUser = React.useMemo(() => {
-    let candidateName = (user?.role?.toLowerCase?.().includes('pharmacist') && !isDoctorOrPatient(user?.name)) ? user?.name : undefined;
-    let candidateHospital = user?.hospitalAffiliation || (user as any)?.pharmacyName;
-    let candidatePharmacyId = (user as any)?.pharmacyId;
+    const prof = (user as any)?.profile || {};
+    let candidateName = (user?.role?.toLowerCase?.().includes('pharmacist') && !isDoctorOrPatient(user?.name)) ? (user?.name || prof.fullName) : undefined;
+    let candidateHospital = user?.hospitalAffiliation || (user as any)?.pharmacyName || prof.pharmacyName || prof.pharmacy?.name || prof.hospitalRef?.name;
+    let candidatePharmacyId = (user as any)?.pharmacyId || prof.pharmacyId || prof.pharmacy?.id;
 
     try {
       if (!candidateName) {
@@ -97,14 +98,15 @@ export const PharmacistDashboardPage: React.FC<PharmacistDashboardPageProps> = (
       const savedUser = localStorage.getItem('app_user');
       if (savedUser) {
         const parsed = JSON.parse(savedUser);
-        if (!candidateName && parsed?.name && (parsed?.role?.toLowerCase?.().includes('pharmacist') || !parsed?.role) && !isDoctorOrPatient(parsed.name)) {
-          candidateName = parsed.name;
+        const parsedProf = parsed?.profile || {};
+        if (!candidateName && (parsed?.name || parsedProf?.fullName) && (parsed?.role?.toLowerCase?.().includes('pharmacist') || !parsed?.role) && !isDoctorOrPatient(parsed.name)) {
+          candidateName = parsed.name || parsedProf.fullName;
         }
-        if (!candidateHospital && (parsed?.hospitalAffiliation || parsed?.pharmacyName)) {
-          candidateHospital = parsed.hospitalAffiliation || parsed.pharmacyName;
+        if (!candidateHospital && (parsed?.hospitalAffiliation || parsed?.pharmacyName || parsedProf?.pharmacyName || parsedProf?.pharmacy?.name)) {
+          candidateHospital = parsed.hospitalAffiliation || parsed.pharmacyName || parsedProf?.pharmacyName || parsedProf?.pharmacy?.name;
         }
-        if (!candidatePharmacyId && parsed?.pharmacyId) {
-          candidatePharmacyId = parsed.pharmacyId;
+        if (!candidatePharmacyId && (parsed?.pharmacyId || parsedProf?.pharmacyId || parsedProf?.pharmacy?.id)) {
+          candidatePharmacyId = parsed.pharmacyId || parsedProf.pharmacyId || parsedProf.pharmacy?.id;
         }
       }
     } catch {}
@@ -113,7 +115,7 @@ export const PharmacistDashboardPage: React.FC<PharmacistDashboardPageProps> = (
       name: candidateName || 'Registered Pharmacist',
       email: (user?.role?.toLowerCase?.().includes('pharmacist') && user?.email) || 'pharmacist@health.com',
       role: 'Pharmacist',
-      abhaId: user?.abhaId || 'RPH-TN-2018-994',
+      abhaId: user?.abhaId || prof.licenseNumber || prof.pciRegistrationNo || 'RPH-TN-2018-994',
       hospitalAffiliation: candidateHospital || 'Dispensary Hub',
       pharmacyId: candidatePharmacyId
     };
@@ -501,7 +503,7 @@ export const PharmacistDashboardPage: React.FC<PharmacistDashboardPageProps> = (
           {/* User pill */}
           <div className="hidden md:flex items-center gap-2 py-1 px-2.5 rounded-2xl bg-slate-100 dark:bg-slate-800 border border-slate-200/60 dark:border-slate-700/60">
             <div className="w-7 h-7 rounded-xl bg-teal-500/20 text-[#00a896] dark:text-cyan-300 font-extrabold text-xs flex items-center justify-center font-mono">
-              {(effectiveUser.name || 'Pharmacist').split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase()}
+              {(effectiveUser.name || 'Pharmacist').split(' ').map((n: string) => n[0]).join('').slice(0, 2).toUpperCase()}
             </div>
             <span className="text-xs font-black text-slate-800 dark:text-slate-200">{effectiveUser.name}</span>
           </div>

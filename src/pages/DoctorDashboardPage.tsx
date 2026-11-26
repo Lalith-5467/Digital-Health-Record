@@ -53,6 +53,24 @@ export const DoctorDashboardPage: React.FC<DoctorDashboardPageProps> = ({ onLogo
   const [patient360Tab, setPatient360Tab] = useState('summary');
   const [notificationPopoverOpen, setNotificationPopoverOpen] = useState(false);
   const [unreadNotificationsCount, setUnreadNotificationsCount] = useState(0);
+  const [doctorProfile, setDoctorProfile] = useState<any>(null);
+
+  React.useEffect(() => {
+    const loadDoctorProfile = async () => {
+      try {
+        const { profileApi } = await import('../services/dhrApis');
+        const res = await profileApi.getDoctorProfile();
+        if (res?.data) {
+          setDoctorProfile(res.data);
+        }
+      } catch (err) {
+        console.warn('Failed to load doctor profile in dashboard page:', err);
+      }
+    };
+    loadDoctorProfile();
+    window.addEventListener('doctor_profile_updated', loadDoctorProfile);
+    return () => window.removeEventListener('doctor_profile_updated', loadDoctorProfile);
+  }, []);
 
   React.useEffect(() => {
     if (initialNavId) {
@@ -84,7 +102,8 @@ export const DoctorDashboardPage: React.FC<DoctorDashboardPageProps> = ({ onLogo
     return () => window.removeEventListener('notifications_updated', handleUpdate);
   }, []);
 
-  const doctorName = user?.name ? (user.name.startsWith('Dr') ? user.name : `Dr. ${user.name}`) : 'Dr. Sarah Jenkins';
+  const rawDoctorName = doctorProfile?.fullName || user?.name || 'Sarah Jenkins';
+  const doctorName = rawDoctorName.startsWith('Dr') ? rawDoctorName : `Dr. ${rawDoctorName}`;
 
   const handleScanSuccess = (patientId: string) => {
     setScannedPatientId(patientId);
@@ -149,6 +168,7 @@ export const DoctorDashboardPage: React.FC<DoctorDashboardPageProps> = ({ onLogo
       case 'consultation-details':
         return <ConsultationDetailsView patientId={scannedPatientId || '1'} onNavigate={setActiveNav} />;
       case 'video-consultation':
+      case 'consultation':
       case 'teleconsult':
         return <DoctorVideoConsultationView user={user} patientId={scannedPatientId} onNavigate={setActiveNav} />;
       case 'consultation-workspace':
@@ -261,7 +281,7 @@ export const DoctorDashboardPage: React.FC<DoctorDashboardPageProps> = ({ onLogo
             title="View Profile & Settings"
           >
             <div className="w-7 h-7 rounded-lg bg-[#00a896] text-white font-extrabold text-xs flex items-center justify-center font-mono shadow-xs shrink-0">
-              {doctorName.replace('Dr. ', '').split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase() || 'DR'}
+              {doctorName.replace('Dr. ', '').split(' ').map((n: string) => n[0]).join('').slice(0, 2).toUpperCase() || 'DR'}
             </div>
             <span className="text-xs font-bold text-slate-800 dark:text-slate-200 whitespace-nowrap max-w-[140px] truncate">{getLocalizedName(doctorName, t)}</span>
           </button>
@@ -283,7 +303,7 @@ export const DoctorDashboardPage: React.FC<DoctorDashboardPageProps> = ({ onLogo
       <div className="flex flex-1 overflow-hidden">
         {/* DESKTOP SIDEBAR */}
         <div className="hidden lg:block shrink-0">
-          <DoctorSidebar activeNav={activeNav} onNavigate={setActiveNav} user={user} />
+          <DoctorSidebar activeNav={activeNav} onNavigate={setActiveNav} user={user} doctorProfile={doctorProfile} />
         </div>
 
         {/* MOBILE SIDEBAR MODAL */}
@@ -315,6 +335,7 @@ export const DoctorDashboardPage: React.FC<DoctorDashboardPageProps> = ({ onLogo
                       setIsSidebarOpen(false);
                     }} 
                     user={user} 
+                    doctorProfile={doctorProfile}
                   />
                 </div>
               </motion.div>

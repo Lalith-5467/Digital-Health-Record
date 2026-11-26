@@ -108,6 +108,18 @@ export const WaitingRoom: React.FC<WaitingRoomProps> = ({
             </button>
 
             <button
+              onClick={() => {
+                setIsJoiningTransition(true);
+                setTimeout(() => onDoctorJoined(), 600);
+              }}
+              className="px-5 py-3 rounded-xl bg-teal-600 hover:bg-teal-500 text-white font-extrabold text-xs shadow-md transition-all flex items-center gap-1.5 cursor-pointer font-sans"
+              title="Connect audio & video stream immediately"
+            >
+              <PhoneCall className="w-4 h-4" />
+              <span>Connect Call Now</span>
+            </button>
+
+            <button
               onClick={onLeaveWaitingRoom}
               className="px-4 py-3 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 text-rose-700 dark:text-rose-400 font-extrabold text-xs border border-rose-500/30 flex items-center gap-1.5 cursor-pointer font-sans"
             >

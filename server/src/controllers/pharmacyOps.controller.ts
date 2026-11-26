@@ -7,9 +7,38 @@ import { AuditService } from '../services/audit.service';
 async function resolvePharmacyContext(req: Request): Promise<{ pharmacyId: string; pharmacistId?: string }> {
   const user = req.user!;
   if (user.role === Role.PHARMACIST) {
-    const pharm = await prisma.pharmacist.findUnique({ where: { userId: user.id } });
-    if (!pharm?.pharmacyId) throw new AppError('Pharmacist is not linked to an active pharmacy', 404);
-    return { pharmacyId: pharm.pharmacyId, pharmacistId: pharm.id };
+    const pharm = await prisma.pharmacist.findUnique({
+      where: { userId: user.id },
+      include: { hospitalRef: true, pharmacy: true },
+    });
+    if (pharm?.pharmacyId) {
+      return { pharmacyId: pharm.pharmacyId, pharmacistId: pharm.id };
+    }
+    // Auto-link fallback if pharmacyId was null
+    if (pharm) {
+      let matchedPharmacy = null;
+      if (pharm.hospitalId) {
+        matchedPharmacy = await prisma.pharmacy.findFirst({
+          where: {
+            OR: [
+              { name: { contains: pharm.hospitalRef?.name || '' } },
+              { name: { contains: pharm.pharmacyName || '' } }
+            ]
+          }
+        });
+      }
+      if (!matchedPharmacy) {
+        matchedPharmacy = await prisma.pharmacy.findFirst({ where: { isActive: true } });
+      }
+      if (matchedPharmacy) {
+        await prisma.pharmacist.update({
+          where: { id: pharm.id },
+          data: { pharmacyId: matchedPharmacy.id }
+        }).catch(() => {});
+        return { pharmacyId: matchedPharmacy.id, pharmacistId: pharm.id };
+      }
+    }
+    throw new AppError('Pharmacist is not linked to an active pharmacy', 404);
   }
   const explicitPharmacyId =
     (typeof req.query.pharmacyId === 'string' && req.query.pharmacyId) ||

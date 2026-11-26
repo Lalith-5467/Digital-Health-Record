@@ -445,6 +445,30 @@ const CLINICAL_KB: Record<string, DrugProfileData> = {
     tagColor: 'purple',
     domain: 'gastro'
   },
+  ors: {
+    category: 'Oral Electrolyte Replacement & Rehydration Therapy',
+    activeMolecule: 'WHO Oral Rehydration Salts (Sodium Chloride, Potassium Chloride, Sodium Citrate, Dextrose)',
+    purpose: 'Replaces critical electrolytes and fluids lost during dehydration, acute diarrhea, loose stools, and vomiting.',
+    mechanism: 'Utilizes glucose-sodium cotransport in intestinal epithelial cells to accelerate water and electrolyte absorption.',
+    timing: 'Dissolve 1 sachet in 1 liter of clean drinking water. Sip continuously after every loose bowel movement.',
+    food: 'Anytime',
+    slot: 'As Needed / SOS',
+    precaution: 'Do not boil prepared solution. Discard any unused reconstituted solution after 24 hours.',
+    tagColor: 'teal',
+    domain: 'gastro'
+  },
+  rehydration: {
+    category: 'Oral Electrolyte Replacement & Rehydration Therapy',
+    activeMolecule: 'WHO Oral Rehydration Salts (Sodium Chloride, Potassium Chloride, Sodium Citrate, Dextrose)',
+    purpose: 'Replaces critical electrolytes and fluids lost during dehydration, acute diarrhea, loose stools, and vomiting.',
+    mechanism: 'Utilizes glucose-sodium cotransport in intestinal epithelial cells to accelerate water and electrolyte absorption.',
+    timing: 'Dissolve 1 sachet in 1 liter of clean drinking water. Sip continuously after every loose bowel movement.',
+    food: 'Anytime',
+    slot: 'As Needed / SOS',
+    precaution: 'Do not boil prepared solution. Discard any unused reconstituted solution after 24 hours.',
+    tagColor: 'teal',
+    domain: 'gastro'
+  },
 
   // --- CARDIOLOGY & HYPERTENSION ---
   telmisartan: {
@@ -708,6 +732,11 @@ function resolveDrugProfile(medName: string, dosage: string, instructions: strin
       tagColor: 'emerald',
       domain: 'gastro'
     };
+  }
+
+  // Oral Rehydration Salts & Electrolytes
+  if (/(?:ors|rehydration|electrolyte|sachet.*salt)/i.test(clean)) {
+    return CLINICAL_KB.ors;
   }
 
   // Analgesics & Anti-Inflammatories

@@ -30,6 +30,8 @@ export interface StructuredPrescription {
   status: 'pending-review' | 'confirmed';
   notes?: string;
   diagnosis?: string;
+  doctorAdvice?: string[];
+  qrToken?: string;
   rawImagePreview?: string;
   rawOcrText?: string;
   confidence?: number;

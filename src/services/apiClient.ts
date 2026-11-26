@@ -4,7 +4,13 @@
  */
 
 // Use direct backend URL on port 5000 in dev, or VITE_API_URL if configured
-const API_BASE_URL = (import.meta as any).env?.VITE_API_URL || (typeof window !== 'undefined' && window.location.origin ? `${window.location.origin}/api` : 'http://localhost:5000/api');
+const API_BASE_URL =
+  (import.meta as any).env?.VITE_API_URL ||
+  (typeof window !== 'undefined' && window.location.origin
+    ? window.location.port === '3000' || window.location.port === '5173'
+      ? 'http://localhost:5000/api'
+      : `${window.location.origin}/api`
+    : 'http://localhost:5000/api');
 
 export interface ApiResponse<T = any> {
   success: boolean;
@@ -43,7 +49,7 @@ export const getAuthToken = (): string | null => {
   const isCaregiverPortal = path.startsWith('/caregiver');
   const isInsurancePortal = path.startsWith('/insurance');
   const isHospitalPortal = path.startsWith('/hospital');
-  const isAdminPortal = path.startsWith('/admin');
+  const isAdminPortal = path.startsWith('/admin') || path.startsWith('/superadmin') || path.startsWith('/super-admin') || path.startsWith('/super_admin');
   const isUserPortal = path.startsWith('/user') || (!isDoctorPortal && !isNursePortal && !isPharmaPortal && !isCaregiverPortal && !isInsurancePortal && !isAdminPortal && !isHospitalPortal);
 
   // Check role-specific token first

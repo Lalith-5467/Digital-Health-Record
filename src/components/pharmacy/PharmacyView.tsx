@@ -396,7 +396,7 @@ export const PharmacyView: React.FC<PharmacyViewProps> = ({
       />
 
       {/* 2. OVERVIEW SUMMARY CARDS */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
         <div className="bg-white dark:bg-slate-900/80 border border-slate-200/90 dark:border-slate-800 p-4 sm:p-5 rounded-3xl space-y-2 shadow-md">
           <div className="flex items-center justify-between">
             <span className="text-xs font-bold text-slate-600 dark:text-slate-400">{t('pharmacy.active_medicines', 'Active Medicines')}</span>
