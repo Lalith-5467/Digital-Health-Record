@@ -100,37 +100,45 @@
   font-weight: 500;
 }
 
-/* Custom Scrollbar — vertical only, horizontal completely hidden everywhere */
-::-webkit-scrollbar {
-  width: 6px;
-  height: 0px !important;
+/* Clean Modern Scrollbar — Scrollbar track, buttons and thumb hidden while preserving smooth scrolling */
+html,
+body,
+* {
+  scrollbar-width: none !important; /* Firefox */
+  -ms-overflow-style: none !important; /* IE and Edge */
 }
 
-::-webkit-scrollbar:horizontal,
-*::-webkit-scrollbar:horizontal {
-  display: none !important;
-  height: 0px !important;
+::-webkit-scrollbar,
+*::-webkit-scrollbar {
   width: 0px !important;
+  height: 0px !important;
+  display: none !important;
   background: transparent !important;
 }
 
-::-webkit-scrollbar-track {
-  background: transparent;
+::-webkit-scrollbar-button,
+*::-webkit-scrollbar-button {
+  display: none !important;
+  width: 0px !important;
+  height: 0px !important;
 }
 
-::-webkit-scrollbar-thumb {
-  background: rgba(0, 168, 150, 0.25);
-  border-radius: 999px;
+::-webkit-scrollbar-track,
+*::-webkit-scrollbar-track {
+  display: none !important;
+  background: transparent !important;
 }
 
-::-webkit-scrollbar-thumb:hover {
-  background: rgba(0, 168, 150, 0.55);
+::-webkit-scrollbar-thumb,
+*::-webkit-scrollbar-thumb {
+  display: none !important;
+  background: transparent !important;
 }
 
-/* Firefox */
-* {
-  scrollbar-width: thin;
-  scrollbar-color: rgba(0,168,150,.25) transparent;
+::-webkit-scrollbar-corner,
+*::-webkit-scrollbar-corner {
+  display: none !important;
+  background: transparent !important;
 }
 
 /* Glass panel */
